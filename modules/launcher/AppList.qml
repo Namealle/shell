@@ -51,7 +51,7 @@ StyledListView {
         const text = search.text;
         const prefix = GlobalConfig.launcher.actionPrefix;
         if (text.startsWith(prefix)) {
-            for (const action of ["calc", "scheme", "variant"])
+            for (const action of ["calc", "scheme", "variant", "keybinds"])
                 if (text.startsWith(`${prefix}${action} `))
                     return action;
 
@@ -97,6 +97,14 @@ StyledListView {
             PropertyChanges {
                 model.values: Schemes.query(search.text)
                 root.delegate: schemeItem
+            }
+        },
+        State {
+            name: "keybinds"
+
+            PropertyChanges {
+                model.values: Keybinds.query(search.text)
+                root.delegate: keybindsItem
             }
         },
         State {
@@ -245,7 +253,13 @@ StyledListView {
             list: root
         }
     }
+    Component {
+        id: keybindsItem
 
+        KeybindsItem {
+            list: root
+        }
+    }
     Component {
         id: variantItem
 
