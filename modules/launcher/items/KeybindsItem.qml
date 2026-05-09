@@ -19,18 +19,27 @@ Item {
         radius: Tokens.rounding.normal
     }
 
-    StyledText {
-        anchors.leftMargin: Tokens.padding.larger
-        anchors.rightMargin: Tokens.padding.larger
-        anchors.margins: Tokens.padding.smaller
+    Column {
         anchors.left: parent.left
+        anchors.leftMargin: Tokens.spacing.normal
         anchors.verticalCenter: parent.verticalCenter
-        text: modelData.key
-    }
 
-    StyledText {
-        anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
-        text: modelData.dispatcher + " " + modelData.arg
+        width: parent.width - anchors.leftMargin
+        spacing: 0
+
+        StyledText {
+            text: root.modelData.combo
+            font.pointSize: Tokens.font.size.normal
+        }
+
+        StyledText {
+           text: root.modelData.has_description ? root.modelData.description : root.modelData.dispatcher + " " + root.modelData.arg
+           font.pointSize: Tokens.font.size.small
+           color: Colours.palette.m3outline
+
+           elide: Text.ElideRight
+           anchors.left: parent.left
+           anchors.right: parent.right
+        }
     }
 }

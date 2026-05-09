@@ -14,6 +14,16 @@ Searcher {
         return search.slice(`${GlobalConfig.launcher.actionPrefix}keybinds `.length);
     }
 
+                    function formatCombo(modmask, key) {
+                        const parts = [];
+                        if (modmask & 64) parts.push("SUPER");
+                        if (modmask & 1)  parts.push("SHIFT");
+                        if (modmask & 4)  parts.push("CTRL");
+                        if (modmask & 8)  parts.push("ALT");
+                        parts.push(key);
+                        return parts.join(" + ");
+                    }
+
     list: keybinds.instances
     useFuzzy: GlobalConfig.launcher.useFuzzy.keybinds
 
@@ -30,13 +40,17 @@ Searcher {
         stdout: StdioCollector {
             onStreamFinished: {
                 const keybindsData = JSON.parse(text);
-                const clean = keybindsData.map(bind => ({
-                    key: bind.key,
+                const filtered = keybindsData.filter(bind => (
+                    bind.mouse === false 
+                    && 
+                    bind.dispatcher !== "global"
+                ))
+                const clean = filtered.map(bind => ({
+                    combo: formatCombo(bind.modmask, bind.key),
                     dispatcher: bind.dispatcher,
                     arg: bind.arg,
                     has_description: bind.has_description,
                     description: bind.description,
-                    modmask: bind.modmask,
                 }));
             keybinds.model = clean;
             }
@@ -45,11 +59,10 @@ Searcher {
 
     component Keybinds: QtObject {
         required property var modelData
-        readonly property string key: modelData.key
+        readonly property string combo: modelData.combo
         readonly property string dispatcher: modelData.dispatcher
         readonly property string arg: modelData.arg
         readonly property bool has_description: modelData.has_description
         readonly property string description: modelData.description
-        readonly property int modmask: modelData.modmask
     }
 }
