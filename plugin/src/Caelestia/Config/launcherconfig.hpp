@@ -17,6 +17,7 @@ class LauncherUseFuzzy : public ConfigObject {
     CONFIG_GLOBAL_PROPERTY(bool, apps, false)
     CONFIG_GLOBAL_PROPERTY(bool, actions, false)
     CONFIG_GLOBAL_PROPERTY(bool, schemes, false)
+    CONFIG_GLOBAL_PROPERTY(bool, keybinds, false)
     CONFIG_GLOBAL_PROPERTY(bool, variants, false)
     CONFIG_GLOBAL_PROPERTY(bool, wallpapers, false)
 
