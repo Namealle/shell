@@ -52,7 +52,7 @@ class LauncherConfig : public ConfigObject {
             }),
             vmap({
                 { u"name"_s, u"Keybinds"_s },
-                { u"icon"_s, u"calculate"_s },
+                { u"icon"_s, u"keyboard"_s },
                 { u"description"_s, u"Find your keybinds"_s },
                 { u"command"_s, QStringList{ u"autocomplete"_s, u"keybinds"_s } },
             }),
