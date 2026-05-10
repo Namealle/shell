@@ -14,18 +14,30 @@ Searcher {
         return search.slice(`${GlobalConfig.launcher.actionPrefix}keybinds `.length);
     }
 
-                    function formatCombo(modmask, key) {
-                        const parts = [];
-                        if (modmask & 64) parts.push("SUPER");
-                        if (modmask & 1)  parts.push("SHIFT");
-                        if (modmask & 4)  parts.push("CTRL");
-                        if (modmask & 8)  parts.push("ALT");
-                        parts.push(key);
-                        return parts.join(" + ");
-                    }
+    function formatCombo(modmask, key) {
+        const parts = [];
+        if (modmask & 64) parts.push("SUPER");
+        if (modmask & 1)  parts.push("SHIFT");
+        if (modmask & 4)  parts.push("CTRL");
+        if (modmask & 8)  parts.push("ALT");
+        parts.push(key);
+        return parts.join(" + ");
+    }
+
+    function formatParts(modmask, key) {
+        const parts = [];
+        if (modmask & 64) parts.push("SUPER");
+        if (modmask & 1)  parts.push("SHIFT");
+        if (modmask & 4)  parts.push("CTRL");
+        if (modmask & 8)  parts.push("ALT");
+        parts.push(key);
+        return parts;
+    }
 
     list: keybinds.instances
     useFuzzy: GlobalConfig.launcher.useFuzzy.keybinds
+    property list<string> keys: ["combo", "description", "dispatcher", "arg"]
+    property list<real> weights: [3, 2, 1, 1]
 
     Variants {
         id: keybinds
@@ -47,6 +59,7 @@ Searcher {
                 ))
                 const clean = filtered.map(bind => ({
                     combo: formatCombo(bind.modmask, bind.key),
+                    parts: formatParts(bind.modmask, bind.key),
                     dispatcher: bind.dispatcher,
                     arg: bind.arg,
                     has_description: bind.has_description,
@@ -59,6 +72,8 @@ Searcher {
 
     component Keybinds: QtObject {
         required property var modelData
+        readonly property var parts: modelData.parts
+        readonly property string name: modelData.combo + modelData.description + modelData.arg + modelData.dispatcher
         readonly property string combo: modelData.combo
         readonly property string dispatcher: modelData.dispatcher
         readonly property string arg: modelData.arg
@@ -66,3 +81,4 @@ Searcher {
         readonly property string description: modelData.description
     }
 }
+

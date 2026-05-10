@@ -156,6 +156,14 @@ ColumnLayout {
                 GlobalConfig.launcher.useFuzzy.wallpapers = checked;
             }
         }
+
+        ToggleRow {
+            label: qsTr("Keybinds")
+            checked: GlobalConfig.launcher.useFuzzy.keybinds
+            toggle.onToggled: {
+                GlobalConfig.launcher.useFuzzy.keybinds = checked;
+            }
+        }
     }
 
     SectionHeader {

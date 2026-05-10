@@ -79,6 +79,13 @@ Singleton {
             Office: "content_paste"
         })
 
+    readonly property var keybindIcons: ({
+            "SUPER": "keyboard_command_key",
+            "SHIFT": "shift",
+            "CTRL": "keyboard_control_key",
+            "ALT": "keyboard_option_key"
+        })
+
     // Checks if a name matches an icon config. Icon configs can have the following keys:
     // - name: The exact name of the icon
     // - regex: A regex to match against the name (takes priority over name)
