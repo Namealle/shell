@@ -80,10 +80,27 @@ Singleton {
         })
 
     readonly property var keybindIcons: ({
-            "SUPER": "keyboard_command_key",
-            "SHIFT": "shift",
-            "CTRL": "keyboard_control_key",
-            "ALT": "keyboard_option_key"
+            "Super": "keyboard_command_key",
+            "Shift": "shift",
+            "Ctrl": "keyboard_control_key",
+            "Alt": "keyboard_option_key",
+            "Return": "keyboard_return",
+            "Space": "space_bar",
+            "Tab": "keyboard_tab",
+            "Backspace": "backspace",
+            "Delete": "delete",
+            "Insert": "input",
+            "Home": "first_page",
+            "End": "last_page",
+            "Left": "keyboard_arrow_left",
+            "Right": "keyboard_arrow_right",
+            "Up": "keyboard_arrow_up",
+            "Down": "keyboard_arrow_down",
+            "Prior": "keyboard_double_arrow_up",
+            "Next": "keyboard_double_arrow_down",
+            "Plus": "add",
+            "Minus": "remove",
+            "Equal": "equal"
         })
 
     // Checks if a name matches an icon config. Icon configs can have the following keys:

@@ -16,22 +16,26 @@ Searcher {
 
     function formatCombo(modmask, key) {
         const parts = [];
-        if (modmask & 64) parts.push("SUPER");
-        if (modmask & 1)  parts.push("SHIFT");
-        if (modmask & 4)  parts.push("CTRL");
-        if (modmask & 8)  parts.push("ALT");
-        parts.push(key);
+        if (modmask & 64) parts.push(toTitleCase("SUPER"));
+        if (modmask & 1)  parts.push(toTitleCase("SHIFT"));
+        if (modmask & 4)  parts.push(toTitleCase("CTRL"));
+        if (modmask & 8)  parts.push(toTitleCase("ALT"));
+        parts.push(toTitleCase(key));
         return parts.join(" + ");
     }
 
     function formatParts(modmask, key) {
         const parts = [];
-        if (modmask & 64) parts.push("SUPER");
-        if (modmask & 1)  parts.push("SHIFT");
-        if (modmask & 4)  parts.push("CTRL");
-        if (modmask & 8)  parts.push("ALT");
-        parts.push(key);
+        if (modmask & 64) parts.push(toTitleCase("SUPER"));
+        if (modmask & 1)  parts.push(toTitleCase("SHIFT"));
+        if (modmask & 4)  parts.push(toTitleCase("CTRL"));
+        if (modmask & 8)  parts.push(toTitleCase("ALT"));
+        parts.push(toTitleCase(key));
         return parts;
+    }
+
+    function toTitleCase(str) {
+        return str[0].toUpperCase() + str.slice(1).toLowerCase();
     }
 
     list: keybinds.instances

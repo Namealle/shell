@@ -7,6 +7,11 @@
 - `services/`: QML-based system services.
 - `scripts/`: Helper scripts for shell functionality.
 
+## System Dependencies
+- `Power Management`: 
+    - Suspend/Hibernate requires properly configured swap (partition or file) and `resume=UUID=...` kernel parameter.
+    - Suspend Investigation: `asus_wmi` driver LPS0 warning is non-fatal. Actual suspend failure root cause is pending live log analysis.
+
 ## Build and Recompile Procedure
 
 To rebuild and install the Caelestia Shell after making modifications (specifically to C++ files in `plugin/`):
