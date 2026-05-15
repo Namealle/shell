@@ -16,22 +16,17 @@ Searcher {
 
     function formatCombo(modmask, key) {
         const parts = [];
-        if (modmask & 64) parts.push(toTitleCase("SUPER"));
-        if (modmask & 1)  parts.push(toTitleCase("SHIFT"));
-        if (modmask & 4)  parts.push(toTitleCase("CTRL"));
-        if (modmask & 8)  parts.push(toTitleCase("ALT"));
+        if (modmask & 64) parts.push("Super");
+        if (modmask & 1)  parts.push("Shift");
+        if (modmask & 2)  parts.push("CapsLock");
+        if (modmask & 4)  parts.push("Ctrl");
+        if (modmask & 8)  parts.push("Alt");
+        if (modmask & 16) parts.push("NumLock");
+        if (modmask & 32) parts.push("Hyper");
+        if (modmask & 128) parts.push("AltGr");
+
         parts.push(toTitleCase(key));
         return parts.join(" + ");
-    }
-
-    function formatParts(modmask, key) {
-        const parts = [];
-        if (modmask & 64) parts.push(toTitleCase("SUPER"));
-        if (modmask & 1)  parts.push(toTitleCase("SHIFT"));
-        if (modmask & 4)  parts.push(toTitleCase("CTRL"));
-        if (modmask & 8)  parts.push(toTitleCase("ALT"));
-        parts.push(toTitleCase(key));
-        return parts;
     }
 
     function toTitleCase(str) {
@@ -56,14 +51,9 @@ Searcher {
         stdout: StdioCollector {
             onStreamFinished: {
                 const keybindsData = JSON.parse(text);
-                const filtered = keybindsData.filter(bind => (
-                    bind.mouse === false 
-                    && 
-                    bind.dispatcher !== "global"
-                ))
+                const filtered = keybindsData.filter(bind => ( bind.mouse === false && bind.dispatcher !== "global" ))
                 const clean = filtered.map(bind => ({
                     combo: formatCombo(bind.modmask, bind.key),
-                    parts: formatParts(bind.modmask, bind.key),
                     dispatcher: bind.dispatcher,
                     arg: bind.arg,
                     has_description: bind.has_description,
@@ -76,7 +66,6 @@ Searcher {
 
     component Keybinds: QtObject {
         required property var modelData
-        readonly property var parts: modelData.parts
         readonly property string name: modelData.combo + modelData.description + modelData.arg + modelData.dispatcher
         readonly property string combo: modelData.combo
         readonly property string dispatcher: modelData.dispatcher

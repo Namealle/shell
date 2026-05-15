@@ -1,5 +1,6 @@
 import QtQuick
 import Caelestia.Config
+import Quickshell.Io
 import qs.components
 import qs.services
 import qs.utils
@@ -18,7 +19,15 @@ Item {
 
     StateLayer {
         radius: Tokens.rounding.normal
+        onClicked: runKeybind.running = true
     }
+
+    Process {
+        id: runKeybind
+
+        running: false
+        command: ["hyprctl", "dispatch", root.modelData.dispatcher, root.modelData.arg]
+}
 
     Item {
         anchors.fill: parent
@@ -28,10 +37,8 @@ Item {
 
         MaterialIcon {
             id: icon
-
             text: "keyboard"
             font.pointSize: Tokens.font.size.extraLarge
-
             anchors.verticalCenter: parent.verticalCenter
         }
 
@@ -39,27 +46,22 @@ Item {
             anchors.left: icon.right
             anchors.leftMargin: Tokens.spacing.normal
             anchors.verticalCenter: icon.verticalCenter
-
             implicitWidth: parent.width - icon.width
             implicitHeight: name.implicitHeight + desc.implicitHeight
 
             StyledText {
-                id: name 
-
+                id: name
                 text: root.modelData.combo
                 font.pointSize: Tokens.font.size.normal
             }
 
             StyledText {
                 id: desc
-
                 text: root.modelData.has_description ? root.modelData.description : root.modelData.dispatcher + " " + root.modelData.arg
                 font.pointSize: Tokens.font.size.small
                 color: Colours.palette.m3outline
-
                 elide: Text.ElideRight
                 width: root.width - icon.width - Tokens.rounding.normal * 2
-
                 anchors.top: name.bottom
             }
         }

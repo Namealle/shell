@@ -39,7 +39,6 @@ class LauncherConfig : public ConfigObject {
     CONFIG_GLOBAL_PROPERTY(bool, enableDangerousActions, false)
     CONFIG_PROPERTY(int, dragThreshold, 50)
     CONFIG_GLOBAL_PROPERTY(bool, vimKeybinds, false)
-    CONFIG_GLOBAL_PROPERTY(bool, keybindIcons, true)
     CONFIG_GLOBAL_PROPERTY(QStringList, favouriteApps)
     CONFIG_GLOBAL_PROPERTY(QStringList, hiddenApps)
     CONFIG_SUBOBJECT(LauncherUseFuzzy, useFuzzy)
