@@ -79,6 +79,42 @@ Singleton {
             Office: "content_paste"
         })
 
+    readonly property var keybindIcons: ({
+            workspace: "workspaces",
+            movetoworkspace: "arrow_circle_right",
+            movetoworkspacesilent: "open_in_new",
+            togglespecialworkspace: "bookmark",
+            killactive: "close",
+            fullscreen: "fullscreen",
+            fakefullscreen: "fullscreen",
+            togglefloating: "layers",
+            pin: "push_pin",
+            pseudo: "dashboard",
+            togglesplit: "view_quilt",
+            bringactivetotop: "flip_to_front",
+            movewindow: "open_with",
+            moveactive: "drag_pan",
+            swapwindow: "swap_horiz",
+            focuswindow: "flip_to_front",
+            movefocus: "arrow_forward",
+            cyclenext: "navigate_next",
+            cycleprev: "navigate_before",
+            resizeactive: "aspect_ratio",
+            focusmonitor: "monitor",
+            togglegroup: "tab_group",
+            changegroupactive: "tab",
+            movecurrentworkspacetomonitor: "monitor",
+            submap: "keyboard_command_key",
+            overview: "grid_view",
+            dpms: "power_settings_new",
+            exit: "logout",
+            fallback: "keyboard",
+            moveoutofgroup: "logout",
+            lockactivegroup: "lock",
+            movewindoworgroup: "open_with",
+            setignoregrouplock: "no_encryption",
+        })
+
     // Checks if a name matches an icon config. Icon configs can have the following keys:
     // - name: The exact name of the icon
     // - regex: A regex to match against the name (takes priority over name)
@@ -260,4 +296,125 @@ Singleton {
             return "battery_full";
         return "battery_alert";
     }
+
+    function getKeybindIcon(dispatcher: string, arg: string): string {
+        if (dispatcher !== "exec") {
+            const isBack = /(\s|^)(-\d|prev|l\b|left)/.test(arg);
+            const isForward = /(\s|^)(\+\d|next|r\b|right)/.test(arg);
+            const isUp = /(\s|^)(u\b|up)/.test(arg);
+            const isDown = /(\s|^)(d\b|down)/.test(arg);
+
+            if (dispatcher === "workspace" || dispatcher === "movetoworkspace" || dispatcher === "movetoworkspacesilent") {
+                if (isBack)    return "arrow_back";
+                if (isForward) return "arrow_forward";
+                return "workspaces";
+            }
+
+            if (dispatcher === "movefocus" || dispatcher === "movewindow") {
+                if (isBack)    return "arrow_back";
+                if (isForward) return "arrow_forward";
+                if (isUp)      return "arrow_upward";
+                if (isDown)    return "arrow_downward";
+            }
+
+            if (dispatcher === "layoutmsg") {
+                if (arg.includes("togglesplit") || arg.includes("split")) return "view_quilt";
+                if (arg.includes("swap"))     return "swap_horiz";
+                if (arg.includes("preselect") || arg.includes("next")) return "arrow_forward";
+                if (arg.includes("prev"))     return "arrow_back";
+                return keybindIcons.fallback;
+            }
+
+            if (dispatcher === "resizeactive") {
+                const parts = arg.trim().split(/\s+/);
+                const x = parseFloat(parts[0]) || 0;
+                const y = parseFloat(parts[1]) || 0;
+                if (x < 0) return "arrow_back";
+                if (x > 0) return "arrow_forward";
+                if (y < 0) return "arrow_upward";
+                if (y > 0) return "arrow_downward";
+                return "aspect_ratio";
+            }
+
+            if (dispatcher === "cyclenext")
+                return arg.includes("prev") ? "arrow_back" : "arrow_forward";
+
+            if (dispatcher === "changegroupactive")
+                return arg.includes("b") ? "arrow_back" : "arrow_forward";
+
+            return keybindIcons[dispatcher] ?? keybindIcons.fallback;
+        }
+
+        const keywords = [
+            ["workspace",      "workspaces"],
+            ["movetoworkspace","arrow_circle_right"],
+            ["screenshot",     "screenshot_monitor"],
+            ["record",         "screen_record"],
+            ["clipboard",      "content_paste"],
+            ["emoji",          "emoji_emotions"],
+            ["volume",         "volume_up"],
+            ["brightness",     "brightness_6"],
+            ["bluetooth",      "bluetooth"],
+            ["wifi",           "wifi"],
+            ["network",        "lan"],
+            ["suspend",        "bedtime"],
+            ["hibernate",      "bedtime"],
+            ["shutdown",       "power_settings_new"],
+            ["reboot",         "restart_alt"],
+            ["logout",         "logout"],
+            ["lock",           "lock"],
+            ["notify",         "notifications"],
+            ["wallpaper",      "wallpaper"],
+            ["music",          "music_note"],
+            ["playerctl",      "music_note"],
+            ["media",          "play_circle"],
+            ["sysmon",         "monitor_heart"],
+            ["todo",           "checklist"],
+            ["communication",  "forum"],
+            ["specialws",      "bookmark"],
+            ["pip",            "picture_in_picture"],
+            ["picker",         "colorize"],
+            ["colour",         "colorize"],
+            ["color",          "colorize"],
+            ["power",          "power_settings_new"],
+        ];
+
+        for (const [keyword, icon] of keywords)
+            if (arg.includes(keyword))
+                return icon;
+
+        if (arg.includes(" -- ")) {
+            const appName = arg.split(" -- ")[1].trim().split(/\s+/)[0];
+            if (appName) {
+                const entry = DesktopEntries.heuristicLookup(appName);
+                if (entry?.icon) {
+                    const path = Quickshell.iconPath(entry.icon, "");
+                    if (path) return path;
+                }
+                return "image_not_supported";
+            }
+            return keybindIcons.fallback;
+        }
+
+        if (!/[|;&]/.test(arg)) {
+            const skipList = ["bash","sh","fish","zsh","python","python3","node",
+                "pkill","kill","killall","notify-send","grim","slurp","wl-copy",
+                "wl-paste","cliphist","ydotool","xdotool","sleep","echo","cat",
+                "hyprctl","wpctl","systemctl","loginctl","pactl","qs","app2unit",
+                "caelestia","hyprpicker"];
+
+            const binary = arg.trim().split(/\s+/)[0].split("/").pop();
+            if (binary && !skipList.includes(binary)) {
+                const entry = DesktopEntries.heuristicLookup(binary);
+                if (entry?.icon) {
+                    const path = Quickshell.iconPath(entry.icon, "");
+                    if (path) return path;
+                }
+                return "image_not_supported";
+            }
+        }
+
+        return keybindIcons.fallback;
+    }
+
 }

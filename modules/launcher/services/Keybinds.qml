@@ -17,10 +17,10 @@ Searcher {
     function formatCombo(modmask, key) {
         const parts = [];
         if (modmask & 64) parts.push("Super");
-        if (modmask & 1)  parts.push("Shift");
-        if (modmask & 2)  parts.push("CapsLock");
         if (modmask & 4)  parts.push("Ctrl");
         if (modmask & 8)  parts.push("Alt");
+        if (modmask & 1)  parts.push("Shift");
+        if (modmask & 2)  parts.push("CapsLock");
         if (modmask & 16) parts.push("NumLock");
         if (modmask & 32) parts.push("Hyper");
         if (modmask & 128) parts.push("AltGr");
@@ -30,7 +30,12 @@ Searcher {
     }
 
     function toTitleCase(str) {
+        if (!str) return ""; 
         return str[0].toUpperCase() + str.slice(1).toLowerCase();
+    }
+
+    function reload(): void {
+        getKeybinds.running = true;
     }
 
     list: keybinds.instances
@@ -40,7 +45,7 @@ Searcher {
 
     Variants {
         id: keybinds
-        Keybinds {}
+        Keybind {}
     }
 
     Process {
@@ -59,12 +64,12 @@ Searcher {
                     has_description: bind.has_description,
                     description: bind.description,
                 }));
-            keybinds.model = clean;
+                    keybinds.model = clean;
             }
         }
     }
 
-    component Keybinds: QtObject {
+    component Keybind: QtObject {
         required property var modelData
         readonly property string name: modelData.combo + modelData.description + modelData.arg + modelData.dispatcher
         readonly property string combo: modelData.combo
@@ -72,6 +77,12 @@ Searcher {
         readonly property string arg: modelData.arg
         readonly property bool has_description: modelData.has_description
         readonly property string description: modelData.description
+        readonly property string icon: Icons.getKeybindIcon(dispatcher, arg)
+
+        function onClicked(list: AppList): void {
+            list.visibilities.launcher = false;
+            Quickshell.execDetached(["hyprctl", "dispatch", dispatcher, arg]);
+        }
     }
 }
 

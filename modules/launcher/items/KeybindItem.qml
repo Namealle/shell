@@ -1,15 +1,14 @@
 import QtQuick
 import Caelestia.Config
-import Quickshell.Io
 import qs.components
 import qs.services
-import qs.utils
 import qs.modules.launcher.services
+import Quickshell.Widgets
 
 Item {
     id: root
 
-    required property Keybinds.Keybinds modelData
+    required property Keybinds.Keybind modelData
     required property var list
 
     implicitHeight: Tokens.sizes.launcher.itemHeight
@@ -19,15 +18,8 @@ Item {
 
     StateLayer {
         radius: Tokens.rounding.normal
-        onClicked: runKeybind.running = true
+        onClicked: root.modelData?.onClicked(root.list)
     }
-
-    Process {
-        id: runKeybind
-
-        running: false
-        command: ["hyprctl", "dispatch", root.modelData.dispatcher, root.modelData.arg]
-}
 
     Item {
         anchors.fill: parent
@@ -35,11 +27,30 @@ Item {
         anchors.rightMargin: Tokens.padding.larger
         anchors.margins: Tokens.padding.smaller
 
-        MaterialIcon {
+        Loader {
             id: icon
-            text: "keyboard"
-            font.pointSize: Tokens.font.size.extraLarge
+            asynchronous: true
             anchors.verticalCenter: parent.verticalCenter
+            width: Tokens.sizes.launcher.itemHeight * 0.8
+            height: Tokens.sizes.launcher.itemHeight * 0.8
+            sourceComponent: root.modelData.icon.startsWith("image://") ? appIconComp : materialIconComp
+        }
+
+        Component {
+            id: appIconComp
+            IconImage {
+                asynchronous: true
+                source: root.modelData.icon
+                implicitSize: parent.height * 0.8
+            }
+        }
+
+        Component {
+            id: materialIconComp
+            MaterialIcon {
+                text: root.modelData.icon
+                font.pointSize: Tokens.font.size.extraLarge
+            }
         }
 
         Item {

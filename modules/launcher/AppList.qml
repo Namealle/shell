@@ -64,6 +64,8 @@ StyledListView {
     onStateChanged: {
         if (state === "scheme" || state === "variant")
             Schemes.reload();
+        if (state === "keybinds")
+            Keybinds.reload();
     }
 
     states: [
@@ -104,7 +106,7 @@ StyledListView {
 
             PropertyChanges {
                 model.values: Keybinds.query(search.text)
-                root.delegate: keybindsItem
+                root.delegate: keybindItem
             }
         },
         State {
@@ -254,9 +256,9 @@ StyledListView {
         }
     }
     Component {
-        id: keybindsItem
+        id: keybindItem
 
-        KeybindsItem {
+        KeybindItem {
             list: root
         }
     }
