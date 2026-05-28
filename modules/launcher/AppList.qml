@@ -36,13 +36,38 @@ StyledListView {
         color: Colours.palette.m3onSurface
         opacity: 0.08
 
-        y: root.currentItem?.y ?? 0
-        implicitWidth: root.width
-        implicitHeight: root.currentItem?.implicitHeight ?? 0
+        x: root.currentItem?.highlightOffsetX ?? 0
+        y: (root.currentItem?.y ?? 0) + (root.currentItem?.highlightOffsetY ?? 0)
+        
+        implicitWidth: root.currentItem?.highlightWidth ?? root.width
+        implicitHeight: root.currentItem?.highlightHeight ?? root.currentItem?.implicitHeight ?? 0
 
-        Behavior on y {
-            Anim {
-                type: Anim.DefaultSpatial
+        Behavior on x { Anim { type: Anim.DefaultSpatial } }
+        Behavior on y { Anim { type: Anim.DefaultSpatial } }
+        Behavior on implicitWidth { Anim { type: Anim.DefaultSpatial } }
+        Behavior on implicitHeight { Anim { type: Anim.DefaultSpatial } }
+    }
+
+    function incrementCurrentIndex() {
+        if (currentItem && typeof currentItem.navigateDown === "function") {
+            if (currentItem.navigateDown()) return;
+        }
+        if (currentIndex < count - 1) {
+            currentIndex++;
+            if (currentItem && typeof currentItem.navigateIntoFromTop === "function") {
+                currentItem.navigateIntoFromTop();
+            }
+        }
+    }
+
+    function decrementCurrentIndex() {
+        if (currentItem && typeof currentItem.navigateUp === "function") {
+            if (currentItem.navigateUp()) return;
+        }
+        if (currentIndex > 0) {
+            currentIndex--;
+            if (currentItem && typeof currentItem.navigateIntoFromBottom === "function") {
+                currentItem.navigateIntoFromBottom();
             }
         }
     }

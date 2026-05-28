@@ -113,6 +113,8 @@ Singleton {
             lockactivegroup: "lock",
             movewindoworgroup: "open_with",
             setignoregrouplock: "no_encryption",
+            centerwindow: "center_focus_strong",
+            "darkwindow:shadeactive": "contrast",
         })
 
     // Checks if a name matches an icon config. Icon configs can have the following keys:
@@ -304,10 +306,24 @@ Singleton {
             const isUp = /(\s|^)(u\b|up)/.test(arg);
             const isDown = /(\s|^)(d\b|down)/.test(arg);
 
-            if (dispatcher === "workspace" || dispatcher === "movetoworkspace" || dispatcher === "movetoworkspacesilent") {
+            const isWorkspace = dispatcher === "workspace" || (dispatcher === "exec" && arg.includes("workspace") && !arg.includes("movetoworkspace"));
+            const isMoveToWorkspace = dispatcher === "movetoworkspace" || dispatcher === "movetoworkspacesilent" || (dispatcher === "exec" && arg.includes("movetoworkspace"));
+            const isGroupHeader = /\d+-\d+/.test(arg);
+
+            if (isWorkspace) {
                 if (isBack)    return "arrow_back";
                 if (isForward) return "arrow_forward";
-                return "workspaces";
+                if (arg.includes("special")) return "star";
+                if (isGroupHeader) return "grid_view";
+                return "desktop_windows";
+            }
+
+            if (isMoveToWorkspace) {
+                if (isBack)    return "arrow_back";
+                if (isForward) return "arrow_forward";
+                if (arg.includes("special")) return "star_half";
+                if (isGroupHeader) return "open_in_new";
+                return "arrow_outward";
             }
 
             if (dispatcher === "movefocus" || dispatcher === "movewindow") {
@@ -341,6 +357,12 @@ Singleton {
 
             if (dispatcher === "changegroupactive")
                 return arg.includes("b") ? "arrow_back" : "arrow_forward";
+
+            if (dispatcher === "mouse") {
+                if (arg.includes("move")) return "open_with";
+                if (arg.includes("resize")) return "aspect_ratio";
+                return "mouse";
+            }
 
             return keybindIcons[dispatcher] ?? keybindIcons.fallback;
         }
@@ -377,6 +399,13 @@ Singleton {
             ["colour",         "colorize"],
             ["color",          "colorize"],
             ["power",          "power_settings_new"],
+            ["wpctl",          "volume_up"],
+            ["mute",           "volume_off"],
+            ["audio",          "volume_up"],
+            ["mirror",         "sync_alt"],
+            ["kill",           "dangerous"],
+            ["cliphist",       "content_paste"],
+            ["ydotool",        "keyboard"],
         ];
 
         for (const [keyword, icon] of keywords)
@@ -386,7 +415,16 @@ Singleton {
         if (arg.includes(" -- ")) {
             const appName = arg.split(" -- ")[1].trim().split(/\s+/)[0];
             if (appName) {
-                const entry = DesktopEntries.heuristicLookup(appName);
+                let entry = DesktopEntries.heuristicLookup(appName);
+                if (!entry) {
+                    // Try stripping common suffixes (e.g. zen-browser -> zen)
+                    entry = DesktopEntries.heuristicLookup(appName.replace(/-browser$|-bin$|-desktop$/, ""));
+                }
+                if (!entry && appName.includes("-")) {
+                    // Last resort: try just the first part
+                    entry = DesktopEntries.heuristicLookup(appName.split("-")[0]);
+                }
+
                 if (entry?.icon) {
                     const path = Quickshell.iconPath(entry.icon, "");
                     if (path) return path;
@@ -395,6 +433,9 @@ Singleton {
             }
             return keybindIcons.fallback;
         }
+
+        if (/\.(sh|bash|py|js|rb)(\s|$)/.test(arg) || arg.includes("/scripts/"))
+            return "terminal";
 
         if (!/[|;&]/.test(arg)) {
             const skipList = ["bash","sh","fish","zsh","python","python3","node",

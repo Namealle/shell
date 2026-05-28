@@ -12,7 +12,7 @@ import "modules/lock"
 import Quickshell
 
 ShellRoot {
-    settings.watchFiles: false
+    settings.watchFiles: true
 
     Background {}
     Drawers {}
