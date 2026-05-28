@@ -195,6 +195,7 @@ StyledRect {
                     radius: Tokens.rounding.full
 
                     StateLayer {
+                        id: clickLayer
                         color: root.urgency === NotificationUrgency.Critical ? Colours.palette.m3onError : Colours.palette.m3onSurface
                         onClicked: root.toggleExpand(!root.expanded)
                     }
@@ -215,24 +216,13 @@ StyledRect {
                             font.pointSize: Tokens.font.size.small
                         }
 
-                        MaterialIcon {
+                        StyledChevron {
                             Layout.rightMargin: -Tokens.padding.small / 2
-                            text: "expand_more"
-                            color: root.urgency === NotificationUrgency.Critical ? Colours.palette.m3onError : Colours.palette.m3onSurface
-                            rotation: root.expanded ? 180 : 0
+                            expanded: root.expanded
+                            pressed: clickLayer.pressed
+                            iconColor: root.urgency === NotificationUrgency.Critical ? Colours.palette.m3onError : Colours.palette.m3onSurface
+                            activeColor: iconColor
                             Layout.topMargin: root.expanded ? -Math.floor(Tokens.padding.smaller / 2) : 0
-
-                            Behavior on rotation {
-                                Anim {
-                                    type: Anim.DefaultSpatial
-                                }
-                            }
-
-                            Behavior on Layout.topMargin {
-                                Anim {
-                                    type: Anim.DefaultSpatial
-                                }
-                            }
                         }
                     }
                 }

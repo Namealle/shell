@@ -37,19 +37,27 @@ ColumnLayout {
             implicitHeight: moveToWsIcon.implicitHeight + Tokens.padding.small
 
             StateLayer {
+                id: clickLayer
                 color: Colours.palette.m3onPrimary
                 onClicked: root.moveToWsExpanded = !root.moveToWsExpanded
             }
 
-            MaterialIcon {
+            StyledChevron {
                 id: moveToWsIcon
 
                 anchors.centerIn: parent
 
-                animate: true
-                text: root.moveToWsExpanded ? "expand_more" : "keyboard_arrow_right"
-                color: Colours.palette.m3onPrimary
-                font.pointSize: Tokens.font.size.large
+                expanded: false // Keep it 'v' shaped
+                pressed: clickLayer.pressed
+                rotation: root.moveToWsExpanded ? 0 : -90
+                iconColor: Colours.palette.m3onPrimary
+                activeColor: iconColor
+
+                Behavior on rotation {
+                    Anim {
+                        type: Anim.DefaultSpatial
+                    }
+                }
             }
         }
     }

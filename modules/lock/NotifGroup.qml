@@ -178,6 +178,7 @@ StyledRect {
                     Layout.preferredWidth: root.notifs.length > Config.notifs.groupPreviewNum ? implicitWidth : 0
 
                     StateLayer {
+                        id: clickLayer
                         color: root.urgency === "critical" ? Colours.palette.m3onError : Colours.palette.m3onSurface
                         onClicked: root.expanded = !root.expanded
                     }
@@ -198,11 +199,12 @@ StyledRect {
                             font.pointSize: Tokens.font.size.small
                         }
 
-                        MaterialIcon {
+                        StyledChevron {
                             Layout.rightMargin: -Tokens.padding.small / 2
-                            animate: true
-                            text: root.expanded ? "expand_less" : "expand_more"
-                            color: root.urgency === "critical" ? Colours.palette.m3onError : Colours.palette.m3onSurface
+                            expanded: root.expanded
+                            pressed: clickLayer.pressed
+                            iconColor: root.urgency === "critical" ? Colours.palette.m3onError : Colours.palette.m3onSurface
+                            activeColor: iconColor
                         }
                     }
 

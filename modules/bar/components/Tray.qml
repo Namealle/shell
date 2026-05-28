@@ -93,19 +93,14 @@ StyledRect {
             implicitWidth: expandIconInner.implicitWidth
             implicitHeight: expandIconInner.implicitHeight - Tokens.padding.small * 2
 
-            MaterialIcon {
+            StyledChevron {
                 id: expandIconInner
 
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: Config.bar.tray.background ? Tokens.padding.small : -Tokens.padding.small
-                text: "expand_less"
-                font.pointSize: Tokens.font.size.large
-                rotation: root.expanded ? 180 : 0
-
-                Behavior on rotation {
-                    Anim {}
-                }
+                size: Tokens.font.size.large
+                expanded: !root.expanded
 
                 Behavior on anchors.bottomMargin {
                     Anim {}

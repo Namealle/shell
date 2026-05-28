@@ -164,63 +164,14 @@ Item {
                 }
             }
 
-            Shape {
+            StyledChevron {
                 id: chevron
                 visible: root.modelData.isGroup === true
+                expanded: root.expanded
+                pressed: clickLayer.pressed
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                width: Tokens.font.size.large
-                height: width
-                preferredRendererType: Shape.CurveRenderer
-                asynchronous: true
-
-                property real midY: {
-                    if (clickLayer.pressed) return height * 0.5;
-                    if (root.expanded) return height * 0.30;
-                    return height * 0.70;
-                }
-                property real sideY: {
-                    if (clickLayer.pressed) return height * 0.5;
-                    if (root.expanded) return height * 0.70;
-                    return height * 0.30;
-                }
-
-                ShapePath {
-                    strokeWidth: chevron.width * 0.18
-                    strokeColor: root.expanded ? Colours.palette.m3primary : Colours.palette.m3outline
-                    fillColor: "transparent"
-                    capStyle: ShapePath.RoundCap
-                    joinStyle: ShapePath.RoundJoin
-
-                    startX: chevron.width * 0.15
-                    startY: chevron.sideY
-
-                    PathLine {
-                        x: chevron.width * 0.5
-                        y: chevron.midY
-                    }
-                    PathLine {
-                        x: chevron.width * 0.85
-                        y: chevron.sideY
-                    }
-
-                    Behavior on strokeColor {
-                        CAnim {}
-                    }
-                }
-
-                Behavior on midY {
-                    Anim {
-                        easing: Tokens.anim.standard
-                        duration: Tokens.anim.durations.normal
-                    }
-                }
-                Behavior on sideY {
-                    Anim {
-                        easing: Tokens.anim.standard
-                        duration: Tokens.anim.durations.normal
-                    }
-                }
+                size: Tokens.font.size.large
             }
         }
     }

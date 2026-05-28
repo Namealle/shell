@@ -46,21 +46,15 @@ ColumnLayout {
                 Layout.fillWidth: true
             }
 
-            MaterialIcon {
-                text: "expand_more"
-                rotation: root.expanded ? 180 : 0
-                color: Colours.palette.m3onSurfaceVariant
-                font.pointSize: Tokens.font.size.normal
-
-                Behavior on rotation {
-                    Anim {
-                        type: Anim.StandardSmall
-                    }
-                }
+            StyledChevron {
+                expanded: root.expanded
+                pressed: clickLayer.pressed
+                iconColor: Colours.palette.m3onSurfaceVariant
             }
         }
 
         StateLayer {
+            id: clickLayer
             anchors.fill: parent
             color: Colours.palette.m3onSurface
             radius: Tokens.rounding.normal

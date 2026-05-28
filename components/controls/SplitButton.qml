@@ -113,21 +113,18 @@ Row {
             onClicked: root.expanded = !root.expanded
         }
 
-        MaterialIcon {
+        StyledChevron {
             id: expandIcon
 
             anchors.centerIn: parent
             anchors.horizontalCenterOffset: root.expanded ? 0 : -Math.floor(root.verticalPadding / 4)
 
-            text: "expand_more"
-            color: root.disabled ? root.disabledTextColour : root.textColour
-            rotation: root.expanded ? 180 : 0
+            expanded: root.expanded
+            pressed: expandStateLayer.pressed
+            iconColor: root.disabled ? root.disabledTextColour : root.textColour
+            activeColor: iconColor
 
             Behavior on anchors.horizontalCenterOffset {
-                Anim {}
-            }
-
-            Behavior on rotation {
                 Anim {}
             }
         }

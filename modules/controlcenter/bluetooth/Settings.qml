@@ -131,6 +131,7 @@ ColumnLayout {
                     implicitHeight: adapterPicker.implicitHeight + Tokens.padding.smaller * 2
 
                     StateLayer {
+                        id: clickLayer
                         onClicked: {
                             adapterPickerButton.expanded = !adapterPickerButton.expanded;
                         }
@@ -149,11 +150,14 @@ ColumnLayout {
 
                         StyledText {
                             Layout.leftMargin: Tokens.padding.small
+                            Layout.fillWidth: true
                             text: Bluetooth.defaultAdapter?.name ?? qsTr("None")
                         }
 
-                        MaterialIcon {
-                            text: "expand_more"
+                        StyledChevron {
+                            Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+                            expanded: adapterPickerButton.expanded
+                            pressed: clickLayer.pressed
                         }
                     }
 

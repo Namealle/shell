@@ -358,19 +358,21 @@ StyledRect {
                 implicitHeight: expandIcon.height
 
                 StateLayer {
+                    id: expandStateLayer
                     radius: Tokens.rounding.full
                     color: root.modelData.urgency === NotificationUrgency.Critical ? Colours.palette.m3onSecondaryContainer : Colours.palette.m3onSurface
                     onClicked: root.expanded = !root.expanded
                 }
 
-                MaterialIcon {
+                StyledChevron {
                     id: expandIcon
 
                     anchors.centerIn: parent
 
-                    animate: true
-                    text: root.expanded ? "expand_less" : "expand_more"
-                    font.pointSize: Tokens.font.size.normal
+                    expanded: root.expanded
+                    pressed: expandStateLayer.pressed
+                    iconColor: root.modelData.urgency === NotificationUrgency.Critical ? Colours.palette.m3onSecondaryContainer : Colours.palette.m3onSurface
+                    activeColor: iconColor
                 }
             }
 
