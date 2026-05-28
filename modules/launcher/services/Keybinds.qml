@@ -74,6 +74,7 @@ Searcher {
                         combo: submapStr + baseCombo,
                         dispatcher: bind.dispatcher,
                         arg: bind.arg,
+                        icon: Icons.getKeybindIcon(bind.dispatcher, bind.arg),
                         has_description: bind.has_description,
                         description: bind.description,
                     };
@@ -130,7 +131,85 @@ Searcher {
                     }
                 });
                 
-                keybinds.model = finalModel;
+                // ── Directional grouping pass ──────────────────────────────────
+                // Groups binds that are identical except for l/r/u/d direction.
+                const dirSymbols = { l: "←", left: "←", r: "→", right: "→", u: "↑", up: "↑", d: "↓", down: "↓" };
+                const dirOrder   = ["l","left","r","right","u","up","d","down"];
+                const dirSet     = new Set(Object.keys(dirSymbols));
+
+                function argDirection(arg) {
+                    const last = arg.trim().split(/\s+/).pop().toLowerCase();
+                    return dirSet.has(last) ? last : null;
+                }
+                function comboDirection(combo) {
+                    const last = combo.trim().split(/\s+/).pop().toLowerCase();
+                    return dirSet.has(last) ? last : null;
+                }
+                function stripLast(str) {
+                    const parts = str.trim().split(/\s+/);
+                    parts.pop();
+                    return parts.join(" ");
+                }
+
+                const dirGroupMap = {};
+                finalModel.forEach(item => {
+                    if (item.isGroup) return;
+                    const aDir = argDirection(item.arg);
+                    const cDir = comboDirection(item.combo);
+                    if (!aDir && !cDir) return;
+                    const argBase   = aDir ? stripLast(item.arg)   : item.arg;
+                    const comboBase = cDir ? stripLast(item.combo) : item.combo;
+                    const gid = `dir||${item.dispatcher}||${comboBase}||${argBase}`;
+                    if (!dirGroupMap[gid]) dirGroupMap[gid] = { items: [], argBase, comboBase, dispatcher: item.dispatcher };
+                    dirGroupMap[gid].items.push(item);
+                });
+
+                const addedDirGroups = new Set();
+                const finalModel2 = [];
+                finalModel.forEach(item => {
+                    if (item.isGroup) { finalModel2.push(item); return; }
+                    const aDir = argDirection(item.arg);
+                    const cDir = comboDirection(item.combo);
+                    if (!aDir && !cDir) { finalModel2.push(item); return; }
+                    const argBase   = aDir ? stripLast(item.arg)   : item.arg;
+                    const comboBase = cDir ? stripLast(item.combo) : item.combo;
+                    const gid = `dir||${item.dispatcher}||${comboBase}||${argBase}`;
+                    const group = dirGroupMap[gid];
+                    if (group.items.length < 2) { finalModel2.push(item); return; }
+                    if (addedDirGroups.has(gid)) return;
+                    addedDirGroups.add(gid);
+                    // Sort sub-items: ← → ↑ ↓
+                    const sorted = group.items.slice().sort((a, b) => {
+                        const da = argDirection(a.arg) || comboDirection(a.combo) || "";
+                        const db = argDirection(b.arg) || comboDirection(b.combo) || "";
+                        return dirOrder.indexOf(da) - dirOrder.indexOf(db);
+                    });
+                    // Determine if this group uses arrow words or l/r/u/d chars
+                    const usesWords = group.items.some(i => {
+                        const l = (i.combo || "").toLowerCase();
+                        return l.includes("left") || l.includes("right") || l.includes("up") || l.includes("down");
+                    });
+                    
+                    // Clean up the base combo (e.g. "Super +" -> "Super")
+                    let cleanCombo = comboBase.trim();
+                    if (cleanCombo.endsWith("+")) {
+                        cleanCombo = cleanCombo.substring(0, cleanCombo.length - 1).trim();
+                    }
+                    
+                    const finalCombo = `${cleanCombo} + ${usesWords ? "Arrows" : "L/R/U/D"}`;
+
+                    finalModel2.push({
+                        isGroup: true,
+                        items: sorted,
+                        combo: finalCombo,
+                        dispatcher: item.dispatcher,
+                        arg: argBase,
+                        has_description: false,
+                        description: "",
+                    });
+                });
+
+                keybinds.model = finalModel2;
             }
         }
     }

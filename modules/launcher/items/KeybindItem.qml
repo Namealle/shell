@@ -132,10 +132,23 @@ Item {
                 implicitWidth: parent.width - icon.width - (root.modelData.isGroup ? chevron.width + Tokens.spacing.normal : 0)
                 implicitHeight: name.implicitHeight + desc.implicitHeight
 
-                StyledText {
+                Row {
                     id: name
-                    text: root.modelData.combo
-                    font.pointSize: Tokens.font.size.normal
+                    spacing: Tokens.spacing.small
+                    
+                    StyledText {
+                        text: root.modelData.combo
+                        font.pointSize: Tokens.font.size.normal
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    
+                    MaterialIcon {
+                        visible: root.modelData.comboIcon !== undefined
+                        text: root.modelData.comboIcon !== undefined ? root.modelData.comboIcon : ""
+                        font.pointSize: Tokens.font.size.normal
+                        color: Colours.palette.m3onSurface
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
                 }
 
                 StyledText {
@@ -196,7 +209,7 @@ Item {
                     }
                 }
 
-                readonly property string iconStr: Icons.getKeybindIcon(modelData.dispatcher, modelData.arg)
+                readonly property string iconStr: modelData.icon ?? ""
 
                 Item {
                     anchors.fill: parent

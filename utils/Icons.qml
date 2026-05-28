@@ -96,7 +96,7 @@ Singleton {
             moveactive: "drag_pan",
             swapwindow: "swap_horiz",
             focuswindow: "flip_to_front",
-            movefocus: "arrow_forward",
+            movefocus: "open_with",
             cyclenext: "navigate_next",
             cycleprev: "navigate_before",
             resizeactive: "aspect_ratio",
@@ -306,8 +306,8 @@ Singleton {
             const isUp = /(\s|^)(u\b|up)/.test(arg);
             const isDown = /(\s|^)(d\b|down)/.test(arg);
 
-            const isWorkspace = dispatcher === "workspace" || (dispatcher === "exec" && arg.includes("workspace") && !arg.includes("movetoworkspace"));
-            const isMoveToWorkspace = dispatcher === "movetoworkspace" || dispatcher === "movetoworkspacesilent" || (dispatcher === "exec" && arg.includes("movetoworkspace"));
+            const isWorkspace = dispatcher === "workspace";
+            const isMoveToWorkspace = dispatcher === "movetoworkspace" || dispatcher === "movetoworkspacesilent";
             const isGroupHeader = /\d+-\d+/.test(arg);
 
             if (isWorkspace) {
@@ -367,9 +367,16 @@ Singleton {
             return keybindIcons[dispatcher] ?? keybindIcons.fallback;
         }
 
+        // exec dispatcher — check for workspace/movetoworkspace in arg first
+        const execIsGroupHeader = /\d+-\d+/.test(arg);
+        if (/\bmovetoworkspace\b/.test(arg)) {
+            return execIsGroupHeader ? "open_in_new" : "arrow_outward";
+        }
+        if (/\bworkspace\b/.test(arg)) {
+            return execIsGroupHeader ? "grid_view" : "desktop_windows";
+        }
+
         const keywords = [
-            ["workspace",      "workspaces"],
-            ["movetoworkspace","arrow_circle_right"],
             ["screenshot",     "screenshot_monitor"],
             ["record",         "screen_record"],
             ["clipboard",      "content_paste"],
@@ -437,16 +444,43 @@ Singleton {
         if (/\.(sh|bash|py|js|rb)(\s|$)/.test(arg) || arg.includes("/scripts/"))
             return "terminal";
 
-        if (!/[|;&]/.test(arg)) {
-            const skipList = ["bash","sh","fish","zsh","python","python3","node",
-                "pkill","kill","killall","notify-send","grim","slurp","wl-copy",
-                "wl-paste","cliphist","ydotool","xdotool","sleep","echo","cat",
-                "hyprctl","wpctl","systemctl","loginctl","pactl","qs","app2unit",
-                "caelestia","hyprpicker"];
+        // Extract the actual command, ignoring cleanup prefixes like 'pkill fuzzel ||'
+        const segments = arg.split(/\s*(?:\|\||&&|[|;])\s*/).map(s => s.trim()).filter(Boolean);
+        const killPrefixes = /^(pkill|killall|kill)\b/;
+        const meaningful = segments.filter(s => !killPrefixes.test(s));
+        const primaryCommand = (meaningful.length > 0 ? meaningful : segments).pop();
 
-            const binary = arg.trim().split(/\s+/)[0].split("/").pop();
-            if (binary && !skipList.includes(binary)) {
-                const entry = DesktopEntries.heuristicLookup(binary);
+        if (primaryCommand) {
+            const skipList = ["bash","sh","fish","zsh","python","python3","node",
+                "sleep","echo","cat","hyprctl","wpctl","systemctl","loginctl","pactl",
+                "qs","app2unit","caelestia"];
+
+            const tokens = primaryCommand.split(/\s+/);
+            let targetBinary = null;
+
+            // Find the first token that isn't a known wrapper
+            for (const t of tokens) {
+                if (t.startsWith("-")) continue;
+                const bin = t.split("/").pop();
+                if (!skipList.includes(bin)) {
+                    targetBinary = bin;
+                    break;
+                }
+            }
+
+            if (targetBinary) {
+                // First check if this extracted binary matches our keyword list
+                for (const [keyword, icon] of keywords) {
+                    if (targetBinary.includes(keyword)) return icon;
+                }
+
+                // If not, try to look it up as a desktop application
+                let entry = DesktopEntries.heuristicLookup(targetBinary);
+                if (!entry) entry = DesktopEntries.heuristicLookup(targetBinary.replace(/-browser$|-bin$|-desktop$/, ""));
+                if (!entry && targetBinary.includes("-")) {
+                    entry = DesktopEntries.heuristicLookup(targetBinary.split("-")[0]);
+                }
+
                 if (entry?.icon) {
                     const path = Quickshell.iconPath(entry.icon, "");
                     if (path) return path;
