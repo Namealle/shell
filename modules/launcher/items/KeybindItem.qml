@@ -176,13 +176,13 @@ Item {
 
                 property real midY: {
                     if (clickLayer.pressed) return height * 0.5;
-                    if (root.expanded) return height * 0.35;
-                    return height * 0.65;
+                    if (root.expanded) return height * 0.30;
+                    return height * 0.70;
                 }
                 property real sideY: {
                     if (clickLayer.pressed) return height * 0.5;
-                    if (root.expanded) return height * 0.65;
-                    return height * 0.35;
+                    if (root.expanded) return height * 0.70;
+                    return height * 0.30;
                 }
 
                 ShapePath {

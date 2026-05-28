@@ -80,6 +80,15 @@ Item {
 
             placeholderText: qsTr("Type \"%1\" for commands").arg(GlobalConfig.launcher.actionPrefix)
 
+            Keys.onReturnPressed: event => {
+                if (event.isAutoRepeat) event.accepted = true;
+                else event.accepted = false;
+            }
+            Keys.onEnterPressed: event => {
+                if (event.isAutoRepeat) event.accepted = true;
+                else event.accepted = false;
+            }
+
             onAccepted: {
                 const currentItem = list.currentList?.currentItem;
                 if (currentItem) {
