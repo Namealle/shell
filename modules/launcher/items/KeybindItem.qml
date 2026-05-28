@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Shapes
 import Caelestia.Config
 import qs.components
 import qs.services
@@ -83,6 +84,7 @@ Item {
         anchors.right: parent.right
 
         StateLayer {
+            id: clickLayer
             radius: Tokens.rounding.normal
             onClicked: {
                 if (root.modelData.isGroup) {
@@ -162,14 +164,63 @@ Item {
                 }
             }
 
-            MaterialIcon {
+            Shape {
                 id: chevron
                 visible: root.modelData.isGroup === true
-                text: root.expanded ? "expand_less" : "expand_more"
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                font.pointSize: Tokens.font.size.large
-                color: Colours.palette.m3outline
+                width: Tokens.font.size.large
+                height: width
+                preferredRendererType: Shape.CurveRenderer
+                asynchronous: true
+
+                property real midY: {
+                    if (clickLayer.pressed) return height * 0.5;
+                    if (root.expanded) return height * 0.35;
+                    return height * 0.65;
+                }
+                property real sideY: {
+                    if (clickLayer.pressed) return height * 0.5;
+                    if (root.expanded) return height * 0.65;
+                    return height * 0.35;
+                }
+
+                ShapePath {
+                    strokeWidth: chevron.width * 0.18
+                    strokeColor: root.expanded ? Colours.palette.m3primary : Colours.palette.m3outline
+                    fillColor: "transparent"
+                    capStyle: ShapePath.RoundCap
+                    joinStyle: ShapePath.RoundJoin
+
+                    startX: chevron.width * 0.15
+                    startY: chevron.sideY
+
+                    PathLine {
+                        x: chevron.width * 0.5
+                        y: chevron.midY
+                    }
+                    PathLine {
+                        x: chevron.width * 0.85
+                        y: chevron.sideY
+                    }
+
+                    Behavior on strokeColor {
+                        CAnim {}
+                    }
+                }
+
+                Behavior on midY {
+                    Anim {
+                        easing: Tokens.anim.standard
+                        duration: Tokens.anim.durations.normal
+                    }
+                }
+                Behavior on sideY {
+                    Anim {
+                        easing: Tokens.anim.standard
+                        duration: Tokens.anim.durations.normal
+                    }
+                }
             }
         }
     }
