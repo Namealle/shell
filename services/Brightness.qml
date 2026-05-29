@@ -4,8 +4,10 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import Quickshell.Hyprland
 import Caelestia.Config
 import qs.components.misc
+import qs.services
 
 Singleton {
     id: root
@@ -200,6 +202,15 @@ Singleton {
         readonly property bool isAppleDisplay: root.appleDisplayPresent && modelData.model.startsWith("StudioDisplay")
         property real brightness
         property real queuedBrightness: NaN
+        property real brightnessMultiplier: 1.0
+        readonly property real multipliedBrightness: Math.max(0, Math.min(1, brightness * (AntiFlashbang.physicalEnabled ? brightnessMultiplier : 1.0)))
+        property bool ready: false
+
+        onMultipliedBrightnessChanged: {
+            if (monitor.ready) {
+                syncBrightness();
+            }
+        }
 
         readonly property Process initProc: Process {
             stdout: StdioCollector {
@@ -211,39 +222,76 @@ Singleton {
                         const [, , , cur, max] = text.split(" ");
                         monitor.brightness = parseInt(cur) / parseInt(max);
                     }
+                    monitor.ready = true;
                 }
             }
         }
 
         readonly property Timer timer: Timer {
+            id: timer
             interval: 500
             onTriggered: {
                 if (!isNaN(monitor.queuedBrightness)) {
-                    monitor.setBrightness(monitor.queuedBrightness);
+                    monitor.syncBrightness();
                     monitor.queuedBrightness = NaN;
+                }
+            }
+        }
+
+        readonly property Process writeProc: Process {
+            id: writeProc
+            onExited: (exitCode, exitStatus) => {
+                if (!isNaN(monitor.queuedBrightness)) {
+                    settleTimer.restart();
+                }
+            }
+        }
+
+        readonly property Timer settleTimer: Timer {
+            id: settleTimer
+            interval: 50
+            onTriggered: {
+                if (!isNaN(monitor.queuedBrightness)) {
+                    const nextVal = monitor.queuedBrightness;
+                    monitor.queuedBrightness = NaN;
+                    monitor.syncBrightness();
                 }
             }
         }
 
         function setBrightness(value: real): void {
             value = Math.max(0, Math.min(1, value));
+            brightness = value;
+        }
+
+        function setBrightnessMultiplier(value: real): void {
+            brightnessMultiplier = value;
+        }
+
+        function syncBrightness(): void {
+            const value = multipliedBrightness;
             const rounded = Math.round(value * 100);
-            if (Math.round(brightness * 100) === rounded)
-                return;
 
             if (isDdc && timer.running) {
                 queuedBrightness = value;
                 return;
             }
 
-            brightness = value;
+            if (writeProc.running) {
+                queuedBrightness = value;
+                return;
+            }
 
+            let cmd = [];
             if (isAppleDisplay)
-                Quickshell.execDetached(["asdbctl", "set", rounded]);
+                cmd = ["asdbctl", "set", rounded];
             else if (isDdc)
-                Quickshell.execDetached(["ddcutil", "-b", busNum, "setvcp", "10", rounded]);
+                cmd = ["ddcutil", "-b", busNum, "setvcp", "10", rounded];
             else
-                Quickshell.execDetached(["brightnessctl", "s", `${rounded}%`]);
+                cmd = ["brightnessctl", "s", `${rounded}%`];
+
+            writeProc.command = cmd;
+            writeProc.running = true;
 
             if (isDdc)
                 timer.restart();
@@ -262,5 +310,72 @@ Singleton {
 
         onBusNumChanged: initBrightness()
         Component.onCompleted: initBrightness()
+    }
+
+    // Anti-flashbang screenshot & physical brightness adjustment logic
+    property int workspaceAnimationDelay: 400
+    property int contentSwitchDelay: 250
+    property string screenshotDir: "/tmp/quickshell/brightness/antiflashbang"
+
+    function brightnessMultiplierForLightness(x: real): real {
+        // Normalizes ImageMagick lightness to [0, 1] multiplier using exponential curve
+        return (6.600135 + 216.360356 * Math.pow(Math.E, -0.0811129189 * x)) / 100.0;
+    }
+
+    Variants {
+        model: Quickshell.screens
+        Scope {
+            id: screenScope
+
+            required property var modelData
+            readonly property string screenName: modelData.name
+
+            Connections {
+                enabled: AntiFlashbang.physicalEnabled && Colours.currentLight === false // Dark mode only
+                target: Hyprland
+                function onRawEvent(event: HyprlandEvent): void {
+                    if (["activewindowv2"].includes(event.name)) {
+                        screenshotTimer.interval = root.contentSwitchDelay;
+                        screenshotTimer.restart();
+                    } else if (["workspacev2"].includes(event.name)) {
+                        screenshotTimer.interval = root.workspaceAnimationDelay;
+                        screenshotTimer.restart();
+                    }
+                }
+            }
+
+            Timer {
+                id: screenshotTimer
+                interval: 700
+                onTriggered: {
+                    screenshotProc.running = false;
+                    screenshotProc.running = true;
+                }
+            }
+
+            Process {
+                id: screenshotProc
+                command: ["bash", "-c",
+                    `mkdir -p '${root.screenshotDir}'`
+                    + ` && grim -o '${screenScope.screenName}' -`
+                    + ` | magick png:- -colorspace Gray -format "%[fx:mean*100]" info:`
+                ]
+                stdout: StdioCollector {
+                    id: lightnessCollector
+                    onStreamFinished: {
+                        const lightness = lightnessCollector.text.trim();
+                        if (lightness) {
+                            const newMultiplier = root.brightnessMultiplierForLightness(parseFloat(lightness));
+                            const monitor = root.getMonitorForScreen(screenScope.modelData);
+                            if (monitor) {
+                                if (Math.abs(newMultiplier - monitor.brightnessMultiplier) > 0.05) {
+                                    monitor.setBrightnessMultiplier(newMultiplier);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

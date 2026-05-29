@@ -166,7 +166,7 @@ Item {
                     id: sidebarLayout
 
                     readonly property var rootPane: sidebarFlickable.rootPane
-                    readonly property bool allSectionsExpanded: themeModeSection.expanded && colorVariantSection.expanded && colorSchemeSection.expanded && animationsSection.expanded && fontsSection.expanded && scalesSection.expanded && transparencySection.expanded && borderSection.expanded && backgroundSection.expanded
+                    readonly property bool allSectionsExpanded: themeModeSection.expanded && colorVariantSection.expanded && colorSchemeSection.expanded && animationsSection.expanded && fontsSection.expanded && scalesSection.expanded && transparencySection.expanded && borderSection.expanded && backgroundSection.expanded && antiFlashbangSection.expanded
 
                     anchors.left: parent.left
                     anchors.right: parent.right
@@ -200,6 +200,7 @@ Item {
                                 transparencySection.expanded = shouldExpand;
                                 borderSection.expanded = shouldExpand;
                                 backgroundSection.expanded = shouldExpand;
+                                antiFlashbangSection.expanded = shouldExpand;
                             }
                         }
                     }
@@ -250,6 +251,10 @@ Item {
                         id: backgroundSection
 
                         rootPane: sidebarFlickable.rootPane
+                    }
+
+                    AntiFlashbangSection {
+                        id: antiFlashbangSection
                     }
                 }
             }
