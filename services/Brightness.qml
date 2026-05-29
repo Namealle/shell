@@ -47,16 +47,45 @@ Singleton {
         return monitors.find(m => m.modelData.name === query); // qmllint disable missing-property
     }
 
-    function increaseBrightness(): void {
-        const monitor = getMonitor("active");
+    property int currentGamma: 100
+    readonly property int gammaLowerLimit: 10
+    readonly property int gammaStep: 10
+
+    function ensureHyprsunset(): void {
+        Quickshell.execDetached(["bash", "-c", "pidof hyprsunset || hyprsunset"]);
+    }
+
+    function applyGamma(): void {
+        if (currentGamma < 100) {
+            ensureHyprsunset();
+            Quickshell.execDetached(["hyprctl", "hyprsunset", "gamma", `${currentGamma}`]);
+        } else {
+            Quickshell.execDetached(["hyprctl", "hyprsunset", "identity"]);
+        }
+    }
+
+    function increaseBrightness(monitor = null): void {
+        // if gamma is not yet 100, first increase gamma
+        if (currentGamma < 100) {
+            currentGamma = Math.min(100, currentGamma + gammaStep);
+            applyGamma();
+            return;
+        }
+
+        monitor = monitor ?? getMonitor("active");
         if (monitor)
             monitor.setBrightness(monitor.brightness + GlobalConfig.services.brightnessIncrement);
     }
 
-    function decreaseBrightness(): void {
-        const monitor = getMonitor("active");
-        if (monitor)
+    function decreaseBrightness(monitor = null): void {
+        monitor = monitor ?? getMonitor("active");
+        if (monitor && monitor.brightness > 0) {
             monitor.setBrightness(monitor.brightness - GlobalConfig.services.brightnessIncrement);
+        } else {
+            // if brightness is 0, then decrease gamma
+            currentGamma = Math.max(gammaLowerLimit, currentGamma - gammaStep);
+            applyGamma();
+        }
     }
 
     onMonitorsChanged: {
