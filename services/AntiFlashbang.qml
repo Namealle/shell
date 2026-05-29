@@ -35,6 +35,8 @@ Singleton {
         } else {
             disableShader();
         }
+        // Persist to shell.json
+        GlobalConfig.services.antiFlashbangShader = shaderEnabled;
     }
 
     onPhysicalEnabledChanged: {
@@ -44,6 +46,8 @@ Singleton {
                 Brightness.monitors[i].setBrightnessMultiplier(1.0);
             }
         }
+        // Persist to shell.json
+        GlobalConfig.services.antiFlashbangPhysical = physicalEnabled;
     }
 
     PersistentProperties {
@@ -53,6 +57,19 @@ Singleton {
         property bool physicalEnabled: false
 
         reloadableId: "antiFlashbang"
+    }
+
+    // Restore persisted state from shell.json on startup
+    Component.onCompleted: {
+        const savedShader = GlobalConfig.services.antiFlashbangShader ?? false;
+        const savedPhysical = GlobalConfig.services.antiFlashbangPhysical ?? false;
+
+        if (savedShader) {
+            root.shaderEnabled = true;
+        }
+        if (savedPhysical) {
+            root.physicalEnabled = true;
+        }
     }
 
     Connections {

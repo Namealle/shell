@@ -16,6 +16,7 @@ singleton Recorder Recorder.qml
 singleton Screens Screens.qml
 singleton SystemUsage SystemUsage.qml
 singleton Time Time.qml
+singleton ToggleStateRestore ToggleStateRestore.qml
 singleton VPN VPN.qml
 singleton Visibilities Visibilities.qml
 singleton Wallpapers Wallpapers.qml

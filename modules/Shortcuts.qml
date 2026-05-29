@@ -12,6 +12,11 @@ Scope {
     property bool launcherInterrupted
     readonly property bool hasFullscreen: Hypr.focusedWorkspace?.toplevels.values.some(t => t.lastIpcObject.fullscreen > 1) ?? false
 
+    // Force-load ToggleStateRestore singleton to restore persisted toggle states on startup
+    Component.onCompleted: {
+        const _ = ToggleStateRestore;
+    }
+
     // qmllint disable unresolved-type
     CustomShortcut {
         // qmllint enable unresolved-type

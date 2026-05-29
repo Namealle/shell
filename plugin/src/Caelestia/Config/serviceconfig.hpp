@@ -35,6 +35,16 @@ class ServiceConfig : public ConfigObject {
     CONFIG_GLOBAL_PROPERTY(bool, showLyrics, false)
     CONFIG_GLOBAL_PROPERTY(QString, lyricsBackend, u"Auto"_s)
 
+    // Anti-Flashbang persistence (survives reboots via shell.json)
+    CONFIG_GLOBAL_PROPERTY(bool, antiFlashbangShader, false)
+    CONFIG_GLOBAL_PROPERTY(bool, antiFlashbangPhysical, false)
+
+    // Quick toggle state persistence (survives reboots via shell.json)
+    CONFIG_GLOBAL_PROPERTY(bool, bluetoothEnabled, true)
+    CONFIG_GLOBAL_PROPERTY(bool, micMuted, false)
+    CONFIG_GLOBAL_PROPERTY(bool, gameModeEnabled, false)
+    CONFIG_GLOBAL_PROPERTY(bool, dndEnabled, false)
+
 public:
     explicit ServiceConfig(QObject* parent = nullptr)
         : ConfigObject(parent) {}

@@ -92,8 +92,10 @@ StyledRect {
                         checked: Bluetooth.defaultAdapter?.enabled ?? false // qmllint disable unresolved-type
                         onClicked: {
                             const adapter = Bluetooth.defaultAdapter; // qmllint disable unresolved-type
-                            if (adapter)
+                            if (adapter) {
                                 adapter.enabled = !adapter.enabled;
+                                GlobalConfig.services.bluetoothEnabled = adapter.enabled;
+                            }
                         }
                     }
                 }
@@ -104,8 +106,10 @@ StyledRect {
                         checked: !Audio.sourceMuted
                         onClicked: {
                             const audio = Audio.source?.audio;
-                            if (audio)
+                            if (audio) {
                                 audio.muted = !audio.muted;
+                                GlobalConfig.services.micMuted = audio.muted;
+                            }
                         }
                     }
                 }
@@ -126,7 +130,10 @@ StyledRect {
                     delegate: Toggle {
                         icon: "gamepad"
                         checked: GameMode.enabled
-                        onClicked: GameMode.enabled = !GameMode.enabled
+                        onClicked: {
+                            GameMode.enabled = !GameMode.enabled;
+                            GlobalConfig.services.gameModeEnabled = GameMode.enabled;
+                        }
                     }
                 }
                 DelegateChoice {
@@ -134,7 +141,10 @@ StyledRect {
                     delegate: Toggle {
                         icon: "notifications_off"
                         checked: Notifs.dnd
-                        onClicked: Notifs.dnd = !Notifs.dnd
+                        onClicked: {
+                            Notifs.dnd = !Notifs.dnd;
+                            GlobalConfig.services.dndEnabled = Notifs.dnd;
+                        }
                     }
                 }
                 DelegateChoice {
