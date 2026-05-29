@@ -1,0 +1,13 @@
+#version 300 es
+precision highp float;
+
+in vec2 v_texcoord;
+uniform sampler2D tex;
+out vec4 fragColor;
+
+void main() {
+    vec4 pixColor = texture(tex, v_texcoord);
+    // MANAGED_OPACITY is replaced by AntiFlashbang.qml with the smoothed value
+    vec3 outColor = pixColor.rgb * (1.0 - MANAGED_OPACITY);
+    fragColor = vec4(outColor, pixColor.a);
+}
