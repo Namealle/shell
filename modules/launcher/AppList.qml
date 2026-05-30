@@ -75,6 +75,9 @@ StyledListView {
     state: {
         const text = search.text;
         const prefix = GlobalConfig.launcher.actionPrefix;
+        if (text.startsWith(";"))
+            return "emoji";
+
         if (text.startsWith(prefix)) {
             for (const action of ["calc", "scheme", "variant", "keybinds"])
                 if (text.startsWith(`${prefix}${action} `))
@@ -141,6 +144,19 @@ StyledListView {
                 model.values: M3Variants.query(search.text)
                 root.delegate: variantItem
             }
+        },
+        State {
+            name: "emoji"
+
+            PropertyChanges {
+                target: Emojis
+                currentSearch: Emojis.transformSearch(search.text)
+            }
+            PropertyChanges {
+                target: root
+                model: Emojis.model
+                delegate: emojiItem
+            }
         }
     ]
 
@@ -166,7 +182,7 @@ StyledListView {
             }
             PropertyAction {
                 targets: [model, root]
-                properties: "values,delegate"
+                properties: "values,delegate,model"
             }
             ParallelAnimation {
                 Anim {
@@ -291,6 +307,14 @@ StyledListView {
         id: variantItem
 
         VariantItem {
+            list: root
+        }
+    }
+    
+    Component {
+        id: emojiItem
+
+        EmojiItem {
             list: root
         }
     }
