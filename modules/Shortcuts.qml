@@ -125,6 +125,18 @@ Scope {
             }
         }
 
+        function openWithQuery(drawer: string, query: string): void {
+            if (drawer === "launcher") {
+                LauncherStateBridge.pendingQuery = query;
+                const visibilities = Visibilities.getForActive();
+                if (root.hasFullscreen)
+                    return;
+                visibilities.launcher = true;
+            } else {
+                console.warn(lc, `openWithQuery is only supported for the launcher drawer`);
+            }
+        }
+
         function list(): string {
             const visibilities = Visibilities.getForActive();
             return Object.keys(visibilities).filter(k => typeof visibilities[k] === "boolean").join("\n");

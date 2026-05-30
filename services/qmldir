@@ -6,6 +6,7 @@ singleton Colours Colours.qml
 singleton GameMode GameMode.qml
 singleton Hypr Hypr.qml
 singleton IdleInhibitor IdleInhibitor.qml
+singleton LauncherStateBridge LauncherStateBridge.qml
 singleton LyricsService LyricsService.qml
 singleton Network Network.qml
 singleton NetworkUsage NetworkUsage.qml

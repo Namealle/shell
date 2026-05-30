@@ -135,7 +135,13 @@ Item {
                 }
             }
 
-            Component.onCompleted: forceActiveFocus()
+            Component.onCompleted: {
+                if (LauncherStateBridge.pendingQuery !== "") {
+                    search.text = LauncherStateBridge.pendingQuery;
+                    LauncherStateBridge.pendingQuery = "";
+                }
+                forceActiveFocus();
+            }
 
             Connections {
                 function onLauncherChanged(): void {
