@@ -99,7 +99,7 @@ StyledRect {
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: Config.bar.tray.background ? Tokens.padding.small : -Tokens.padding.small
-                size: Tokens.font.size.large
+                // size: Tokens.font.size.large (inherited from default)
                 expanded: !root.expanded
 
                 Behavior on anchors.bottomMargin {

@@ -14,35 +14,56 @@ Singleton {
 
     Timer {
         id: restoreTimer
-        interval: 3000 // 3 seconds — enough for BlueZ and PipeWire to initialize
+        interval: 2000
         running: true
-        repeat: false
+        repeat: true
+        property int attempts: 0
+        property bool btRestored: false
+        property bool micRestored: false
 
         onTriggered: {
+            attempts++;
+
             // Restore Bluetooth state
-            const savedBt = GlobalConfig.services.bluetoothEnabled ?? true;
-            const adapter = Bluetooth.defaultAdapter; // qmllint disable unresolved-type
-            if (adapter && adapter.enabled !== savedBt) {
-                adapter.enabled = savedBt;
+            if (!btRestored) {
+                const adapter = Bluetooth.defaultAdapter; // qmllint disable unresolved-type
+                if (adapter) {
+                    const savedBt = GlobalConfig.services.bluetoothEnabled ?? true;
+                    if (adapter.enabled !== savedBt) {
+                        adapter.enabled = savedBt;
+                    }
+                    btRestored = true;
+                }
             }
 
             // Restore Mic mute state
-            const savedMicMuted = GlobalConfig.services.micMuted ?? false;
-            const audio = Audio.source?.audio;
-            if (audio && audio.muted !== savedMicMuted) {
-                audio.muted = savedMicMuted;
+            if (!micRestored) {
+                const audio = Audio.source?.audio;
+                if (audio) {
+                    const savedMicMuted = GlobalConfig.services.micMuted ?? false;
+                    if (audio.muted !== savedMicMuted) {
+                        audio.muted = savedMicMuted;
+                    }
+                    micRestored = true;
+                }
             }
 
-            // Restore Game Mode state
-            const savedGameMode = GlobalConfig.services.gameModeEnabled ?? false;
-            if (GameMode.enabled !== savedGameMode) {
-                GameMode.enabled = savedGameMode;
+            // GameMode and DND are fast, restore immediately on first tick
+            if (attempts === 1) {
+                const savedGameMode = GlobalConfig.services.gameModeEnabled ?? false;
+                if (GameMode.enabled !== savedGameMode) {
+                    GameMode.enabled = savedGameMode;
+                }
+
+                const savedDnd = GlobalConfig.services.dndEnabled ?? false;
+                if (Notifs.dnd !== savedDnd) {
+                    Notifs.dnd = savedDnd;
+                }
             }
 
-            // Restore DND state
-            const savedDnd = GlobalConfig.services.dndEnabled ?? false;
-            if (Notifs.dnd !== savedDnd) {
-                Notifs.dnd = savedDnd;
+            // Stop timer once slow daemons are initialized or we give up after 20 seconds
+            if ((btRestored && micRestored) || attempts >= 10) {
+                running = false;
             }
         }
     }

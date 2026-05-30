@@ -171,7 +171,7 @@ Item {
                 pressed: clickLayer.pressed
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                size: Tokens.font.size.large
+                // size: Tokens.font.size.large (inherited from default)
             }
         }
     }

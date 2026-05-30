@@ -12,7 +12,7 @@ Shape {
     property bool pressed: false
     property color iconColor: Colours.palette.m3onSurface
     property color activeColor: Colours.palette.m3primary
-    property real size: Tokens.font.size.large
+    property real size: Tokens.font.size.large * 0.8
     property real strokeThickness: size * 0.18
 
     width: size
