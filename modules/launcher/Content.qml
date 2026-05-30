@@ -97,6 +97,10 @@ Item {
                             Wallpapers.previewColourLock = true;
                         Wallpapers.setWallpaper(currentItem.modelData.path);
                         root.visibilities.launcher = false;
+                    } else if (text.startsWith(";")) {
+                        currentItem.trigger();
+                    } else if (text.startsWith(":")) {
+                        currentItem.trigger();
                     } else if (text.startsWith(GlobalConfig.launcher.actionPrefix)) {
                         if (text.startsWith(`${GlobalConfig.launcher.actionPrefix}calc `))
                             currentItem.onClicked();

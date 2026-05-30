@@ -77,6 +77,9 @@ StyledListView {
         const prefix = GlobalConfig.launcher.actionPrefix;
         if (text.startsWith(";"))
             return "emoji";
+            
+        if (text.startsWith(":"))
+            return "clipboard";
 
         if (text.startsWith(prefix)) {
             for (const action of ["calc", "scheme", "variant", "keybinds"])
@@ -94,6 +97,8 @@ StyledListView {
             Schemes.reload();
         if (state === "keybinds")
             Keybinds.reload();
+        if (state === "clipboard")
+            Clipboards.reload();
     }
 
     states: [
@@ -156,6 +161,19 @@ StyledListView {
                 target: root
                 model: Emojis.model
                 delegate: emojiItem
+            }
+        },
+        State {
+            name: "clipboard"
+
+            PropertyChanges {
+                target: Clipboards
+                currentSearch: Clipboards.transformSearch(search.text)
+            }
+            PropertyChanges {
+                target: root
+                model: Clipboards.model
+                delegate: clipboardItem
             }
         }
     ]
@@ -315,6 +333,14 @@ StyledListView {
         id: emojiItem
 
         EmojiItem {
+            list: root
+        }
+    }
+    
+    Component {
+        id: clipboardItem
+        
+        ClipboardItem {
             list: root
         }
     }

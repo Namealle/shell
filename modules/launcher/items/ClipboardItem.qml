@@ -8,8 +8,8 @@ Item {
     id: root
 
     required property var list
-    required property string character
-    required property string name
+    required property string clipId
+    required property string content
 
     implicitHeight: Tokens.sizes.launcher.itemHeight
 
@@ -18,7 +18,8 @@ Item {
 
     function trigger() {
         root.list.visibilities.launcher = false;
-        Quickshell.execDetached(["sh", "-c", `echo -n '${root.character}' | wl-copy`]);
+        // Decode the selected clip and pipe it to wl-copy
+        Quickshell.execDetached(["sh", "-c", `echo -n '${root.clipId}' | cliphist decode | wl-copy`]);
     }
 
     StateLayer {
@@ -32,10 +33,10 @@ Item {
         anchors.rightMargin: Tokens.padding.larger
         anchors.margins: Tokens.padding.smaller
 
-        StyledText {
-            id: characterDisplay
+        MaterialIcon {
+            id: icon
 
-            text: root.character
+            text: "content_paste"
             font.pointSize: Tokens.font.size.extraLarge
             color: Colours.palette.m3onSurface
 
@@ -44,26 +45,20 @@ Item {
         }
 
         Item {
-            anchors.left: characterDisplay.right
+            anchors.left: icon.right
             anchors.leftMargin: Tokens.spacing.normal
-            anchors.verticalCenter: characterDisplay.verticalCenter
+            anchors.verticalCenter: icon.verticalCenter
 
-            implicitWidth: parent.width - characterDisplay.width - Tokens.spacing.normal
-            implicitHeight: nameText.implicitHeight
+            implicitWidth: parent.width - icon.width - Tokens.spacing.normal
+            implicitHeight: contentText.implicitHeight
 
             StyledText {
-                id: nameText
+                id: contentText
 
-                // We strip out the aliases inside parenthesis for the UI display
-                text: {
-                    let fullName = root.name;
-                    let bracketIndex = fullName.indexOf("(");
-                    if (bracketIndex !== -1) {
-                        return fullName.substring(0, bracketIndex).trim();
-                    }
-                    return fullName;
-                }
+                text: root.content
                 font.pointSize: Tokens.font.size.normal
+                elide: Text.ElideRight
+                width: parent.width
             }
         }
     }
