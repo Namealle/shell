@@ -17,7 +17,7 @@ void ClipboardSourceModel::loadData() {
     m_entries.clear();
 
     QProcess process;
-    process.start("cliphist", QStringList() << "list");
+    process.start("cliphist", QStringList() << "-preview-width" << "999" << "list");
     if (!process.waitForFinished(1000)) {
         qWarning() << "ClipboardSourceModel: Failed to execute cliphist";
         endResetModel();

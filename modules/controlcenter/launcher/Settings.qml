@@ -164,6 +164,14 @@ ColumnLayout {
                 GlobalConfig.launcher.useFuzzy.keybinds = checked;
             }
         }
+
+        ToggleRow {
+            label: qsTr("Emojis")
+            checked: GlobalConfig.launcher.useFuzzy.emojis
+            toggle.onToggled: {
+                GlobalConfig.launcher.useFuzzy.emojis = checked;
+            }
+        }
     }
 
     SectionHeader {

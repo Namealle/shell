@@ -18,5 +18,6 @@ Item {
     EmojiModel {
         id: internalModel
         query: root.currentSearch
+        useFuzzy: GlobalConfig.launcher.useFuzzy.emojis
     }
 }

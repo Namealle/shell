@@ -9,22 +9,18 @@
 namespace caelestia::models {
 
 struct ClipboardEntry {
-    QString clipId; // Either the cliphist ID or a unique UUID for pinned items
+    QString clipId;
     QString content;
-    bool isImage = false;
-    bool isPinned = false;
 };
 
-// Internal model that holds the clipboard history and pins
+// Internal model that holds the clipboard history
 class ClipboardSourceModel : public QAbstractListModel {
     Q_OBJECT
 
 public:
     enum Roles {
         ClipIdRole = Qt::UserRole + 1,
-        ContentRole,
-        IsImageRole,
-        IsPinnedRole
+        ContentRole
     };
 
     explicit ClipboardSourceModel(QObject* parent = nullptr);
@@ -34,15 +30,8 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     void loadData();
-    void deleteItem(const QString& clipId);
-    void togglePin(const QString& clipId);
-    QString getImagePath(const QString& clipId);
 
 private:
-    void loadPins();
-    void savePins();
-    void ensureDirectories();
-
     QList<ClipboardEntry> m_entries;
 };
 
@@ -60,9 +49,6 @@ public:
     void setQuery(const QString& query);
 
     Q_INVOKABLE void reload();
-    Q_INVOKABLE void deleteItem(const QString& clipId);
-    Q_INVOKABLE void togglePin(const QString& clipId);
-    Q_INVOKABLE QString getImagePath(const QString& clipId);
 
 protected:
     bool filterAcceptsRow(int source_row, const QModelIndex& source_parent) const override;

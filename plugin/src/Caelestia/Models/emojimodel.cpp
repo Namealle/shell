@@ -84,13 +84,40 @@ void EmojiModel::setQuery(const QString& query) {
     setFilterFixedString(m_query);
 }
 
+bool EmojiModel::useFuzzy() const {
+    return m_useFuzzy;
+}
+
+void EmojiModel::setUseFuzzy(bool useFuzzy) {
+    if (m_useFuzzy == useFuzzy) return;
+
+    m_useFuzzy = useFuzzy;
+    emit useFuzzyChanged();
+    invalidateFilter();
+}
+
 bool EmojiModel::filterAcceptsRow(int source_row, const QModelIndex& source_parent) const {
     if (m_query.isEmpty()) return true;
 
     QModelIndex index = m_sourceModel->index(source_row, 0, source_parent);
     QString name = m_sourceModel->data(index, EmojiSourceModel::NameRole).toString();
     
-    return name.contains(m_query, Qt::CaseInsensitive);
+    if (!m_useFuzzy) {
+        return name.contains(m_query, Qt::CaseInsensitive);
+    }
+    
+    // Simple fuzzy match algorithm (all characters of query must exist in text in order)
+    int qIndex = 0;
+    int tIndex = 0;
+    
+    while (qIndex < m_query.length() && tIndex < name.length()) {
+        if (m_query.at(qIndex).toLower() == name.at(tIndex).toLower()) {
+            qIndex++;
+        }
+        tIndex++;
+    }
+    
+    return qIndex == m_query.length();
 }
 
 } // namespace caelestia::models

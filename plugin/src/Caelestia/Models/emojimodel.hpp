@@ -41,6 +41,7 @@ class EmojiModel : public QSortFilterProxyModel {
     QML_ELEMENT
 
     Q_PROPERTY(QString query READ query WRITE setQuery NOTIFY queryChanged)
+    Q_PROPERTY(bool useFuzzy READ useFuzzy WRITE setUseFuzzy NOTIFY useFuzzyChanged)
 
 public:
     explicit EmojiModel(QObject* parent = nullptr);
@@ -48,15 +49,20 @@ public:
     QString query() const;
     void setQuery(const QString& query);
 
+    bool useFuzzy() const;
+    void setUseFuzzy(bool useFuzzy);
+
 protected:
     bool filterAcceptsRow(int source_row, const QModelIndex& source_parent) const override;
 
 signals:
     void queryChanged();
+    void useFuzzyChanged();
 
 private:
     EmojiSourceModel* m_sourceModel;
     QString m_query;
+    bool m_useFuzzy = false;
 };
 
 } // namespace caelestia::models
