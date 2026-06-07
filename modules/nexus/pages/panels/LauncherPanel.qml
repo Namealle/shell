@@ -138,10 +138,17 @@ PageBase {
 
         ToggleRow {
             Layout.fillWidth: true
-            last: true
             text: qsTr("Wallpapers")
             checked: GlobalConfig.launcher.useFuzzy.wallpapers
             onToggled: GlobalConfig.launcher.useFuzzy.wallpapers = checked
+        }
+
+        ToggleRow {
+            Layout.fillWidth: true
+            last: true
+            text: qsTr("Emojis")
+            checked: GlobalConfig.launcher.useFuzzy.emojis
+            onToggled: GlobalConfig.launcher.useFuzzy.emojis = checked
         }
     }
 }

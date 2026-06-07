@@ -89,9 +89,9 @@ Item {
                     if (!monitor)
                         return;
                     if (event.angleDelta.y > 0)
-                        monitor.setBrightness(monitor.brightness + GlobalConfig.services.brightnessIncrement);
+                        Brightness.increaseBrightness(monitor);
                     else if (event.angleDelta.y < 0)
-                        monitor.setBrightness(monitor.brightness - GlobalConfig.services.brightnessIncrement);
+                        Brightness.decreaseBrightness(monitor);
                 }
 
                 implicitWidth: Tokens.sizes.osd.sliderWidth
@@ -101,7 +101,7 @@ Item {
                     anchors.fill: parent
 
                     icon: `brightness_${(Math.round(value * 6) + 1)}`
-                    value: root.brightness
+                    value: (root.brightness === 0 && Brightness.currentGamma < 100) ? Brightness.currentGamma / 100 : root.brightness
                     onMoved: root.monitor?.setBrightness(value)
                 }
             }

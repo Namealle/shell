@@ -48,6 +48,11 @@ StyledListView {
     state: {
         const text = search.text;
         const prefix = GlobalConfig.launcher.actionPrefix;
+        if (text.startsWith(";"))
+            return "emoji";
+        if (text.startsWith(":"))
+            return "clipboard";
+
         if (text.startsWith(prefix)) {
             for (const action of ["calc", "scheme", "variant"])
                 if (text.startsWith(`${prefix}${action} `))
@@ -62,6 +67,8 @@ StyledListView {
     onStateChanged: {
         if (state === "scheme" || state === "variant")
             Schemes.reload();
+        if (state === "clipboard")
+            Clipboards.reload();
     }
 
     states: [
@@ -104,6 +111,32 @@ StyledListView {
                 model.values: M3Variants.query(search.text)
                 root.delegate: variantItem
             }
+        },
+        State {
+            name: "emoji"
+
+            PropertyChanges {
+                target: Emojis
+                currentSearch: Emojis.transformSearch(search.text)
+            }
+            PropertyChanges {
+                target: root
+                model: Emojis.model
+                delegate: emojiItem
+            }
+        },
+        State {
+            name: "clipboard"
+
+            PropertyChanges {
+                target: Clipboards
+                currentSearch: Clipboards.transformSearch(search.text)
+            }
+            PropertyChanges {
+                target: root
+                model: Clipboards.model
+                delegate: clipboardItem
+            }
         }
     ]
 
@@ -129,7 +162,7 @@ StyledListView {
             }
             PropertyAction {
                 targets: [model, root]
-                properties: "values,delegate"
+                properties: "values,delegate,model"
             }
             ParallelAnimation {
                 Anim {
@@ -253,6 +286,22 @@ StyledListView {
         id: variantItem
 
         VariantItem {
+            list: root
+        }
+    }
+
+    Component {
+        id: emojiItem
+
+        EmojiItem {
+            list: root
+        }
+    }
+
+    Component {
+        id: clipboardItem
+
+        ClipboardItem {
             list: root
         }
     }

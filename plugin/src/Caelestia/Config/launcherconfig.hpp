@@ -19,6 +19,7 @@ class LauncherUseFuzzy : public ConfigObject {
     CONFIG_GLOBAL_PROPERTY(bool, schemes, false)
     CONFIG_GLOBAL_PROPERTY(bool, variants, false)
     CONFIG_GLOBAL_PROPERTY(bool, wallpapers, false)
+    CONFIG_GLOBAL_PROPERTY(bool, emojis, true)
 
 public:
     explicit LauncherUseFuzzy(QObject* parent = nullptr)
