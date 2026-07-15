@@ -6,6 +6,8 @@ qml_module(caelestia-core
         requests.cpp
         toaster.cpp
         circularbuffer.cpp
+        searchcore.cpp
+        search.cpp
     LIBRARIES
         Qt::Gui
         Qt::Quick
