@@ -8,6 +8,7 @@ import Caelestia
 import qs.components
 import qs.components.effects
 import qs.services
+import qs.utils
 
 MouseArea {
     id: root
@@ -16,6 +17,11 @@ MouseArea {
     required property ShellScreen screen
 
     property bool onClient
+
+    // Which mouse button started the current capture (set in onPressed).
+    // Left  = silent: save + copy + notification.
+    // Right = save + copy, then open swappy.
+    property int captureButton: Qt.LeftButton
 
     property real realBorderWidth: onClient ? (Hypr.options["general:border_size"] ?? 1) : 2
     property real realRounding: onClient ? (Hypr.options["decoration:rounding"] ?? 0) : 0
@@ -75,10 +81,19 @@ MouseArea {
         const tmpfile = Qt.resolvedUrl(`/tmp/caelestia-picker-${Quickshell.processId}-${Date.now()}.png`);
         CUtils.saveItem(screencopy, tmpfile, Qt.rect(Math.ceil(rsx), Math.ceil(rsy), Math.floor(sw), Math.floor(sh)), path => {
             if (root.loader.clipboardOnly) {
+                // Unchanged: clipboard-only shortcuts.
                 Quickshell.execDetached(["sh", "-c", "wl-copy --type image/png < " + path]);
                 Quickshell.execDetached(["notify-send", "-a", "caelestia-cli", "-i", path, "Screenshot taken", "Screenshot copied to clipboard"]);
             } else {
-                Quickshell.execDetached(["swappy", "-f", path]);
+                // Applies to BOTH normal and freeze capture. Always save a dated
+                // PNG to the Screenshots folder and copy it to the clipboard.
+                // The ONLY difference between the mouse buttons:
+                //   Left  -> nothing more (silent save + copy).
+                //   Right -> also open swappy for annotation.
+                const dir = `${Paths.pictures}/Screenshots`;
+                const dest = `${dir}/screenshot-${Qt.formatDateTime(new Date(), "yyyyMMdd-HHmmss")}.png`;
+                const cmd = `mkdir -p '${dir}' && cp '${path}' '${dest}' && wl-copy --type image/png < '${dest}'`;
+                Quickshell.execDetached(["sh", "-c", root.captureButton === Qt.RightButton ? `${cmd} && swappy -f '${dest}'` : cmd]);
             }
             closeAnim.start();
         });
@@ -90,6 +105,7 @@ MouseArea {
     opacity: 0
     hoverEnabled: true
     cursorShape: Qt.CrossCursor
+    acceptedButtons: Qt.LeftButton | Qt.RightButton
 
     Component.onCompleted: {
         Hypr.extras.refreshOptions();
@@ -120,6 +136,7 @@ MouseArea {
     onPressed: event => {
         ssx = event.x;
         ssy = event.y;
+        captureButton = event.button;
     }
 
     onReleased: {
