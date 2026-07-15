@@ -7,6 +7,8 @@ qml_module(caelestia-core
         requests.cpp
         toaster.cpp
         imageanalyser.cpp
+        searchcore.cpp
+        search.cpp
     LIBRARIES
         Qt::Gui
         Qt::Quick
