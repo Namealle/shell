@@ -70,6 +70,8 @@ Item {
                     root.screenState.launcher = false;
                 } else if (text.startsWith(GlobalConfig.launcher.clipboardPrefix)) {
                     currentItem.modelData.onClicked(list.currentList);
+                } else if (text.startsWith(GlobalConfig.launcher.emojiPrefix)) {
+                    currentItem.activate();
                 } else if (text.startsWith(GlobalConfig.launcher.actionPrefix)) {
                     if (text.startsWith(`${GlobalConfig.launcher.actionPrefix}calc `))
                         currentItem.onClicked();
@@ -88,6 +90,16 @@ Item {
         Keys.onEscapePressed: root.screenState.launcher = false
 
         Keys.onPressed: event => {
+            // Del removes the highlighted clipboard entry (cliphist delete).
+            if (event.key === Qt.Key_Delete && text.startsWith(GlobalConfig.launcher.clipboardPrefix)) {
+                const item = list.currentList?.currentItem;
+                if (item?.modelData?.del) {
+                    item.modelData.del();
+                    event.accepted = true;
+                }
+                return;
+            }
+
             if (!GlobalConfig.launcher.vimKeybinds)
                 return;
 
