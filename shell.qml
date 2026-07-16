@@ -35,6 +35,7 @@ ShellRoot {
     }
 
     Shortcuts {}
+    UserShortcuts {}
     BatteryMonitor {}
     IdleMonitors {
         lock: lock
