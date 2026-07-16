@@ -1,5 +1,6 @@
 #pragma once
 
+#include <qlist.h>
 #include <qstringlist.h>
 
 // Pure, QObject-free matchers so they can be unit-tested with a plain g++
@@ -15,5 +16,10 @@ QStringList substring(const QStringList& items, const QString& query);
 // An item matches only if every character of `query` appears in it in order
 // (case-insensitive). Empty query returns the first `limit` items.
 QStringList fuzzy(const QStringList& items, const QString& query, int limit = 200);
+
+// Same ranking as fuzzy(), but returns the indices into `items` instead of the
+// strings — lets a caller map results back to parallel objects (e.g. the
+// clipboard entry QObjects) while preserving rank order.
+QList<int> fuzzyIndices(const QStringList& items, const QString& query, int limit = 200);
 
 } // namespace caelestia::search
