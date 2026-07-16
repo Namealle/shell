@@ -31,6 +31,8 @@ class LauncherConfig : public settings::ObjectNode {
     CONFIG_PROPERTY(int, maxWallpapers, 9)
     CONFIG_GLOBAL_PROPERTY(QString, specialPrefix, u"@"_s)
     CONFIG_GLOBAL_PROPERTY(QString, actionPrefix, u">"_s)
+    CONFIG_GLOBAL_PROPERTY(QString, clipboardPrefix, u";"_s)
+    CONFIG_GLOBAL_PROPERTY(QString, emojiPrefix, u":"_s)
     CONFIG_GLOBAL_PROPERTY(bool, enableDangerousActions, false)
     CONFIG_PROPERTY(int, dragThreshold, 50)
     CONFIG_GLOBAL_PROPERTY(bool, vimKeybinds, false)
