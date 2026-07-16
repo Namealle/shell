@@ -36,6 +36,7 @@ ShellRoot {
 
     ConfigToasts {}
     Shortcuts {}
+    UserShortcuts {}
     BatteryMonitor {}
     IdleMonitors {
         lock: lock
