@@ -57,12 +57,19 @@ int scoreMatch(const QString& item, const QString& query) {
 
 } // namespace
 
-QStringList fuzzy(const QStringList& items, const QString& query, int limit) {
+QList<int> fuzzyIndices(const QStringList& items, const QString& query, int limit) {
     if (limit < 0)
         limit = 0;
 
-    if (query.isEmpty())
-        return items.mid(0, limit);
+    QList<int> out;
+
+    if (query.isEmpty()) {
+        const int n = std::min<int>(limit, static_cast<int>(items.size()));
+        out.reserve(n);
+        for (int i = 0; i < n; ++i)
+            out << i;
+        return out;
+    }
 
     const QString q = query.toLower();
 
@@ -85,11 +92,19 @@ QStringList fuzzy(const QStringList& items, const QString& query, int limit) {
         return items[a.index].size() < items[b.index].size();
     });
 
-    QStringList out;
     const int n = std::min<int>(limit, static_cast<int>(scored.size()));
     out.reserve(n);
     for (int k = 0; k < n; ++k)
-        out << items[scored[k].index];
+        out << scored[k].index;
+    return out;
+}
+
+QStringList fuzzy(const QStringList& items, const QString& query, int limit) {
+    const QList<int> idx = fuzzyIndices(items, query, limit);
+    QStringList out;
+    out.reserve(idx.size());
+    for (const int i : idx)
+        out << items[i];
     return out;
 }
 

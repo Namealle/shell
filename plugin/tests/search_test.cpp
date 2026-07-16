@@ -51,6 +51,16 @@ int main() {
     // fuzzy: empty query returns the first `limit` items
     CHECK(fuzzy({"a", "b", "c"}, "", 2) == QStringList({"a", "b"}));
 
+    // fuzzyIndices: rank order as indices into the input (for mapping back)
+    {
+        QList<int> idx = fuzzyIndices({"axbxc", "abc"}, "abc", 200);
+        CHECK(idx.size() == 2);
+        CHECK(idx.first() == 1); // "abc" (contiguous) ranks first → index 1
+    }
+
+    // fuzzyIndices: empty query → first `limit` indices in order
+    CHECK(fuzzyIndices({"a", "b", "c"}, "", 2) == QList<int>({0, 1}));
+
     if (failures == 0) {
         std::printf("\nALL PASS\n");
         return 0;
