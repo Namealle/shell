@@ -3,27 +3,77 @@ pragma Singleton
 import QtQuick
 import Quickshell
 import Quickshell.Io
-import Caelestia
 import Caelestia.Config
 
 // Clipboard-history picker backing the `;` launcher mode.
 //
-// Entries are persistent QtObjects (Variants) returned RANK-ORDERED by the C++
-// Search (fuzzyIndices), so search + ListView animations match the apps picker
-// without the JS Searcher freezing on 750 long (-preview-width 999) entries.
-// Each entry gets a content-aware Material icon via iconFor() (regex, security-
-// oriented), image entries show a decoded thumbnail (in ClipItem), and the Del
-// key removes an entry via cliphist delete.
+// Entries are persistent QtObjects (Variants) so the ListView can animate them,
+// filtered by case-insensitive SUBSTRING and kept in cliphist order (newest
+// first). Each entry gets a content-aware Material icon via iconFor() (regex,
+// security-oriented), image entries show a decoded thumbnail (in ClipItem), and
+// the Del key removes an entry via cliphist delete.
 Singleton {
     id: root
 
     // Raw `cliphist list` lines, newest first.
     property var rawEntries: []
     readonly property list<QtObject> entries: variants.instances
-    readonly property var previews: root.rawEntries.map(line => {
+
+    // Lowercased preview text, parallel to rawEntries. Rebuilt only when
+    // rawEntries changes, so a keystroke costs one pass of String.includes and
+    // no per-entry work.
+    readonly property var searchKeys: root.rawEntries.map(line => {
         const tab = line.indexOf("\t");
-        return tab >= 0 ? line.slice(tab + 1) : line;
+        return (tab >= 0 ? line.slice(tab + 1) : line).toLowerCase();
     })
+
+    // Raw line -> entry object.
+    //
+    // Variants.instances is in CREATION order, not model order: on reload it
+    // reuses the existing instances and appends only the new ones. So a fresh
+    // clip sits at rawEntries[0] while its instance is last, and indexing into
+    // instances with a rawEntries index silently returned a DIFFERENT entry --
+    // the list rendered the old items in the old order and new clips never
+    // showed up until a shell restart rebuilt every instance in model order.
+    // Resolve entries by their raw line instead of by position.
+    readonly property var entryFor: {
+        const map = {};
+        for (const e of root.entries)
+            map[e.raw] = e;
+        return map;
+    }
+
+    // entryId -> { lines, chars } of the DECODED content (list previews flatten
+    // newlines, so real counts only exist after a decode). Filled incrementally
+    // by lineCountProc in the background; also updated exactly by the reader's
+    // own decodes via cacheDecoded(). Reassigned (never mutated) so desc
+    // bindings react.
+    property var lineCounts: ({})
+
+    // entryId -> decoded text (single trailing newline stripped), shared by the
+    // reader across open/close so browsing back to an entry is instant.
+    property var decodedText: ({})
+
+    function cacheDecoded(entryId: string, text: string): void {
+        root.decodedText[entryId] = text;
+        const counts = Object.assign({}, root.lineCounts);
+        counts[entryId] = {
+            lines: text.length ? text.split("\n").length : 1,
+            chars: text.length
+        };
+        root.lineCounts = counts;
+    }
+
+    // One background sh for ALL uncounted entries (not a process per row):
+    // decodes each unknown non-binary entry and emits "id\tlines\tchars".
+    // Chars count the reader's display convention (one trailing newline
+    // stripped), so list and reader always agree.
+    function updateLineCounts(): void {
+        if (lineCountProc.running)
+            return;
+        lineCountProc.known = " " + Object.keys(root.lineCounts).join(" ") + " ";
+        lineCountProc.running = true;
+    }
 
     function reload(): void {
         listProc.running = true;
@@ -33,9 +83,25 @@ Singleton {
         return text.slice(GlobalConfig.launcher.clipboardPrefix.length);
     }
 
+    // Substring match, NOT fuzzy: clipboard entries are arbitrary prose/code, so
+    // a fuzzy subsequence match hits almost everything and ranks it by a score
+    // that carries no meaning here. Results stay in cliphist order (newest
+    // first), which is the useful order for a clipboard.
+    //
+    // Matched in JS rather than through the C++ Search because those take a
+    // QStringList: every keystroke would marshal all previews (~1MB) into C++.
+    // Testing the precomputed lowercase keys in place avoids that entirely.
     function query(text: string): var {
-        const q = transformSearch(text).trim();
-        return Search.fuzzyIndices(root.previews, q, 200).map(i => root.entries[i]);
+        const q = transformSearch(text).trim().toLowerCase();
+        const out = [];
+        for (let i = 0; i < root.rawEntries.length; i++) {
+            if (q && !root.searchKeys[i].includes(q))
+                continue;
+            const entry = root.entryFor[root.rawEntries[i]];
+            if (entry)
+                out.push(entry);
+        }
+        return out;
     }
 
     function activate(line: string): void {
@@ -47,78 +113,342 @@ Singleton {
         delProc.running = true;
     }
 
-    // Content-aware icon. First match wins; ordered security-specific → tools →
-    // data/code → everyday → default. Image entries are handled separately.
+    // Content-aware Material Symbol for a clipboard entry. FIRST MATCH WINS, so
+    // rules are ordered by signal strength: high-entropy secrets/identifiers →
+    // network addresses → shell/security commands → URLs/mail → data/code →
+    // files/paths → everyday → structural fallback. Commands are matched before
+    // URLs so a URL passed as an argument (curl/gobuster) can't hijack the icon.
+    // Cybersecurity-leaning but everyday-complete.
+    //
+    // Called once per entry (stable binding), but clipboard lines can be enormous
+    // (`-preview-width 99999`), so a length guard short-circuits huge pastes before
+    // the full battery runs, and every pattern is anchored/linear (no nested
+    // quantifiers) to stay ReDoS-safe on adversarial content.
     function iconFor(text: string): string {
         const t = text.trim();
+        if (!t)
+            return "content_paste";
 
-        // --- security / identifiers / network ---
-        if (/\bCVE-\d{4}-\d{3,}\b/i.test(t))
-            return "coronavirus";
+        // Giant blob: skip the battery, keep only three cheap probes.
+        if (t.length > 20000) {
+            if (/https?:\/\//i.test(t))
+                return "link";
+            if (/^\s*[{[]/.test(t) && /[}\]]\s*$/.test(t))
+                return "data_object";
+            return "notes";
+        }
+
+        const oneLine = !/\n/.test(t);
+
+        // Extension → icon for a filename token; "" when the extension is unknown.
+        const extIcon = s => {
+            if (/\.(?:png|jpe?g|gif|bmp|webp|tiff?|svg|ico|heic|avif)$/i.test(s))
+                return "image";
+            if (/\.(?:mp3|flac|wav|ogg|opus|aac|m4a|wma|aiff?)$/i.test(s))
+                return "music_note";
+            if (/\.(?:mp4|mkv|mov|avi|webm|flv|wmv|m4v|mpe?g)$/i.test(s))
+                return "movie";
+            if (/\.(?:zip|tar|gz|xz|bz2|7z|rar|zst|lz4|tgz|cab|iso)$/i.test(s))
+                return "folder_zip";
+            if (/\.pdf$/i.test(s))
+                return "picture_as_pdf";
+            if (/\.(?:docx?|odt|rtf|pages)$/i.test(s))
+                return "description";
+            if (/\.(?:xlsx?|ods|csv|tsv|numbers)$/i.test(s))
+                return "table";
+            if (/\.(?:pptx?|odp|key)$/i.test(s))
+                return "slideshow";
+            if (/\.(?:exe|msi|dmg|deb|rpm|appimage|apk|pkg|flatpak|snap)$/i.test(s))
+                return "deployed_code";
+            if (/\.(?:py|js|ts|tsx|jsx|c|cpp|cc|h|hpp|rs|go|rb|php|java|kt|swift|sh|lua|pl|sql|qml|vue|svelte)$/i.test(s))
+                return "code";
+            if (/\.(?:json|ya?ml|toml|ini|conf|cfg|env|xml)$/i.test(s))
+                return "settings";
+            if (/\.(?:txt|md|log)$/i.test(s))
+                return "description";
+            return "";
+        };
+
+        // -- secrets: keys, certs, tokens --
+        if (/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(t))
+            return "vpn_key"; // PEM private key
+        if (/-----BEGIN (?:CERTIFICATE|PUBLIC KEY)-----/.test(t))
+            return "verified_user"; // cert / public key
+        if (/-----BEGIN PGP (?:MESSAGE|SIGNATURE|SIGNED)/.test(t))
+            return "enhanced_encryption"; // PGP block
+        if (/^(?:ssh-(?:rsa|dss|ed25519)|ecdsa-sha2-\S+|sk-ssh-\S+)\s+[A-Za-z0-9+/]{20,}/.test(t))
+            return "vpn_key"; // SSH public key
         if (/^eyJ[\w-]+\.[\w-]+\.[\w-]+$/.test(t))
             return "token"; // JWT
-        if (/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/.test(t) || /\b(?:ghp|gho|ghs|ghu)_[A-Za-z0-9]{20,}\b/.test(t) || /\bsk-[A-Za-z0-9]{20,}\b/.test(t) || /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/.test(t))
-            return "key"; // API keys / tokens
-        if (/^[a-f0-9]{64}$/i.test(t) || /^[a-f0-9]{40}$/i.test(t) || /^[a-f0-9]{32}$/i.test(t))
-            return "fingerprint"; // SHA256 / SHA1 / MD5
-        if (/\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b/i.test(t))
+        if (/\b(?:AKIA|ASIA|AIza)[0-9A-Za-z]{16,}\b/.test(t) || /\b(?:gh[posru]|glpat)[-_][A-Za-z0-9_-]{20,}\b/.test(t) || /\b(?:sk|pk|rk)-[A-Za-z0-9]{20,}\b/.test(t) || /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/.test(t))
+            return "key"; // AWS / Google / GitHub / GitLab / Stripe / OpenAI / Slack
+        if (oneLine && /^(?:export\s+)?[A-Za-z_][\w.]*(?:PASS(?:WORD|WD)?|SECRET|TOKEN|API[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[\w.]*\s*[:=]\s*\S/i.test(t))
+            return "password"; // secret assignment
+
+        // -- vulnerability / hashes --
+        if (/\bCVE-\d{4}-\d{3,}\b/i.test(t))
+            return "coronavirus";
+        if (/^\$(?:2[aby]|argon2(?:id|i|d)?|6|5|1|y)\$/.test(t))
+            return "enhanced_encryption"; // bcrypt / argon2 / shadow crypt
+        if (/^[^:\s]+:\$?\d*:?[0-9a-f]{32}:[0-9a-f]{32}:?/i.test(t))
+            return "fingerprint"; // NTLM / SAM dump line
+        if (/^(?:sha(?:1|256|512)|md5)?[:=]?\s*[a-f0-9]{128}$/i.test(t) || /^[a-f0-9]{64}$/i.test(t) || /^[a-f0-9]{40}$/i.test(t) || /^[a-f0-9]{32}$/i.test(t))
+            return "fingerprint"; // SHA-512/256/1 / MD5
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t))
+            return "fingerprint"; // UUID / GUID
+
+        // -- network addresses (anchored: an IP inside a command must not hijack it) --
+        if (/^(?:bc1[a-z0-9]{23,59}|[13][1-9A-HJ-NP-Za-km-z]{25,39})$/.test(t) || /^0x[a-f0-9]{40}$/i.test(t) || /^[LM][a-km-zA-HJ-NP-Z1-9]{26,33}$/.test(t))
+            return "currency_bitcoin"; // BTC / ETH / LTC address
+        if (/^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i.test(t))
             return "settings_ethernet"; // MAC
-        if (/\b(?:\d{1,3}\.){3}\d{1,3}\b/.test(t))
-            return "lan"; // IPv4
-        if (/\b(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{0,4}\b/i.test(t))
-            return "lan"; // IPv6-ish
-        if (/^(?:bc1|[13])[a-hj-np-z0-9]{25,39}$/.test(t) || /^0x[a-f0-9]{40}$/i.test(t))
-            return "currency_bitcoin"; // crypto address
+        if (/^(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?(?:\/\d{1,2})?$/.test(t))
+            return "lan"; // IPv4 / socket / CIDR
+        if (/^[0-9a-f:]+$/i.test(t) && /:/.test(t) && (/::/.test(t) || /[a-f]/i.test(t) || (t.match(/:/g) || []).length >= 3))
+            return "lan"; // IPv6-ish (must contain a colon, plus "::"/hex-letter/3+ colons — so H:M:S times and colon-less hex like an IBAN fall through)
 
-        // --- URLs / mail / hosts ---
-        if (/https?:\/\/\S+/i.test(t))
-            return "link";
-        if (/^[\w.+-]+@[\w-]+\.[\w.-]+$/.test(t))
-            return "alternate_email"; // email
-        if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i.test(t))
-            return "dns"; // bare hostname/domain
+        // -- encoded blobs --
+        if (oneLine && /^[A-Za-z0-9+/]{64,}={0,2}$/.test(t))
+            return "data_array"; // base64 blob
+        if (oneLine && /^(?:[0-9a-f]{2}[\s:]?){24,}$/i.test(t))
+            return "memory"; // raw hex dump
 
-        // --- security tools / commands ---
-        if (/^(?:sudo\s+)?(?:nmap|masscan|rustscan|amass|subfinder)\b/i.test(t))
-            return "radar";
-        if (/^(?:sudo\s+)?(?:tshark|tcpdump|wireshark|ngrep|termshark)\b/i.test(t))
-            return "network_check";
-        if (/^(?:sudo\s+)?(?:hydra|john|hashcat|gobuster|feroxbuster|ffuf|sqlmap|msfconsole|msfvenom|nikto|dirb|wpscan|enum4linux|netexec|crackmapexec|impacket|responder|bloodhound|evil-winrm|smbclient|smbmap)\b/i.test(t))
-            return "security";
-        if (/^(?:sudo\s+)?(?:ssh|scp|sftp|nc|ncat|socat)\b/i.test(t))
-            return "terminal";
-        if (/^(?:sudo\s+)?(?:curl|wget|http|httpie)\b/i.test(t))
-            return "http";
+        // -- security tooling & shell commands (before URLs: a URL arg must not hijack) --
+        if (/(?:^|\|\s*|;\s*|&&\s*)(?:bash|sh)\s+-[a-z]*i[a-z]*\s+.*(?:>\s*&\s*)?\/dev\/(?:tcp|udp)\//i.test(t) || /\bnc\b.*-[a-z]*e[a-z]*\s+\/bin\//i.test(t) || /\b(?:rm\s+-rf\s+\/(?:\s|$)|chmod\s+(?:-R\s+)?777|:\(\)\s*\{\s*:\|:)/.test(t))
+            return "warning"; // reverse shell / destructive / fork bomb
+        if (/^(?:sudo\s+)?(?:nmap|masscan|rustscan|zmap|amass|subfinder|assetfinder|shodan|dnsrecon|dnsenum|fierce|theharvester|whatweb|wafw00f)\b/i.test(t))
+            return "radar"; // recon / scanning
+        if (/^(?:sudo\s+)?(?:tshark|tcpdump|wireshark|ngrep|termshark|dumpcap|tcpflow|bettercap|ettercap|arpspoof|mitmproxy|mitmdump)\b/i.test(t))
+            return "network_check"; // packet capture / MITM
+        if (/^(?:sudo\s+)?(?:hashcat|john|hydra|medusa|ncrack|patator|hcxdumptool|aircrack-ng|airmon-ng|reaver|cewl|crunch)\b/i.test(t))
+            return "password"; // credential cracking / wireless
+        if (/^(?:sudo\s+)?(?:gobuster|feroxbuster|ffuf|dirb|dirbuster|wfuzz|nikto|wpscan|sqlmap|nuclei|arjun|dalfox|commix|xsstrike)\b/i.test(t))
+            return "travel_explore"; // web fuzzing / vuln scan
+        if (/^(?:sudo\s+)?(?:msfconsole|msfvenom|msfdb|meterpreter|searchsploit|setoolkit|beef|empire|sliver|havoc|cobaltstrike)\b/i.test(t))
+            return "bug_report"; // exploitation / C2 frameworks
+        if (/^(?:sudo\s+)?(?:enum4linux|netexec|crackmapexec|impacket-\S+|responder|bloodhound|sharphound|evil-winrm|smbclient|smbmap|rpcclient|ldapsearch|kerbrute|certipy|mimikatz|secretsdump)\b/i.test(t))
+            return "security"; // AD / lateral movement / post-exploitation
+        if (/^(?:sudo\s+)?(?:gdb|radare2|r2|objdump|readelf|strace|ltrace|checksec|pwndbg|ropper|ROPgadget|volatility|binwalk|foremost|steghide|zsteg|exiftool|strings)\b/i.test(t))
+            return "biotech"; // reversing / forensics / stego
+        if (/^(?:sudo\s+)?(?:ssh|scp|sftp|rsync|nc|ncat|socat|telnet|mosh)\b/i.test(t) || /^(?:ssh|telnet):\/\//i.test(t))
+            return "terminal"; // remote / transfer
+        if (/^(?:sudo\s+)?(?:curl|wget|httpie|xh|aria2c)\b/i.test(t) || /^https?\s+\S/i.test(t))
+            return "http"; // HTTP clients (httpie `http`/`https` need a space, unlike a URL's `://`)
         if (/^git\s+/i.test(t))
             return "commit";
-        if (/^(?:sudo\s+)?(?:docker|kubectl|podman)\b/i.test(t))
-            return "deployed_code";
-        if (/^(?:sudo|bash|sh|zsh|fish|apt|pacman|yay|dnf|systemctl|chmod|chown|mkdir|rm|cp|mv|grep|awk|sed|export|source)\b/.test(t))
-            return "terminal";
+        if (/^(?:sudo\s+)?(?:docker|docker-compose|kubectl|podman|helm|nerdctl|k9s|minikube)\b/i.test(t))
+            return "deployed_code"; // containers / orchestration
+        if (/^(?:sudo\s+)?(?:terraform|ansible|ansible-playbook|vagrant|packer|pulumi)\b/i.test(t))
+            return "cloud"; // IaC / provisioning
+        if (/^(?:sudo\s+)?(?:apt|apt-get|dpkg|pacman|yay|paru|dnf|yum|zypper|apk|brew|nix-env|snap|flatpak)\b/i.test(t))
+            return "package_2"; // package managers
+        if (/^(?:sudo\s+)?(?:pip|pip3|npm|npx|pnpm|yarn|bun|cargo|go|gem|composer|poetry|uv)\b/i.test(t))
+            return "package_2"; // language package managers
+        if (/^(?:sudo\s+)?systemctl\b/i.test(t) || /^(?:sudo\s+)?(?:journalctl|dmesg|service)\b/i.test(t))
+            return "settings"; // service / log management
+        if (/^(?:sudo|bash|sh|zsh|fish|env|ls|pwd|cd|echo|printf|which|whereis|whoami|man|nano|vim|vi|emacs|chmod|chown|chgrp|mkdir|rmdir|rm|cp|mv|ln|readlink|realpath|basename|dirname|touch|cat|tee|less|tail|head|wc|grep|rg|awk|sed|cut|tr|sort|uniq|xargs|find|fd|stat|tar|gzip|gunzip|unzip|export|source|alias|kill|pkill|ps|top|htop|df|du|free|mount|umount|lsblk|lsof|lspci|lsusb|uname|uptime|sync|dd|useradd|usermod|passwd|su|chsh|crontab|ping|dig|nslookup|ip|ss|netstat|ifconfig|route|iptables|nft|ufw|sysctl|md5sum|sha1sum|sha256sum|base64|xxd|hexdump|openssl|gpg)\b/.test(t))
+            return "terminal"; // generic shell / net / file utilities
+        if (/^(?:powershell|pwsh)\b/i.test(t) || /\b(?:Invoke-(?:Expression|WebRequest|Command)|IEX|Get-\w+|Set-\w+|New-Object)\b/.test(t))
+            return "terminal"; // PowerShell
 
-        // --- data / code ---
-        if (/\b(?:SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER)\b[\s\S]*\b(?:FROM|INTO|TABLE|WHERE|VALUES)\b/i.test(t))
-            return "database";
-        if (/^\s*[{[][\s\S]*[}\]]\s*$/.test(t))
-            return "data_object"; // JSON / array
-        if (/^#[0-9a-f]{3,8}$/i.test(t) || /\brgba?\([\d\s,.%]+\)/i.test(t))
+        // -- URLs / mail / hosts --
+        if (/\b[a-z2-7]{16,56}\.onion\b/i.test(t))
+            return "vpn_lock"; // Tor hidden service
+        if (/^magnet:\?/i.test(t) || /\bxt=urn:bt/i.test(t))
+            return "download"; // magnet link
+        if (/^data:[\w.+-]+\/[\w.+-]+[;,]/i.test(t))
+            return "data_object"; // data: URI
+        if (/^file:\/\//i.test(t))
+            return "folder"; // file URI
+        if (/^s?ftp:\/\//i.test(t))
+            return "folder_shared"; // (s)ftp URL
+        if (/^https?:\/\/\S+$/i.test(t))
+            return "link"; // the whole entry is one URL — a URL merely embedded in text/code/logs/SQL falls through to those rules
+        if (/^mailto:/i.test(t) || /^[\w.+-]+@[\w-]+\.[\w.-]+$/.test(t))
+            return "alternate_email"; // email / mailto
+        if (oneLine && /^#[\w-]{2,}$/.test(t) && !/^#[0-9a-f]{3,8}$/i.test(t))
+            return "tag"; // hashtag (but not a hex colour)
+        if (oneLine && /^@[\w.-]{2,}$/.test(t))
+            return "alternate_email"; // @mention
+        // A lone "name.ext" token with a known extension is a filename, not a domain.
+        if (oneLine && !/[\s\/:@\\]/.test(t)) {
+            const fi = extIcon(t);
+            if (fi)
+                return fi;
+        }
+        if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i.test(t))
+            return "dns"; // bare hostname / domain
+
+        // -- data / code / markup --
+        if (/^\s*(?:SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|WITH|UNION|GRANT|TRUNCATE)\b/i.test(t) && /\b(?:FROM|INTO|TABLE|WHERE|VALUES|JOIN|SET|DATABASE)\b/i.test(t))
+            return "database"; // SQL (two linear scans, no greedy bridge)
+        if (/^diff --git\b/m.test(t) || /^@@ -\d+.* \+\d+.* @@/m.test(t) || /^(?:index [0-9a-f]+\.\.|--- a\/|\+\+\+ b\/)/m.test(t))
+            return "difference"; // unified diff / patch
+        if (/^(?:[\d*/,-]+\s+){4}[\d*/,-]+(?:\s|$)/.test(t) || /^@(?:reboot|yearly|monthly|weekly|daily|hourly)\b/.test(t))
+            return "schedule"; // cron expression
+        if (/^\s*[{[]/.test(t) && /[}\]]\s*$/.test(t) && /[:,]/.test(t))
+            return "data_object"; // JSON / array (cheap start/end probe)
+        if (/^\s*<\?xml\b/.test(t) || /^\s*<!DOCTYPE\s+html/i.test(t) || /<html[\s>]/i.test(t))
+            return "html"; // XML / HTML document
+        if (/^\s*<[a-z][\w-]*(?:\s[^>]*)?>[\s\S]*<\/[a-z][\w-]*>\s*$/i.test(t))
+            return "code"; // markup fragment
+        if (/[.#][\w-]+\s*\{[^}]*:[^}]*\}/.test(t) || /@(?:media|import|keyframes)\b/.test(t))
+            return "css"; // CSS
+        if (/^---\s*$/m.test(t) && /^[\w.-]+:\s/m.test(t))
+            return "description"; // YAML
+        if (/^#{1,6}\s+\S/m.test(t) || /\[[^\]]+\]\([^)]+\)/.test(t) || /^```/m.test(t))
+            return "article"; // Markdown
+        // CSV / TSV: 2+ rows with the same delimiter count. Tabs count directly;
+        // commas/semicolons count only when tightly packed (no adjacent space), so
+        // prose like "Well, then, we go" isn't mistaken for a table.
+        const rows = t.split("\n").filter(l => l.length > 0);
+        if (rows.length >= 2) {
+            const cols = l => (l.match(/\t/g) || []).length || (l.match(/[^\s,;][,;][^\s,;]/g) || []).length;
+            const c0 = cols(rows[0]);
+            if (c0 >= 1 && rows.slice(0, 6).every(l => cols(l) === c0))
+                return "table";
+        }
+        if (/^#[0-9a-f]{3,8}$/i.test(t) || /\brgba?\([\d\s,.%]+\)/i.test(t) || /\bhsla?\([\d\s,.%]+\)/i.test(t))
             return "palette"; // colour
-        if (/^~?(?:\/[\w.@ -]+)+\/?$/.test(t) || /^[A-Za-z]:\\/.test(t))
-            return "folder"; // path
-        if (/[{}();]|=>|::|\bfunction\b|\bconst\b|\bimport\b|<\/?\w+>/.test(t) && t.length < 400)
+        if (/^\/(?:\\.|[^/\\\n]){2,}\/[gimsuy]*$/.test(t))
+            return "regular_expression"; // /pattern/flags
+        if (/\b(?:Traceback \(most recent call last\)|Exception in thread|at [\w.$]+\([\w.]+:\d+\)|panic:|ECONNREFUSED|Segmentation fault)/.test(t))
+            return "bug_report"; // stack trace / crash (no trailing \b — branches ending in ")" or ":" have no boundary there)
+        if (/^\[?(?:\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}|\d{2}:\d{2}:\d{2})\b/.test(t) && /\b(?:ERROR|WARN|INFO|DEBUG|TRACE|FATAL)\b/.test(t))
+            return "receipt_long"; // log line
+        if (oneLine && /^[A-Z][A-Z0-9_]{2,}=\S/.test(t))
+            return "settings"; // env / config assignment
+        if (/[{}]|;|=>|->|::|\bfunction\b|\b(?:const|let|var)\b|\bimport\b|\bdef\b|\bclass\b|\breturn\b|<\/?\w+>/.test(t) && t.length < 800)
             return "code";
 
-        // --- everyday ---
+        // -- files & paths (real paths only; bare "name.ext" was handled above) --
+        const pathLike = /^~?(?:\/[\w.@ +-]+)+\/?$/.test(t) || /^[A-Za-z]:[\\/]/.test(t) || /^\.\.?\/[\w./ +-]+$/.test(t);
+        if (pathLike) {
+            const pi = extIcon(t);
+            if (pi)
+                return pi;
+            if (/^~/.test(t))
+                return "home";
+            return "folder";
+        }
+
+        // -- everyday --
+        if (/^-?\d{1,3}\.\d+\s*,\s*-?\d{1,3}\.\d+$/.test(t))
+            return "location_on"; // lat,long
+        if (/^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$/.test(t) || /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(t))
+            return "event"; // date / timestamp
+        if (/^\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AaPp]\.?[Mm]\.?)?$/.test(t))
+            return "schedule"; // time
+        if (/^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/.test(t.replace(/\s/g, "")))
+            return "account_balance"; // IBAN
+        if (/^(?:\d[ -]?){15,16}$/.test(t) && /^\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{1,4}$/.test(t))
+            return "credit_card"; // credit-card number
+        if (/^[€$£¥₿]\s?\d[\d,.]*$/.test(t) || /^\d[\d,.]*\s?(?:USD|EUR|GBP|JPY|BTC)$/i.test(t))
+            return "payments"; // currency amount (both anchored — unanchored form was O(n²) on comma-heavy input)
+        if (/^\d+(?:\.\d+)?\s?%$/.test(t))
+            return "percent"; // percentage
+        if (/^v?\d+\.\d+\.\d+(?:[-+][\w.]+)?$/.test(t))
+            return "sell"; // semver / version tag
+        if (/^(?:97[89])?\d{9,12}[\dXx]$/.test(t.replace(/[ -]/g, "")) && /^(?:97[89][ -]?)?(?:\d[ -]?){9}[\dXx]$/.test(t))
+            return "menu_book"; // ISBN
         if (/^\+?[\d][\d\s().-]{6,}$/.test(t))
             return "call"; // phone
-        if (/^-?\d+(?:[.,]\d+)?$/.test(t))
+        if (/^[-+(]?\s*[\d.]+(?:\s*[-+*/^%]\s*[\d.()]+)+$/.test(t))
+            return "calculate"; // arithmetic expression
+        if (/^(?:true|false|yes|no|on|off|enabled|disabled)$/i.test(t))
+            return "toggle_on"; // boolean-ish
+        if (/^-?\d+(?:[.,]\d+)?$/.test(t) || /^0x[0-9a-f]+$/i.test(t) || /^0b[01]+$/i.test(t))
             return "tag"; // number
-        if (/\n/.test(t))
-            return "notes"; // multi-line note
-        if (/^\S+$/.test(t))
-            return "text_fields"; // single word/token
+        if (/^["“'][\s\S]+["”']$/.test(t))
+            return "format_quote"; // quoted text
+        if (/^\s*[-*•]\s+\S/m.test(t) && /(?:\n\s*[-*•]\s+\S){1,}/.test(t))
+            return "format_list_bulleted"; // bullet list
+        if (/^\S+\?\s*$/.test(t) || /^(?:who|what|when|where|why|how|which|can|does|is|are)\b[\s\S]*\?$/i.test(t))
+            return "help"; // question
 
-        return "content_paste";
+        // -- structural fallback: unclassified text, keyed on size --
+        if (oneLine && /^\S+$/.test(t) && t.length <= 24)
+            return "text_fields"; // a single short token
+        if (t.length <= 80)
+            return "short_text"; // small
+        if (t.length <= 400)
+            return "notes"; // medium
+        return "article"; // large / document
+    }
+
+    // Parses a pure-colour entry (hex / rgb[a] / hsl[a]) into a QML colour string
+    // ("#AARRGGBB" when alpha is present, else "#RRGGBB"), or "" if it isn't a lone
+    // colour. Lets the delegate paint the real colour as the entry's swatch.
+    function colourOf(text: string): string {
+        const t = text.trim();
+        const clamp = (n, hi) => Math.max(0, Math.min(hi, n));
+        const h2 = n => {
+            const s = clamp(Math.round(n), 255).toString(16);
+            return s.length < 2 ? "0" + s : s;
+        };
+
+        let m = t.match(/^#([0-9a-fA-F]{3,8})$/);
+        if (m) {
+            const h = m[1].toLowerCase();
+            if (h.length === 3)
+                return "#" + h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+            if (h.length === 6)
+                return "#" + h;
+            if (h.length === 4) // CSS #rgba -> Qt #aarrggbb
+                return "#" + h[3] + h[3] + h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+            if (h.length === 8) // CSS #rrggbbaa -> Qt #aarrggbb
+                return "#" + h.slice(6, 8) + h.slice(0, 6);
+            return ""; // 5 or 7 digits: not a valid hex colour
+        }
+
+        const chan = (v, base) => v.trim().endsWith("%") ? parseFloat(v) / 100 * base : parseFloat(v);
+        const alpha = v => h2(v.trim().endsWith("%") ? parseFloat(v) / 100 * 255 : parseFloat(v) * 255);
+
+        m = t.match(/^rgba?\(\s*([\d.]+%?)\s*[, ]\s*([\d.]+%?)\s*[, ]\s*([\d.]+%?)\s*(?:[,/]\s*([\d.]+%?)\s*)?\)$/i);
+        if (m) {
+            const rgb = h2(chan(m[1], 255)) + h2(chan(m[2], 255)) + h2(chan(m[3], 255));
+            return m[4] === undefined ? "#" + rgb : "#" + alpha(m[4]) + rgb;
+        }
+
+        m = t.match(/^hsla?\(\s*([\d.]+)(?:deg)?\s*[, ]\s*([\d.]+)%\s*[, ]\s*([\d.]+)%\s*(?:[,/]\s*([\d.]+%?)\s*)?\)$/i);
+        if (m) {
+            const hue = (((parseFloat(m[1]) % 360) + 360) % 360) / 360;
+            const s = clamp(parseFloat(m[2]) / 100, 1);
+            const l = clamp(parseFloat(m[3]) / 100, 1);
+            const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+            const p = 2 * l - q;
+            const comp = tc => {
+                tc = tc < 0 ? tc + 1 : (tc > 1 ? tc - 1 : tc);
+                if (tc < 1 / 6)
+                    return p + (q - p) * 6 * tc;
+                if (tc < 1 / 2)
+                    return q;
+                if (tc < 2 / 3)
+                    return p + (q - p) * (2 / 3 - tc) * 6;
+                return p;
+            };
+            const rgb = h2(comp(hue + 1 / 3) * 255) + h2(comp(hue) * 255) + h2(comp(hue - 1 / 3) * 255);
+            return m[4] === undefined ? "#" + rgb : "#" + alpha(m[4]) + rgb;
+        }
+
+        return "";
+    }
+
+    // Type-appropriate icon for a cliphist binary entry, from its descriptor
+    // (e.g. "png 1815x596", "1.2 MiB application/pdf"). Images already render a
+    // thumbnail; this covers everything else so non-images stop showing "image".
+    function iconForBinary(desc: string): string {
+        if (/\b(?:png|jpe?g|gif|bmp|webp|tiff?|svg|ico|heic|avif)\b/i.test(desc))
+            return "image";
+        if (/\b(?:mp3|flac|wav|ogg|opus|aac|m4a|wma|audio)\b/i.test(desc))
+            return "music_note";
+        if (/\b(?:mp4|mkv|mov|avi|webm|flv|wmv|m4v|mpe?g|video)\b/i.test(desc))
+            return "movie";
+        if (/\b(?:zip|tar|gz|xz|bz2|7z|rar|zst|gzip|compress)\b/i.test(desc))
+            return "folder_zip";
+        if (/\bpdf\b/i.test(desc))
+            return "picture_as_pdf";
+        return "draft"; // unknown binary blob
     }
 
     Variants {
@@ -143,13 +473,26 @@ Singleton {
         readonly property var binMatch: entry.preview.match(/^\[\[ binary data (.+) \]\]$/)
         readonly property bool isImage: !!entry.binMatch && /\b(?:png|jpe?g|gif|bmp|webp|tiff?|svg|ico)\b/i.test(entry.binMatch[1])
 
-        readonly property string icon: entry.binMatch ? "image" : root.iconFor(entry.preview)
-        readonly property string name: entry.binMatch ? "Image" : entry.preview.replace(/\s+/g, " ").trim()
+        // Non-empty when the entry is a lone colour → delegate paints a swatch.
+        readonly property string colour: entry.binMatch ? "" : root.colourOf(entry.preview)
+        readonly property string icon: entry.binMatch ? root.iconForBinary(entry.binMatch[1]) : root.iconFor(entry.preview)
+        readonly property string name: {
+            if (entry.binMatch)
+                return entry.isImage ? "Image" : "Binary data";
+            return entry.preview.replace(/\s+/g, " ").trim();
+        }
+        // Exact counts from the decoded-content cache when known (previews are
+        // truncated at 999 chars, so entry.name.length lies for long clips);
+        // preview length as the interim value until the background count lands.
         readonly property string desc: {
             if (entry.binMatch)
                 return entry.binMatch[1];
-            const n = entry.name.length;
-            return `${n} ${n === 1 ? "character" : "characters"}`;
+            const cached = root.lineCounts[entry.entryId];
+            const n = cached ? cached.chars : entry.name.length;
+            let s = `${n} ${n === 1 ? "character" : "characters"}`;
+            if (cached)
+                s += ` · ${cached.lines} ${cached.lines === 1 ? "line" : "lines"}`;
+            return s;
         }
 
         function onClicked(list: var): void {
@@ -165,9 +508,17 @@ Singleton {
     Process {
         id: listProc
 
+        // 999, NOT huge: rows render one elided line and the reader decodes full
+        // content itself, so longer previews buy nothing -- but they cost real
+        // main-thread time (Text layout of giant single-line strings on every
+        // delegate creation, entryFor hashing of giant keys each keystroke),
+        // which dropped animation frames and left ghost rows mid-fade.
         command: ["cliphist", "-preview-width", "999", "list"]
         stdout: StdioCollector {
-            onStreamFinished: root.rawEntries = text.split("\n").filter(l => l.length > 0)
+            onStreamFinished: {
+                root.rawEntries = text.split("\n").filter(l => l.length > 0);
+                root.updateLineCounts();
+            }
         }
     }
 
@@ -178,6 +529,36 @@ Singleton {
 
         command: ["sh", "-c", "printf '%s' \"$1\" | cliphist delete", "del", delProc.line]
         onExited: root.reload()
+    }
+
+    Process {
+        id: lineCountProc
+
+        property string known: " "
+
+        command: ["sh", "-c", `
+            cliphist list | while IFS= read -r line; do
+                case "$line" in *'[[ binary data'*) continue;; esac
+                id=$(printf '%s' "$line" | cut -f1)
+                case "$1" in *" $id "*) continue;; esac
+                printf '%s' "$line" | cliphist decode | awk -v id="$id" '
+                    { n++; c += length($0) }
+                    END { if (!n) n = 1; printf "%s\\t%d\\t%d\\n", id, n, c + n - 1 }'
+            done`, "lc", lineCountProc.known]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const counts = Object.assign({}, root.lineCounts);
+                for (const line of text.split("\n")) {
+                    const [id, lines, chars] = line.split("\t");
+                    if (id)
+                        counts[id] = {
+                            lines: parseInt(lines, 10),
+                            chars: parseInt(chars, 10)
+                        };
+                }
+                root.lineCounts = counts;
+            }
+        }
     }
 
     Component.onCompleted: root.reload()

@@ -61,6 +61,12 @@ Item {
         placeholderText: qsTr("Type \"%1\" for commands").arg(GlobalConfig.launcher.actionPrefix)
 
         onAccepted: {
+            // Reader mode: copy the highlighted entry (its row may be unrealised).
+            if (list.readerActive) {
+                list.currentList?.currentEntry?.onClicked(list.currentList);
+                return;
+            }
+
             const currentItem = list.currentList?.currentItem;
             if (currentItem) {
                 if (list.showWallpapers) {
@@ -86,6 +92,29 @@ Item {
 
         Keys.onUpPressed: list.currentList?.decrementCurrentIndex()
         Keys.onDownPressed: list.currentList?.incrementCurrentIndex()
+
+        // → morphs into the clipboard reader, ← morphs back. Both give up in-field
+        // cursor movement while in clipboard/reader mode (short filter text).
+        Keys.onRightPressed: event => {
+            if (text.startsWith(GlobalConfig.launcher.clipboardPrefix) && !list.readerActive) {
+                list.readerActive = true;
+                event.accepted = true;
+            } else {
+                event.accepted = false;
+            }
+        }
+        Keys.onLeftPressed: event => {
+            if (list.readerActive) {
+                // Restore the list filter the reader froze (typing in the reader
+                // was find-within-entry, not filtering); restore BEFORE unfreezing
+                // so the swap never re-filters the list.
+                text = list.currentList?.displayText ?? text;
+                list.readerActive = false;
+                event.accepted = true;
+            } else {
+                event.accepted = false;
+            }
+        }
 
         Keys.onEscapePressed: root.screenState.launcher = false
 
