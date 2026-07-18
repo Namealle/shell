@@ -54,6 +54,7 @@ Item {
         slideAnim.to = targetY + root.rowAlignY;
         slideXAnim.from = root.slideX;
         slideXAnim.to = root.rowAlignX;
+        root.morphT = 0;
         slideAnim.start();
         slideXAnim.start();
     }
@@ -71,6 +72,7 @@ Item {
         slideAnim.to = 0;
         slideXAnim.from = root.slideX;
         slideXAnim.to = 0;
+        root.morphT = 1;
         slideAnim.start();
         slideXAnim.start();
     }
@@ -121,18 +123,30 @@ Item {
     readonly property real gutterWidth: fm.advanceWidth(String(Math.max(1, root.lineCount)))
     readonly property real contentW: root.implicitWidth - Tokens.padding.large * 2
     readonly property real textW: root.contentW - root.gutterWidth - Tokens.spacing.medium
-    readonly property int cols: Math.max(1, Math.floor(root.textW / root.charWidth))
-    readonly property string gutterText: {
-        let s = "";
-        for (let i = 0; i < root.lines.length; i++) {
-            if (i > 0)
-                s += "\n";
-            s += (i + 1);
-            const extra = Math.ceil(root.lines[i].length / root.cols) - 1;
-            for (let k = 0; k < extra; k++)
-                s += "\n";
+    // Rebuilt from the ACTUAL laid-out text (positionToRectangle), not from a
+    // chars-per-row estimate: with word wrapping the visual rows per logical
+    // line depend on where the words break, so the gutter asks the layout where
+    // each line landed and pads blank rows to match.
+    property string gutterText: ""
+
+    function rebuildGutter(): void {
+        if (!root.isText) {
+            root.gutterText = "";
+            return;
         }
-        return s;
+        const lh = bodyText.positionToRectangle(0).height;
+        if (lh <= 0)
+            return;
+        const out = [];
+        let off = 0;
+        for (let i = 0; i < root.lines.length; i++) {
+            const row = Math.round(bodyText.positionToRectangle(off).y / lh);
+            while (out.length < row)
+                out.push("");
+            out.push(String(i + 1));
+            off += root.lines[i].length + 1;
+        }
+        root.gutterText = out.join("\n");
     }
 
     property string imgSrc: ""
@@ -225,6 +239,7 @@ Item {
         slideXAnim.to = 0;
         slideAnim.start();
         slideXAnim.start();
+        morphT = 1;
         root.refresh();
     }
 
@@ -381,9 +396,13 @@ Item {
                 selectByMouse: true
                 persistentSelection: true
                 textFormat: TextEdit.PlainText
-                // WrapAnywhere so a wrapped row is exactly `cols` chars -- keeps
-                // the gutter's blank-line padding aligned with the visual rows.
-                wrapMode: TextEdit.WrapAnywhere
+                // Word boundaries; only runs longer than a row split mid-word.
+                // The gutter follows the real layout (rebuildGutter), so it no
+                // longer needs fixed-chars-per-row wrapping.
+                wrapMode: TextEdit.Wrap
+                onTextChanged: Qt.callLater(root.rebuildGutter)
+                onWidthChanged: Qt.callLater(root.rebuildGutter)
+                onContentHeightChanged: Qt.callLater(root.rebuildGutter)
                 color: Colours.palette.m3onSurface
                 selectionColor: Colours.palette.m3primary
                 selectedTextColor: Colours.palette.m3onPrimary
@@ -396,11 +415,61 @@ Item {
         Image {
             id: image
 
-            visible: root.isImage
+            // Hidden while the morph overlay is in flight -- the overlay lands
+            // exactly on this rect, then hands off.
+            visible: root.isImage && root.morphT >= 1
             width: root.contentW
             height: status === Image.Ready && implicitWidth > 0 ? Math.min(root.maxHeight, width * implicitHeight / implicitWidth) : 0
             source: root.imgSrc
             fillMode: Image.PreserveAspectFit
+            cache: false
+            asynchronous: true
+            sourceSize.width: root.maxWidth
+        }
+    }
+
+    // -- image morph: the row's thumbnail becomes the reader image --
+    // A second shared element for image entries, riding the same slide. At t=0
+    // it exactly covers the header's material icon slot -- which is pixel-
+    // identical to the row's thumbnail slot, so the icon really is "under" the
+    // thumbnail -- and at t=1 it exactly covers the rect the body image paints.
+    // Both endpoints are live bindings (the icon slot follows slideX/slideY),
+    // so enter, exit and mid-flight reversals all stay glued.
+    property real morphT: 0
+
+    Behavior on morphT {
+        Anim {}
+    }
+
+    StyledClippingRect {
+        id: morphImg
+
+        readonly property bool ready: mImg.status === Image.Ready && mImg.implicitWidth > 0 && mImg.implicitHeight > 0
+        // The rect the body's aspect-FIT image actually paints inside
+        // contentW x maxHeight. Only horizontal centring can occur: a capped
+        // height caps the box to the same value, so there is no letterbox.
+        readonly property real fitW: ready ? Math.min(root.contentW, root.maxHeight * mImg.implicitWidth / mImg.implicitHeight) : root.contentW
+        readonly property real fitH: ready ? fitW * mImg.implicitHeight / mImg.implicitWidth : root.contentW
+        readonly property real srcS: headerIcon.implicitHeight
+        readonly property real srcX: Tokens.padding.large + root.slideX
+        readonly property real srcY: Tokens.padding.large + root.slideY + (header.implicitHeight - srcS) / 2
+        readonly property real dstX: Tokens.padding.large + (root.contentW - fitW) / 2
+        readonly property real dstY: Tokens.padding.large + root.slideY + header.implicitHeight + Tokens.spacing.small - viewport.contentY
+
+        visible: root.isImage && root.morphT < 1
+        x: srcX + (dstX - srcX) * root.morphT
+        y: srcY + (dstY - srcY) * root.morphT
+        width: srcS + (fitW - srcS) * root.morphT
+        height: srcS + (fitH - srcS) * root.morphT
+        radius: Tokens.rounding.small * (1 - root.morphT)
+        color: Colours.palette.m3surfaceContainerHigh
+
+        Image {
+            id: mImg
+
+            anchors.fill: parent
+            source: root.imgSrc
+            fillMode: Image.PreserveAspectCrop
             cache: false
             asynchronous: true
             sourceSize.width: root.maxWidth
