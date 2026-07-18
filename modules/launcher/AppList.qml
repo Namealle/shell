@@ -69,14 +69,39 @@ StyledListView {
         }
     }
 
-    // The results feeding the model, exposed so the clipboard reader can read the
-    // highlighted entry directly (currentItem can be unrealised when scrolled).
-    readonly property var results: root.resultsForText(root.displayText)
+    // Shared-element physics for the clipboard reader: the entry being read is
+    // LIFTED out of the model (its neighbours close the gap with the standard
+    // move/displaced animations, exactly like filtering) and its row is masked.
+    // On exit the lift clears first -- neighbours part to reopen the gap while
+    // the reader's header slides into it -- and the mask clears only when the
+    // header lands, so the entry never exists in two places at once.
+    property var liftedEntry: null
+    property var maskedEntry: null
+    property int pendingIndex: -1
+
+    function setLifted(entry: var, index: int): void {
+        root.pendingIndex = index;
+        root.maskedEntry = entry;
+        root.liftedEntry = entry;
+    }
+
+    function clearLift(restoreIndex: int): void {
+        root.pendingIndex = restoreIndex;
+        root.liftedEntry = null;
+    }
+
+    readonly property var fullResults: root.resultsForText(root.displayText)
+    readonly property var results: root.liftedEntry ? root.fullResults.filter(e => e !== root.liftedEntry) : root.fullResults
     readonly property var currentEntry: state === "clipboard" ? (root.results[root.currentIndex] ?? null) : null
 
     model: ScriptModel {
         values: root.results
-        onValuesChanged: root.currentIndex = 0
+        // Lift/unlift must not yank the view back to the top: they pass the
+        // index to keep via pendingIndex; genuine query changes still reset.
+        onValuesChanged: {
+            root.currentIndex = root.pendingIndex >= 0 ? root.pendingIndex : 0;
+            root.pendingIndex = -1;
+        }
     }
 
     spacing: Tokens.spacing.small
@@ -223,11 +248,10 @@ StyledListView {
                 }
             }
             // add only -- NOT remove. A remove-fade leaves every filtered-out row
-            // fading in place for ~350ms while its replacement slides in over it:
-            // two rows rendered on the same spot (the "ghost" overlap). Removed
-            // rows must vanish instantly; the mode switch itself never needs the
-            // fade either, since the whole list is at opacity 0 when delegates
-            // are swapped.
+            // fading in place under its replacement (double-text ghost), and a
+            // slide-out exit was tried and rejected; removed rows vanish
+            // instantly, like the launcher always did before the first mode
+            // switch.
             PropertyAction {
                 target: root.add
                 property: "enabled"

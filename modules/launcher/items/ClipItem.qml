@@ -31,6 +31,11 @@ Item {
 
     implicitHeight: Tokens.sizes.launcher.itemHeight
 
+    // While this entry is lifted into the reader (or its header is still sliding
+    // back), the reader's header IS this row -- rendering it here too would show
+    // the same object twice.
+    visible: root.list?.maskedEntry !== root.modelData
+
     anchors.left: parent?.left
     anchors.right: parent?.right
 
@@ -134,7 +139,10 @@ Item {
                 elide: Text.ElideRight
 
                 visible: text.length > 0
-                height: visible ? implicitHeight : 0
+                // On own text, NOT `visible`: visible reads combined ancestor
+                // visibility, and the reader's row-mask toggles that -- height
+                // reacting to it loops the binding.
+                height: text.length > 0 ? implicitHeight : 0
             }
         }
     }
