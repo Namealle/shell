@@ -25,6 +25,59 @@ Item {
     // Live find term (search text minus the `;` prefix), seeded by the filter.
     property string findTerm: ""
 
+    // Shared-element morph: the header IS the row. It starts at the row's y
+    // (startY, from ContentList) and slides to the top; the body is anchored to
+    // it, so it unfolds beneath as the header rises. exitTo() runs the reverse
+    // and only then lets ContentList swap back to the list.
+    property real startY: 0
+    property real slideY: 0
+    property real slideX: 0
+    property bool exiting: false
+    property var exitCb: null
+
+    // The header's resting insets differ from the row content's insets in the
+    // list (padding.large vs padding.medium horizontally; top padding vs row
+    // centring vertically). The slide targets the row CONTENT's exact position
+    // so the landing handoff is pixel-true, not "close then snap".
+    readonly property real rowAlignY: (Tokens.sizes.launcher.itemHeight - header.implicitHeight) / 2 - Tokens.padding.large
+    readonly property real rowAlignX: Tokens.padding.medium - Tokens.padding.large
+
+    function exitTo(targetY: real, cb: var): void {
+        // Stop BEFORE storing the callback: stopping a still-running enter
+        // slide fires onStopped, which must not consume (and instantly fire)
+        // the exit callback.
+        slideAnim.stop();
+        slideXAnim.stop();
+        root.exitCb = cb;
+        root.exiting = true;
+        slideAnim.from = root.slideY;
+        slideAnim.to = targetY + root.rowAlignY;
+        slideXAnim.from = root.slideX;
+        slideXAnim.to = root.rowAlignX;
+        slideAnim.start();
+        slideXAnim.start();
+    }
+
+    Anim {
+        id: slideAnim
+
+        target: root
+        property: "slideY"
+        onStopped: {
+            const cb = root.exitCb;
+            root.exitCb = null;
+            if (cb)
+                cb();
+        }
+    }
+
+    Anim {
+        id: slideXAnim
+
+        target: root
+        property: "slideX"
+    }
+
     readonly property bool isImage: root.entry?.isImage ?? false
     readonly property bool isBinary: !!(root.entry?.binMatch)
     readonly property bool isText: !!root.entry && !root.isBinary
@@ -145,7 +198,18 @@ Item {
 
     onEntryChanged: root.stage()
     onFindTermChanged: root.applyFind()
-    Component.onCompleted: root.refresh()
+    Component.onCompleted: {
+        // Start exactly on the row's content, become the header.
+        slideY = startY + rowAlignY;
+        slideX = rowAlignX;
+        slideAnim.from = slideY;
+        slideAnim.to = 0;
+        slideXAnim.from = slideX;
+        slideXAnim.to = 0;
+        slideAnim.start();
+        slideXAnim.start();
+        root.refresh();
+    }
 
     Timer {
         id: debounce
@@ -195,6 +259,11 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.margins: Tokens.padding.large
+        // slideY/slideX carry the shared-element motion; the body is anchored
+        // below, so it compresses/unfolds with the header rather than being
+        // overlapped.
+        anchors.topMargin: Tokens.padding.large + root.slideY
+        anchors.leftMargin: Tokens.padding.large + root.slideX
         anchors.bottomMargin: 0
 
         implicitHeight: Math.max(headerIcon.implicitHeight, headerText.implicitHeight)
@@ -246,6 +315,10 @@ Item {
     // -- body --
     StyledFlickable {
         id: viewport
+
+        // During exit the list is already returning underneath; only the header
+        // (the shared element) stays visible for the slide back onto its row.
+        visible: !root.exiting
 
         anchors.top: header.bottom
         anchors.topMargin: Tokens.spacing.small
