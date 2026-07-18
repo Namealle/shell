@@ -25,18 +25,119 @@ Item {
     // Clipboard reader (Option D): `→` morphs the launcher into a reader for the
     // highlighted entry, `←` morphs back. Only meaningful in clipboard mode.
     property bool readerActive: false
+    // Where the highlighted row sat (in this item's coords) when the reader was
+    // entered -- the reader's header is the shared element: it starts here and
+    // slides to the top, and slides back down here on exit.
+    property real readerStartY: 0
+    property bool readerExiting: false
     // displayState, NOT state: state's binding involves `frozen` (which we set
     // from readerActive), so reading it here would close a binding loop.
     readonly property bool canRead: (appList.item?.displayState ?? "") === "clipboard"
-    readonly property var readerEntry: appList.item?.currentEntry ?? null
-    onCanReadChanged: if (!canRead) readerActive = false
+    // Owned, not derived from currentIndex: the entry being read is lifted OUT
+    // of the list model, so list indices can't describe it.
+    property var readerEntry: null
+    onCanReadChanged: if (!canRead) resetReader()
 
-    // Closing the launcher mid-read must drop the reader AND the filter freeze,
-    // then re-sync (the freeze made the usual clear-on-close sync a no-op).
+    function currentRowY(): real {
+        const l = appList.item;
+        return l?.currentItem ? l.currentItem.y - l.contentY : 0;
+    }
+
+    function resetReader(): void {
+        partTimer.stop();
+        const l = appList.item;
+        if (l) {
+            l.liftedEntry = null;
+            l.maskedEntry = null;
+            l.pendingIndex = -1;
+        }
+        readerEntry = null;
+        readerActive = false;
+        readerExiting = false;
+    }
+
+    // The row hands itself off to the reader: mask+lift it out of the model
+    // (neighbours close the gap with the standard animations) as the header
+    // spawns at its position and rises.
+    function enterReader(): void {
+        const l = appList.item;
+        if (!canRead || readerActive || readerExiting || !l?.currentEntry)
+            return;
+        readerStartY = currentRowY();
+        readerEntry = l.currentEntry;
+        const i = l.fullResults.indexOf(readerEntry);
+        l.setLifted(readerEntry, Math.max(0, Math.min(i, l.fullResults.length - 2)));
+        readerActive = true;
+    }
+
+    // ↑/↓ inside the reader step through the UNFILTERED results and move the
+    // lift with them (the previous entry returns to the hidden list).
+    function browseReader(step: int): void {
+        const l = appList.item;
+        if (!l || !readerActive || readerExiting)
+            return;
+        const full = l.fullResults;
+        const i = full.indexOf(readerEntry);
+        const j = i + step;
+        if (i < 0 || j < 0 || j >= full.length)
+            return;
+        readerEntry = full[j];
+        l.setLifted(readerEntry, Math.max(0, Math.min(j, full.length - 2)));
+    }
+
+    // Mirror of enter, staged so the reorder is actually SEEN: the header
+    // starts sliding immediately toward where the gap WILL open -- which is
+    // exactly where the below-neighbour sits right now (it inherits that spot
+    // when the row returns above it). The re-insert itself waits ~140ms until
+    // the list has melted in, so the neighbours visibly part to make room
+    // mid-slide; the returning row stays masked until the header lands in the
+    // hole, so the entry never renders twice.
+    function exitReader(): void {
+        if (!readerActive || readerExiting)
+            return;
+        const r = clipReader.item;
+        const l = appList.item;
+        if (r?.exitTo && l) {
+            readerExiting = true;
+            const i = Math.max(0, l.fullResults.indexOf(readerEntry));
+            // currentIndex sat on the below-neighbour while reading, so its y IS
+            // the future gap -- except when the read entry was the LAST row: then
+            // it's the above-neighbour and the gap opens one row lower.
+            let target = currentRowY();
+            if (i >= l.fullResults.length - 1 && l.fullResults.length > 1)
+                target += root.Tokens.sizes.launcher.itemHeight + l.spacing;
+            partTimer.index = i;
+            readerActive = false;
+            r.exitTo(target, () => {
+                l.maskedEntry = null;
+                root.readerEntry = null;
+                root.readerExiting = false;
+            });
+            partTimer.restart();
+        } else {
+            resetReader();
+        }
+    }
+
+    Timer {
+        id: partTimer
+
+        property int index: 0
+
+        interval: 140
+        onTriggered: {
+            if (root.readerExiting)
+                appList.item?.clearLift(index);
+        }
+    }
+
+    // Closing the launcher mid-read must drop the reader, the lift/mask AND the
+    // filter freeze, then re-sync (the freeze made the clear-on-close sync a
+    // no-op).
     Connections {
         function onLauncherChanged(): void {
-            if (!root.screenState.launcher && root.readerActive) {
-                root.readerActive = false;
+            if (!root.screenState.launcher && (root.readerActive || root.readerExiting)) {
+                root.resetReader();
                 appList.item?.syncDisplayText();
             }
         }
@@ -87,7 +188,6 @@ Item {
                 root.implicitHeight: Math.min(root.maxHeight, clipReader.item?.implicitHeight ?? 0)
                 appList.active: true
                 appList.opacity: 0
-                clipReader.active: true
             }
         }
     ]
@@ -119,6 +219,14 @@ Item {
 
         anchors.fill: parent
 
+        // Reader enter/exit: the other rows melt out fast under the travelling
+        // header (the shared element carries the continuity, not a crossfade).
+        Behavior on opacity {
+            Anim {
+                type: Anim.FastEffects
+            }
+        }
+
         sourceComponent: AppList {
             objectName: "launcherAppList"
 
@@ -131,12 +239,15 @@ Item {
     Loader {
         id: clipReader
 
-        active: false
+        // Not state-driven: the reader must survive the flip back to the list
+        // (readerExiting) so its header can finish sliding down onto the row.
+        active: root.readerActive || root.readerExiting
 
         anchors.fill: parent
 
         sourceComponent: ClipReader {
             entry: root.readerEntry
+            startY: root.readerStartY
             // Search text minus the `;` prefix: seeded with the list filter on
             // entry, live as the user keeps typing (the list itself is frozen).
             findTerm: {
