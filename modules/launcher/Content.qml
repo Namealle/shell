@@ -61,9 +61,10 @@ Item {
         placeholderText: qsTr("Type \"%1\" for commands").arg(GlobalConfig.launcher.actionPrefix)
 
         onAccepted: {
-            // Reader mode: copy the highlighted entry (its row may be unrealised).
+            // Reader mode: copy the entry being read (it is lifted out of the
+            // list model, so list indices can't reach it).
             if (list.readerActive) {
-                list.currentList?.currentEntry?.onClicked(list.currentList);
+                list.readerEntry?.onClicked(list.currentList);
                 return;
             }
 
@@ -90,14 +91,14 @@ Item {
             }
         }
 
-        Keys.onUpPressed: list.currentList?.decrementCurrentIndex()
-        Keys.onDownPressed: list.currentList?.incrementCurrentIndex()
+        Keys.onUpPressed: list.readerActive ? list.browseReader(-1) : list.currentList?.decrementCurrentIndex()
+        Keys.onDownPressed: list.readerActive ? list.browseReader(1) : list.currentList?.incrementCurrentIndex()
 
         // → morphs into the clipboard reader, ← morphs back. Both give up in-field
         // cursor movement while in clipboard/reader mode (short filter text).
         Keys.onRightPressed: event => {
             if (text.startsWith(GlobalConfig.launcher.clipboardPrefix) && !list.readerActive) {
-                list.readerActive = true;
+                list.enterReader();
                 event.accepted = true;
             } else {
                 event.accepted = false;
@@ -107,9 +108,10 @@ Item {
             if (list.readerActive) {
                 // Restore the list filter the reader froze (typing in the reader
                 // was find-within-entry, not filtering); restore BEFORE unfreezing
-                // so the swap never re-filters the list.
+                // so the swap never re-filters the list. The swap itself happens
+                // after the header has slid back onto its row (exitReader).
                 text = list.currentList?.displayText ?? text;
-                list.readerActive = false;
+                list.exitReader();
                 event.accepted = true;
             } else {
                 event.accepted = false;
