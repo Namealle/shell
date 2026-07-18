@@ -22,11 +22,35 @@ Item {
     readonly property var currentList: showWallpapers ? wallpaperList.item : appList.item // Can be either ListView or PathView, so can't type properly
     property string animState: showWallpapers ? "wallpapers" : "apps"
 
+    // Clipboard reader (Option D): `→` morphs the launcher into a reader for the
+    // highlighted entry, `←` morphs back. Only meaningful in clipboard mode.
+    property bool readerActive: false
+    // displayState, NOT state: state's binding involves `frozen` (which we set
+    // from readerActive), so reading it here would close a binding loop.
+    readonly property bool canRead: (appList.item?.displayState ?? "") === "clipboard"
+    readonly property var readerEntry: appList.item?.currentEntry ?? null
+    onCanReadChanged: if (!canRead) readerActive = false
+
+    // Closing the launcher mid-read must drop the reader AND the filter freeze,
+    // then re-sync (the freeze made the usual clear-on-close sync a no-op).
+    Connections {
+        function onLauncherChanged(): void {
+            if (!root.screenState.launcher && root.readerActive) {
+                root.readerActive = false;
+                appList.item?.syncDisplayText();
+            }
+        }
+
+        target: root.screenState
+    }
+
     anchors.horizontalCenter: parent.horizontalCenter
     anchors.bottom: parent.bottom
 
     clip: true
-    state: animState
+    // Reader rides on `state` (not animState) so the opacity fade below never
+    // fires for it -- entering the reader is a pure geometric morph.
+    state: readerActive && canRead ? "reader" : animState
 
     states: [
         State {
@@ -50,6 +74,20 @@ Item {
                 root.implicitWidth: Math.max(root.Tokens.sizes.launcher.itemWidth * 1.2, wallpaperList.implicitWidth)
                 root.implicitHeight: root.Tokens.sizes.launcher.wallpaperHeight
                 wallpaperList.active: true
+            }
+        },
+        State {
+            name: "reader"
+
+            // Keep appList alive (currentIndex/model persist for ↑/↓ browse) but
+            // hidden under the reader; no left/right anchors so width is intrinsic
+            // and grows to the reader's content, centred like the wallpapers state.
+            PropertyChanges {
+                root.implicitWidth: clipReader.item?.implicitWidth ?? root.Tokens.sizes.launcher.itemWidth
+                root.implicitHeight: Math.min(root.maxHeight, clipReader.item?.implicitHeight ?? 0)
+                appList.active: true
+                appList.opacity: 0
+                clipReader.active: true
             }
         }
     ]
@@ -86,6 +124,26 @@ Item {
 
             search: root.search
             screenState: root.screenState
+            frozen: root.readerActive
+        }
+    }
+
+    Loader {
+        id: clipReader
+
+        active: false
+
+        anchors.fill: parent
+
+        sourceComponent: ClipReader {
+            entry: root.readerEntry
+            // Search text minus the `;` prefix: seeded with the list filter on
+            // entry, live as the user keeps typing (the list itself is frozen).
+            findTerm: {
+                const t = root.search.text;
+                const p = GlobalConfig.launcher.clipboardPrefix;
+                return t.startsWith(p) ? t.slice(p.length) : t;
+            }
         }
     }
 
