@@ -233,6 +233,7 @@ Item {
             search: root.search
             screenState: root.screenState
             frozen: root.readerActive
+            exiting: root.readerExiting
         }
     }
 
