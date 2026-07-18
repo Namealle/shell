@@ -61,7 +61,28 @@ Item {
     // spawns at its position and rises.
     function enterReader(): void {
         const l = appList.item;
-        if (!canRead || readerActive || readerExiting || !l?.currentEntry)
+        if (!canRead || readerActive)
+            return;
+        // Mid-exit re-entry: the reader instance is still alive and its header
+        // is sliding down -- reverse it in place instead of dropping the
+        // keypress until the slide lands. Same entry, so nothing needs
+        // rebuilding: cancel the staged re-insert (or re-lift if it already
+        // happened) and send the header back up from wherever it is.
+        if (readerExiting) {
+            const r = clipReader.item;
+            if (!r || !readerEntry || !l)
+                return;
+            partTimer.stop();
+            if (l.liftedEntry !== readerEntry) {
+                const i = l.fullResults.indexOf(readerEntry);
+                l.setLifted(readerEntry, Math.max(0, Math.min(i, l.fullResults.length - 2)));
+            }
+            readerExiting = false;
+            readerActive = true;
+            r.reenter();
+            return;
+        }
+        if (!l?.currentEntry)
             return;
         readerStartY = currentRowY();
         readerEntry = l.currentEntry;
@@ -100,12 +121,13 @@ Item {
         if (r?.exitTo && l) {
             readerExiting = true;
             const i = Math.max(0, l.fullResults.indexOf(readerEntry));
-            // currentIndex sat on the below-neighbour while reading, so its y IS
-            // the future gap -- except when the read entry was the LAST row: then
-            // it's the above-neighbour and the gap opens one row lower.
-            let target = currentRowY();
-            if (i >= l.fullResults.length - 1 && l.fullResults.length > 1)
-                target += root.Tokens.sizes.launcher.itemHeight + l.spacing;
+            // The landing spot comes from the LAYOUT, not the animated item: on
+            // a quick enter->exit the below-neighbour is still mid-flight
+            // closing the gap, so its animated y sits below the settled gap and
+            // the header would land short, then snap on unmask. Rows are
+            // fixed-height, so index math gives the settled position directly
+            // (and covers the last-row case with no special branch).
+            const target = l.originY + i * (root.Tokens.sizes.launcher.itemHeight + l.spacing) - l.contentY;
             partTimer.index = i;
             readerActive = false;
             r.exitTo(target, () => {

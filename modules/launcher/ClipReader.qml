@@ -58,6 +58,23 @@ Item {
         slideXAnim.start();
     }
 
+    // Mid-exit reversal: stop the outbound slide wherever it is and return the
+    // header to the top. The pending exit callback is discarded FIRST --
+    // stopping fires onStopped, which must not consume (and run) the handoff
+    // that would unmask the row under the re-opened reader.
+    function reenter(): void {
+        root.exitCb = null;
+        slideAnim.stop();
+        slideXAnim.stop();
+        root.exiting = false;
+        slideAnim.from = root.slideY;
+        slideAnim.to = 0;
+        slideXAnim.from = root.slideX;
+        slideXAnim.to = 0;
+        slideAnim.start();
+        slideXAnim.start();
+    }
+
     Anim {
         id: slideAnim
 
