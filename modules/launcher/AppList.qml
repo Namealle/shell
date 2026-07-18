@@ -22,6 +22,13 @@ StyledListView {
     // filtering: hold displayText (and therefore results + currentEntry) still.
     property bool frozen: false
 
+    // While the reader's header slides back onto its row, the landing target was
+    // computed from the contentY at exit time. ApplyRange re-evaluates against
+    // the still-animating height on the state flip and yanks contentY mid-slide
+    // when the current row sits at the viewport bottom, so the header lands tens
+    // of px off its row. Freeze auto-scrolling for the exit window only.
+    property bool exiting: false
+
     readonly property string requestedState: stateForText(search.text)
     readonly property string displayState: stateForText(displayText)
 
@@ -115,7 +122,7 @@ StyledListView {
 
     preferredHighlightBegin: 0
     preferredHighlightEnd: height
-    highlightRangeMode: ListView.ApplyRange
+    highlightRangeMode: exiting ? ListView.NoHighlightRange : ListView.ApplyRange
 
     highlightFollowsCurrentItem: false
     highlight: StyledRect {
