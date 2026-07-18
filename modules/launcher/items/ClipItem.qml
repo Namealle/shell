@@ -4,9 +4,11 @@ import Caelestia.Config
 import qs.components
 import qs.services
 
-// Delegate for a clipboard-history entry (the `;` launcher mode). Left slot is
-// a decoded thumbnail for image entries, otherwise the content-aware Material
-// icon from Clipboard.iconFor(); then title + description.
+// Delegate for a clipboard-history entry (the `;` launcher mode). A fixed-height
+// single-line row, exactly like the other launcher pickers. Left slot is a
+// decoded thumbnail for image entries, a swatch for colour entries, otherwise the
+// content-aware Material icon from Clipboard.iconFor(); then title + description.
+// Full content (real newlines, selectable) lives in the reader -- press `→`.
 Item {
     id: root
 
@@ -14,6 +16,8 @@ Item {
     required property var list
 
     readonly property bool isImage: root.modelData?.isImage ?? false
+    readonly property string swatchColour: root.isImage ? "" : (root.modelData?.colour ?? "")
+    readonly property bool isColour: root.swatchColour.length > 0
     readonly property string imgCache: root.isImage ? `/tmp/caelestia-clip-preview-${root.modelData.entryId}.png` : ""
 
     // Re-decode whenever the delegate is recycled onto a different image entry.
@@ -52,11 +56,25 @@ Item {
         MaterialIcon {
             id: icon
 
-            visible: !root.isImage
+            visible: !root.isImage && !root.isColour
             anchors.verticalCenter: parent.verticalCenter
             text: root.modelData?.icon ?? "content_paste"
             color: Colours.palette.m3onSurfaceVariant
             fontStyle: Tokens.font.icon.builders.large.scale(1.3).build()
+        }
+
+        // Colour entries paint the actual colour as their swatch instead of an icon.
+        StyledRect {
+            id: swatch
+
+            visible: root.isColour
+            anchors.verticalCenter: parent.verticalCenter
+            implicitWidth: icon.implicitHeight
+            implicitHeight: icon.implicitHeight
+            radius: Tokens.rounding.small
+            color: root.isColour ? root.swatchColour : "transparent"
+            border.width: 1
+            border.color: Colours.palette.m3outlineVariant
         }
 
         StyledClippingRect {
@@ -81,8 +99,12 @@ Item {
             }
         }
 
+        // NOT `id: text` -- that shadows the StyledTexts' own `text` property
+        // inside this scope, silently breaking desc's `visible: text.length > 0`.
         Item {
-            anchors.left: root.isImage ? thumbWrapper.right : icon.right
+            id: textCol
+
+            anchors.left: root.isImage ? thumbWrapper.right : (root.isColour ? swatch.right : icon.right)
             anchors.leftMargin: Tokens.spacing.medium
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
