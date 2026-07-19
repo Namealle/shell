@@ -488,6 +488,10 @@ Singleton {
             if (entry.binMatch)
                 return entry.binMatch[1];
             const cached = root.lineCounts[entry.entryId];
+            // Previews are truncated at 999 chars -- until the real count
+            // lands, a capped length is a lie, so say so instead.
+            if (!cached && entry.name.length >= 999)
+                return "999+ characters";
             const n = cached ? cached.chars : entry.name.length;
             let s = `${n} ${n === 1 ? "character" : "characters"}`;
             if (cached)
@@ -545,17 +549,19 @@ Singleton {
                     { n++; c += length($0) }
                     END { if (!n) n = 1; printf "%s\\t%d\\t%d\\n", id, n, c + n - 1 }'
             done`, "lc", lineCountProc.known]
-        stdout: StdioCollector {
-            onStreamFinished: {
+        // Streamed per entry, not collected: cliphist lists newest-first, so
+        // the rows actually on screen get exact counts within the first
+        // moments instead of after the WHOLE history has been decoded.
+        stdout: SplitParser {
+            onRead: data => {
+                const [id, lines, chars] = data.split("\t");
+                if (!id)
+                    return;
                 const counts = Object.assign({}, root.lineCounts);
-                for (const line of text.split("\n")) {
-                    const [id, lines, chars] = line.split("\t");
-                    if (id)
-                        counts[id] = {
-                            lines: parseInt(lines, 10),
-                            chars: parseInt(chars, 10)
-                        };
-                }
+                counts[id] = {
+                    lines: parseInt(lines, 10),
+                    chars: parseInt(chars, 10)
+                };
                 root.lineCounts = counts;
             }
         }
