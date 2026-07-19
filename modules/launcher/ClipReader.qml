@@ -175,6 +175,7 @@ Item {
         const e = root.entry;
         cache.text = "";
         root.imgSrc = "";
+        scrollAnim.stop();
         viewport.contentY = 0;
         if (!e)
             return;
@@ -210,6 +211,41 @@ Item {
         decoder.running = true;
     }
 
+    // Keyboard scrolling: PgUp/PgDn a viewport at a time, Home/End to the
+    // edges -- always animated, never a one-frame jump. Repeated presses
+    // accumulate against the in-flight target, not the current frame, so
+    // holding the key pages steadily.
+    function smoothScrollTo(y: real): void {
+        const to = Math.max(0, Math.min(y, Math.max(0, viewport.contentHeight - viewport.height)));
+        const from = viewport.contentY;
+        scrollAnim.stop();
+        if (to === from)
+            return;
+        scrollAnim.from = from;
+        scrollAnim.to = to;
+        scrollAnim.start();
+    }
+
+    function scrollPage(dir: int): void {
+        const base = scrollAnim.running ? scrollAnim.to : viewport.contentY;
+        smoothScrollTo(base + dir * viewport.height * 0.9);
+    }
+
+    function scrollEdge(dir: int): void {
+        smoothScrollTo(dir < 0 ? 0 : viewport.contentHeight);
+    }
+
+    Anim {
+        id: scrollAnim
+
+        // Standard, not the spatial default: scrolling must settle exactly on
+        // its stop point -- an overshoot curve makes the text bounce.
+        type: Anim.Standard
+
+        target: viewport
+        property: "contentY"
+    }
+
     // Select the first occurrence of the find term and scroll it into view.
     function applyFind(): void {
         const t = root.findTerm.trim().toLowerCase();
@@ -224,7 +260,7 @@ Item {
         }
         bodyText.select(idx, idx + t.length);
         const r = bodyText.positionToRectangle(idx);
-        viewport.contentY = Math.max(0, Math.min(r.y - viewport.height / 3, Math.max(0, viewport.contentHeight - viewport.height)));
+        smoothScrollTo(r.y - viewport.height / 3);
     }
 
     onEntryChanged: root.stage()
