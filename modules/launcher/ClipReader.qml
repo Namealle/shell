@@ -238,9 +238,11 @@ Item {
     Anim {
         id: scrollAnim
 
-        // Standard, not the spatial default: scrolling must settle exactly on
-        // its stop point -- an overshoot curve makes the text bounce.
+        // Decel, not the spatial default: scrolling must settle exactly on its
+        // stop point (overshoot makes the text bounce), and it should ease
+        // into the stop rather than end abruptly (standard felt too linear).
         type: Anim.Standard
+        easing: Tokens.anim.standardDecel
 
         target: viewport
         property: "contentY"
