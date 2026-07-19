@@ -77,8 +77,13 @@ Item {
                 const i = l.fullResults.indexOf(readerEntry);
                 l.setLifted(readerEntry, Math.max(0, Math.min(i, l.fullResults.length - 2)));
             }
-            readerExiting = false;
+            // Active BEFORE exiting: the reader Loader's `active` is
+            // `readerActive || readerExiting`, and bindings re-evaluate between
+            // these two writes -- clearing exiting first flips it false for one
+            // statement, which tears down the live reader (invalidating its
+            // context, so r.reenter() explodes) and builds a fresh one.
             readerActive = true;
+            readerExiting = false;
             r.reenter();
             return;
         }
@@ -89,6 +94,15 @@ Item {
         const i = l.fullResults.indexOf(readerEntry);
         l.setLifted(readerEntry, Math.max(0, Math.min(i, l.fullResults.length - 2)));
         readerActive = true;
+    }
+
+    // PgUp/PgDn/Home/End inside the reader scroll its text (smoothly).
+    function readerScrollPage(dir: int): void {
+        clipReader.item?.scrollPage(dir);
+    }
+
+    function readerScrollEdge(dir: int): void {
+        clipReader.item?.scrollEdge(dir);
     }
 
     // ↑/↓ inside the reader step through the UNFILTERED results and move the

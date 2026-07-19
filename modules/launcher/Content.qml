@@ -121,8 +121,27 @@ Item {
         Keys.onEscapePressed: root.screenState.launcher = false
 
         Keys.onPressed: event => {
-            // Del removes the highlighted clipboard entry (cliphist delete).
-            if (event.key === Qt.Key_Delete && text.startsWith(GlobalConfig.launcher.clipboardPrefix)) {
+            // Reader: PgUp/PgDn page through the text, Home/End jump to the
+            // edges (both animated in ClipReader). Home/End give up find-field
+            // cursor jumps while reading; in list mode they stay with the field.
+            if (list.readerActive) {
+                if (event.key === Qt.Key_PageDown || event.key === Qt.Key_PageUp) {
+                    list.readerScrollPage(event.key === Qt.Key_PageDown ? 1 : -1);
+                    event.accepted = true;
+                    return;
+                }
+                if (event.key === Qt.Key_Home || event.key === Qt.Key_End) {
+                    list.readerScrollEdge(event.key === Qt.Key_Home ? -1 : 1);
+                    event.accepted = true;
+                    return;
+                }
+            }
+
+            // Del removes the highlighted clipboard entry (cliphist delete) --
+            // list mode only: in the reader the list highlight sits on the
+            // below-neighbour, not the entry being read, so it would delete
+            // the wrong one.
+            if (event.key === Qt.Key_Delete && !list.readerActive && text.startsWith(GlobalConfig.launcher.clipboardPrefix)) {
                 const item = list.currentList?.currentItem;
                 if (item?.modelData?.del) {
                     item.modelData.del();
