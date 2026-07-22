@@ -161,11 +161,15 @@ Singleton {
             if (/\.(?:exe|msi|dmg|deb|rpm|appimage|apk|pkg|flatpak|snap)$/i.test(s))
                 return "deployed_code";
             if (/\.(?:py|js|ts|tsx|jsx|c|cpp|cc|h|hpp|rs|go|rb|php|java|kt|swift|sh|lua|pl|sql|qml|vue|svelte)$/i.test(s))
-                return "code";
+                return "folder_code"; // a source-file reference (path/filename), distinct from a pasted code snippet
             if (/\.(?:json|ya?ml|toml|ini|conf|cfg|env|xml)$/i.test(s))
                 return "settings";
             if (/\.(?:txt|md|log)$/i.test(s))
                 return "description";
+            if (/\.(?:pcap|pcapng|cap)$/i.test(s))
+                return "network_check"; // packet capture
+            if (/\.(?:evtx|etl|dmp|mdmp|mem|vmem|vmsn|e01|ex01|aff|aff4|lime)$/i.test(s))
+                return "storage"; // memory / disk / event-log forensic image
             return "";
         };
 
@@ -208,10 +212,23 @@ Singleton {
             return "lan"; // IPv6-ish (must contain a colon, plus "::"/hex-letter/3+ colons — so H:M:S times and colon-less hex like an IBAN fall through)
 
         // -- encoded blobs --
+        if (/^H4sI[A-Za-z0-9+/]{8,}={0,2}$/.test(t))
+            return "folder_zip"; // gzip stream, base64-encoded (magic 1f 8b -> "H4sI")
         if (oneLine && /^[A-Za-z0-9+/]{64,}={0,2}$/.test(t))
             return "data_array"; // base64 blob
+        if (/^[0-9a-f]{62}$/i.test(t))
+            return "fingerprint"; // JARM TLS fingerprint (62 hex — before the hex-dump rule)
         if (oneLine && /^(?:[0-9a-f]{2}[\s:]?){24,}$/i.test(t))
             return "memory"; // raw hex dump
+        if (oneLine && /^(?:0x)?[0-9a-fx]{2}(?:[\s:|][0-9a-fx]{2}){2,}\|?$/i.test(t))
+            return "memory"; // short packet byte-string / content bytes (A0 03 02 01 17, XX placeholders)
+
+        // -- shell prompt capture: a pasted terminal line (leading powerline glyph,
+        //    user@host:path ending in a prompt char, or PowerShell prompt). Placed
+        //    before the tool taxonomy so the whole line reads as "terminal" instead
+        //    of being hijacked by an embedded tool name / URL / path. --
+        if (/^(?:[◄❯➜▶►◆»◀○◎⋈]\s|┌──\(|└─|[\w.+-]+@[\w.:~/\[\]+-]*[$#%]\s|PS [A-Za-z]:\\)/.test(t))
+            return "terminal";
 
         // -- security tooling & shell commands (before URLs: a URL arg must not hijack) --
         if (/(?:^|\|\s*|;\s*|&&\s*)(?:bash|sh)\s+-[a-z]*i[a-z]*\s+.*(?:>\s*&\s*)?\/dev\/(?:tcp|udp)\//i.test(t) || /\bnc\b.*-[a-z]*e[a-z]*\s+\/bin\//i.test(t) || /\b(?:rm\s+-rf\s+\/(?:\s|$)|chmod\s+(?:-R\s+)?777|:\(\)\s*\{\s*:\|:)/.test(t))
@@ -220,6 +237,8 @@ Singleton {
             return "radar"; // recon / scanning
         if (/^(?:sudo\s+)?(?:tshark|tcpdump|wireshark|ngrep|termshark|dumpcap|tcpflow|bettercap|ettercap|arpspoof|mitmproxy|mitmdump)\b/i.test(t))
             return "network_check"; // packet capture / MITM
+        if (/^(?:sudo\s+)?(?:snort|suricata|suricatasc|zeek|zeekctl|zeek-cut|broctl|chaosreader|joincap|capinfos|editcap|mergecap|reordercap|tcpick|nfdump|rita|argus|rwfilter|rwstats|stenographer|arkime)\b/i.test(t))
+            return "sensors"; // NSM sensors / traffic analysis (Snort, Suricata, Zeek, ...)
         if (/^(?:sudo\s+)?(?:hashcat|john|hydra|medusa|ncrack|patator|hcxdumptool|aircrack-ng|airmon-ng|reaver|cewl|crunch)\b/i.test(t))
             return "password"; // credential cracking / wireless
         if (/^(?:sudo\s+)?(?:gobuster|feroxbuster|ffuf|dirb|dirbuster|wfuzz|nikto|wpscan|sqlmap|nuclei|arjun|dalfox|commix|xsstrike)\b/i.test(t))
@@ -246,10 +265,58 @@ Singleton {
             return "package_2"; // language package managers
         if (/^(?:sudo\s+)?systemctl\b/i.test(t) || /^(?:sudo\s+)?(?:journalctl|dmesg|service)\b/i.test(t))
             return "settings"; // service / log management
+        if (/^(?:sudo\s+)?(?:Get-WinEvent|Get-EventLog|Get-WmiObject|Get-CimInstance|gwmi|wmic|wevtutil|logman|auditpol)\b/i.test(t))
+            return "fact_check"; // Windows event-log / WMI query (before the PowerShell Get-* rule)
+        if (/^(?:powershell(?:\.exe)?|pwsh)\b.*-e(?:nc(?:odedcommand)?|c)\s+[A-Za-z0-9+/]{16,}/i.test(t))
+            return "warning"; // PowerShell encoded command (suspicious)
         if (/^(?:sudo|bash|sh|zsh|fish|env|ls|pwd|cd|echo|printf|which|whereis|whoami|man|nano|vim|vi|emacs|chmod|chown|chgrp|mkdir|rmdir|rm|cp|mv|ln|readlink|realpath|basename|dirname|touch|cat|tee|less|tail|head|wc|grep|rg|awk|sed|cut|tr|sort|uniq|xargs|find|fd|stat|tar|gzip|gunzip|unzip|export|source|alias|kill|pkill|ps|top|htop|df|du|free|mount|umount|lsblk|lsof|lspci|lsusb|uname|uptime|sync|dd|useradd|usermod|passwd|su|chsh|crontab|ping|dig|nslookup|ip|ss|netstat|ifconfig|route|iptables|nft|ufw|sysctl|md5sum|sha1sum|sha256sum|base64|xxd|hexdump|openssl|gpg)\b/.test(t))
             return "terminal"; // generic shell / net / file utilities
         if (/^(?:powershell|pwsh)\b/i.test(t) || /\b(?:Invoke-(?:Expression|WebRequest|Command)|IEX|Get-\w+|Set-\w+|New-Object)\b/.test(t))
             return "terminal"; // PowerShell
+
+        // -- SOC / IDS / DFIR: detection rules, filters, alerts, hunting queries,
+        //    forensic artefacts and IOCs. Placed before URLs/JSON/XML/code so these
+        //    structured shapes aren't swallowed by the generic-code catch-all below. --
+        if (/"event_type"\s*:\s*"(?:alert|anomaly)"/.test(t))
+            return "crisis_alert"; // Suricata EVE-JSON alert event
+        if (/\[\*\*\]\s*\[\d+:\d+:\d+\]/.test(t))
+            return "crisis_alert"; // fired IDS alert output (Snort / Suricata fast.log)
+        if (/^#?\s*(?:alert|drop|reject|pass|sdrop|log|activate|dynamic)\s+(?:tcp|udp|icmp|ip|http2?|tls|ssl|dns|ssh|ftp|smb2?|dcerpc|smtp|imap|pop3|modbus|dnp3|nfs|ikev2|krb5|ntp|dhcp|snmp|tftp|rdp|rfb|mqtt|sip)\s+\S+\s+\S+\s*(?:->|<>)/i.test(t))
+            return "policy"; // Snort / Suricata detection rule
+        if (/\b(?:sid\s*:\s*\d+|flow\s*:\s*(?:established|stateless|to_server|to_client)|pcre\s*:\s*"|fast_pattern\b|classtype\s*:\s*[\w-]+\s*;|reference\s*:\s*\w+,)/i.test(t))
+            return "policy"; // Snort / Suricata rule-option fragment (IDS-specific tokens)
+        if (/\brule\s+\w+[^{]*\{/i.test(t) && /\bcondition\s*:/.test(t))
+            return "policy"; // YARA rule
+        if (/\blogsource\s*:/i.test(t) && /\bdetection\s*:/i.test(t) && /\bcondition\s*:/i.test(t))
+            return "policy"; // Sigma rule
+        if (/\|(?:[0-9a-f]{2}\s?){2,}\|/i.test(t))
+            return "memory"; // pipe-delimited packet content bytes (|24 7b|jndi|)
+        if (/<Sysmon\b[^>]*schemaversion/i.test(t) || /<RuleGroup\b[^>]*groupRelation/i.test(t))
+            return "sensors"; // Sysmon monitoring config
+        if (/^#(?:separator|set_separator|fields|types|path|open|close)\b/i.test(t))
+            return "sensors"; // Zeek TSV log header
+        if (/^(?:frame|eth|ip|ipv6|arp|tcp|udp|sctp|icmp|icmpv6|http2?|dns|tls|ssl|quic|smb2?|ldap|kerberos|dhcp|ntp|snmp|ssh|ftp|smtp|pop|imap|nbns|mdns|llmnr|radius|sip|rtp|wlan|eapol|dcerpc)\.[\w.]+\s*(?:==|!=|>=|<=|<|>|contains\b|matches\b|in\b|&&|\|\|)/i.test(t) || /^frame\s+contains\s+/i.test(t))
+            return "filter_alt"; // Wireshark / tshark display filter
+        if (/^(?:tcp|udp|icmp|ip6?|arp|ether|host|net|port|portrange|vlan|src|dst)\b.{0,80}?\b(?:port\s+\d{1,5}|host\s+\d{1,3}\.\d|net\s+\d{1,3}\.\d|portrange\s+\d)/i.test(t))
+            return "filter_alt"; // BPF / libpcap capture filter
+        if (/^(?:search\s+)?(?:index|source|sourcetype)\s*=\s*\S+.*\|\s*(?:stats|tstats|eval|table|rex|timechart|chart|dedup|sort|where|top|rare|fields|bin|transaction|eventstats|streamstats|lookup)\b/i.test(t) || /^\s*\|\s*(?:tstats|stats|inputlookup|makeresults|metadata|mstats)\b/i.test(t))
+            return "query_stats"; // Splunk SPL
+        if (/^[A-Z][A-Za-z0-9_]*\s*\|\s*(?:where|summarize|project|extend|join|union|mv-expand|parse|render|count\b|distinct|take|top|order\s+by|evaluate|make-series)\b/.test(t))
+            return "query_stats"; // KQL (Sentinel / Defender)
+        if (/^(?:sequence\b|(?:process|network|file|registry|authentication|library|dns|any)\s+where\b)/i.test(t))
+            return "query_stats"; // EQL
+        if (/^(?:HK(?:LM|CU|CR|U|CC)|HKEY_(?:LOCAL_MACHINE|CURRENT_USER|CLASSES_ROOT|USERS|CURRENT_CONFIG))[\\\/]/i.test(t))
+            return "app_registration"; // Windows registry path
+        if (/\bhxxps?:\/\//i.test(t) || /[\w)]\[\.\][\w(]/.test(t) || /\[(?:at|dot)\]/i.test(t))
+            return "gpp_maybe"; // defanged IOC (hxxp://, 1.2.3[.]4, user[at]host)
+        if (/^T\d{4}(?:\.\d{3})?\b/.test(t) || /^TA00\d{2}\b/.test(t) || /\bT\d{4}\.\d{3}\b/.test(t))
+            return "swords"; // MITRE ATT&CK technique / tactic ID
+        if (/^[a-z]\d{2}[a-z]\d{2}[a-z0-9]{2}_[0-9a-f]{12}_[0-9a-f]{12}$/i.test(t))
+            return "fingerprint"; // JA4 TLS fingerprint
+        if (/\b(?:Section\s+\d+\s*\/\s*\d+|HTB Academy|Skills Assessment|Go to Questions)\b/i.test(t))
+            return "school"; // HTB Academy / course material
+        if (/\bEvent(?:\s?ID|\s?Code)\s*[:=#]?\s*\d{1,5}\b/i.test(t))
+            return "fact_check"; // Windows Event ID reference (broad — kept last in block)
 
         // -- URLs / mail / hosts --
         if (/\b[a-z2-7]{16,56}\.onion\b/i.test(t))
@@ -318,6 +385,32 @@ Singleton {
             return "receipt_long"; // log line
         if (oneLine && /^[A-Z][A-Z0-9_]{2,}=\S/.test(t))
             return "settings"; // env / config assignment
+        if (/^\[[\w.\- ]+\]$/.test(t))
+            return "settings"; // TOML / INI table header
+        if (/^FROM\s+\S+(?:\s+AS\s+\S+)?/i.test(t) && !/\bfrom\s+\w+\s+(?:import|where|select)/i.test(t))
+            return "deployed_code"; // Dockerfile
+        if (/^"[\w@/.-]+"\s*:\s*"[~^>=<*]*\d[\w.*-]*",?$/.test(t))
+            return "package_2"; // package.json version pin
+        if (/^[A-Za-z][\w.-]*(?:\[[\w,]+\])?\s*(?:==|>=|<=|~=|!=)\s*\d+(?:\.\d+){1,2}(?:[-+][\w.]+)?$/.test(t))
+            return "package_2"; // requirements.txt / pip version pin (dotted-quad IPs excluded)
+        if (/^(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|TRACE|CONNECT)\s+\S+\s+HTTP\/\d/.test(t))
+            return "http"; // HTTP request line
+        if (/^(?:Authorization|Content-Type|Content-Length|User-Agent|Accept|Accept-Encoding|Accept-Language|Cookie|Set-Cookie|Host|Referer|Origin|Cache-Control|Connection|Location|Server|X-[\w-]+):\s+\S/.test(t))
+            return "http"; // HTTP header line
+        if (/^\?[\w%.+-]+=[^&\s]*(?:&[\w%.+-]+=[^&\s]*)+$/.test(t))
+            return "manage_search"; // URL query string
+        if (/^[\w.-]+=[^;\s]+(?:;\s*[\w.-]+=[^;\s]*)+$/.test(t))
+            return "cookie"; // cookie / semicolon key=value list
+        if (/\\(?:documentclass|usepackage|begin\{|end\{|section\*?\{|subsection|textbf|item\b)/.test(t))
+            return "functions"; // LaTeX
+        if (/^@[A-Za-z]+\{[^,\s]+,/.test(t))
+            return "menu_book"; // BibTeX entry
+        if (/^\.\.\s+[\w-]+::(?:\s|$)/.test(t))
+            return "article"; // reStructuredText directive
+        if (/^git@[\w.-]+:[\w./~-]+(?:\.git)?$/.test(t))
+            return "commit"; // git SSH remote
+        if (/^(?:origin|upstream)\/[\w./-]+$/.test(t) || /^refs\/(?:heads|remotes|tags)\/[\w./-]+$/.test(t))
+            return "account_tree"; // git ref
         if (/[{}]|;|=>|->|::|\bfunction\b|\b(?:const|let|var)\b|\bimport\b|\bdef\b|\bclass\b|\breturn\b|<\/?\w+>/.test(t) && t.length < 800)
             return "code";
 
@@ -330,6 +423,13 @@ Singleton {
             if (/^~/.test(t))
                 return "home";
             return "folder";
+        }
+        // Bare relative path (no leading / ~ ./ ..): only treated as a path when its
+        // final segment carries a known extension, so him/her, and/or, 24/7 don't match.
+        if (oneLine && /^(?:[\w.@ +-]+\/)+[\w.@ +-]+$/.test(t)) {
+            const pi = extIcon(t);
+            if (pi)
+                return pi;
         }
 
         // -- everyday --
@@ -365,6 +465,20 @@ Singleton {
             return "format_list_bulleted"; // bullet list
         if (/^\S+\?\s*$/.test(t) || /^(?:who|what|when|where|why|how|which|can|does|is|are)\b[\s\S]*\?$/i.test(t))
             return "help"; // question
+        if (/^[A-Z][A-Z0-9]{1,9}-\d{1,6}$/.test(t))
+            return "confirmation_number"; // issue / ticket key (JIRA-4521)
+        if (/^(?:\d{2,5}\s?[x×]\s?\d{2,5}|\d{1,2}:\d{1,2})$/.test(t))
+            return "aspect_ratio"; // resolution / aspect ratio
+        if (/^\d+(?:\.\d+)?\s?(?:[KMGTP]i?B|[kMGT]B|bytes?|bits?)$/.test(t))
+            return "storage"; // data / file size
+        if (/^\d+(?:\.\d+)?\s?(?:mm|cm|km|in|inch(?:es)?|ft|yd|mi|kg|mg|lb|oz|ml|cl|px|pt|em|rem|vh|vw|deg|°[CF]?|Hz|kHz|MHz|GHz|fps|dpi|ppi|mph|kmh|bpm|rpm)$/.test(t))
+            return "straighten"; // measurement / unit
+        if (/^(?:(?:Ctrl|Control|Alt|Shift|Cmd|Command|Super|Win|Meta|Option|Opt|Fn|⌘|⌃|⌥|⇧)\s*\+\s*){1,4}(?:[A-Za-z0-9]|F\d{1,2}|Esc|Escape|Tab|Enter|Return|Space|Del|Delete|Backspace|Ins|Home|End|Up|Down|Left|Right|PgUp|PgDn)$/.test(t))
+            return "keyboard"; // keyboard shortcut
+        if (/^(?:\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|\uD83E[\uDD00-\uDFFF]|[☀-➿⬀-⯿]️?|[‍️])+$/.test(t) && /[\uD83C-\uDBFF]|[☀-➿⬀-⯿]/.test(t))
+            return "emoji_emotions"; // emoji-only
+        if (/[A-Za-z]{2,}[^{}<>=|\\]*[.!?]["')\]]?(?:\s+[A-Z"'(]|\s*$)/.test(t) && !/[{};=<>]|=>|::|\bfunction\b/.test(t) && /\s/.test(t))
+            return "subject"; // natural-language prose / sentences (last content rule)
 
         // -- structural fallback: unclassified text, keyed on size --
         if (oneLine && /^\S+$/.test(t) && t.length <= 24)
