@@ -61,6 +61,10 @@ AnimDurations* AnimTokens::durations() const {
     return m_durations;
 }
 
+AnimSprings* AnimTokens::springs() const {
+    return m_springs;
+}
+
 QEasingCurve AnimTokens::buildCurve(const QList<qreal>& points) {
     QEasingCurve curve(QEasingCurve::BezierSpline);
 
@@ -112,6 +116,14 @@ void AnimTokens::bindDurations(AnimDurations* durations) {
 
     m_durations = durations;
     emit durationsChanged();
+}
+
+void AnimTokens::bindSprings(AnimSprings* springs) {
+    if (m_springs == springs)
+        return;
+
+    m_springs = springs;
+    emit springsChanged();
 }
 
 } // namespace caelestia::config

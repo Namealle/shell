@@ -42,6 +42,62 @@ public:
         , m_expressiveSlowEffects({ 0.34, 0.88, 0.34, 1, 1, 1 }) {}
 };
 
+// Spring equivalents of AnimCurves, for the physics-driven animation path.
+//
+// A damped spring is fully described by two numbers: zeta (the damping ratio,
+// which alone determines how far it overshoots) and omega (the natural
+// frequency, which determines how fast). These values were fitted to the bezier
+// curves above so the two paths trace nearly the same motion -- see
+// ~/namealle/claude/caelestia/spring-anims/ for the derivation.
+//
+// zeta is taken from each bezier's exact overshoot, so the visible bounce is
+// reproduced bit-for-bit; omega was then chosen to minimise the remaining
+// error. `emphasized` is the one exception: it has no overshoot to preserve, so
+// both numbers are a straight least-squares fit, which is meaningfully closer
+// (0.146 vs 0.172 peak error) than pinning zeta to 1.
+//
+// omega is stored multiplied by the animation's duration (omegaT), which makes
+// it dimensionless and duration-independent: the actual frequency is
+// omegaT / duration_in_seconds. That is what lets an explicit `duration:` at a
+// call site keep meaning exactly what it meant under the bezier.
+class AnimSprings : public ConfigObject {
+    Q_OBJECT
+    QML_ANONYMOUS
+
+    // Master switch: false routes every animation back through the bezier
+    // curves, for A/B comparison against the physics path.
+    CONFIG_GLOBAL_PROPERTY(bool, enabled, true)
+
+    CONFIG_GLOBAL_PROPERTY(qreal, standardZeta, 1.000)
+    CONFIG_GLOBAL_PROPERTY(qreal, standardOmegaT, 7.80)
+    CONFIG_GLOBAL_PROPERTY(qreal, emphasizedZeta, 0.848)
+    CONFIG_GLOBAL_PROPERTY(qreal, emphasizedOmegaT, 8.48)
+    CONFIG_GLOBAL_PROPERTY(qreal, expressiveFastSpatialZeta, 0.605)
+    CONFIG_GLOBAL_PROPERTY(qreal, expressiveFastSpatialOmegaT, 10.29)
+    CONFIG_GLOBAL_PROPERTY(qreal, expressiveDefaultSpatialZeta, 0.806)
+    CONFIG_GLOBAL_PROPERTY(qreal, expressiveDefaultSpatialOmegaT, 9.90)
+    CONFIG_GLOBAL_PROPERTY(qreal, expressiveSlowSpatialZeta, 0.784)
+    CONFIG_GLOBAL_PROPERTY(qreal, expressiveSlowSpatialOmegaT, 9.26)
+
+    // A spring is asymptotic and never truly arrives, so it has to be told when
+    // it is close enough. The threshold is a fraction of the distance being
+    // travelled, which is the only way one number can serve both a 2000px
+    // height and a 0->1 opacity: 0.002 is 4px on the former and 0.002 on the
+    // latter, invisible in both. The floor stops zero-distance retargets from
+    // producing a zero threshold.
+    CONFIG_GLOBAL_PROPERTY(qreal, epsilon, 0.002)
+    CONFIG_GLOBAL_PROPERTY(qreal, epsilonFloor, 0.0001)
+    // Hard wall-clock stop, as a multiple of the analytic settle time. Nothing
+    // waiting on an animation's completion (ClipReader's exit callback, a
+    // ListView transition holding an item) can be left hanging by a spring that
+    // is being retargeted faster than it can converge.
+    CONFIG_GLOBAL_PROPERTY(qreal, timeCapFactor, 5.0)
+
+public:
+    explicit AnimSprings(QObject* parent = nullptr)
+        : ConfigObject(parent) {}
+};
+
 class RoundingTokens : public ConfigObject {
     Q_OBJECT
     QML_ANONYMOUS
@@ -138,6 +194,7 @@ class AppearanceTokens : public ConfigObject {
     QML_ANONYMOUS
 
     CONFIG_SUBOBJECT(AnimCurves, curves)
+    CONFIG_SUBOBJECT(AnimSprings, springs)
     CONFIG_SUBOBJECT(RoundingTokens, rounding)
     CONFIG_SUBOBJECT(SpacingTokens, spacing)
     CONFIG_SUBOBJECT(PaddingTokens, padding)
@@ -148,6 +205,7 @@ public:
     explicit AppearanceTokens(QObject* parent = nullptr)
         : ConfigObject(parent)
         , m_curves(new AnimCurves(this))
+        , m_springs(new AnimSprings(this))
         , m_rounding(new RoundingTokens(this))
         , m_spacing(new SpacingTokens(this))
         , m_padding(new PaddingTokens(this))

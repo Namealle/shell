@@ -7,6 +7,7 @@
 namespace caelestia::config {
 
 class AnimCurves;
+class AnimSprings;
 class AnimDurations;
 
 class AnimTokens : public QObject {
@@ -29,12 +30,14 @@ class AnimTokens : public QObject {
     Q_PROPERTY(QEasingCurve expressiveSlowEffects READ expressiveSlowEffects NOTIFY curvesChanged)
 
     Q_PROPERTY(caelestia::config::AnimDurations* durations READ durations NOTIFY durationsChanged)
+    Q_PROPERTY(caelestia::config::AnimSprings* springs READ springs NOTIFY springsChanged)
 
 public:
     explicit AnimTokens(QObject* parent = nullptr);
 
     void bindCurves(AnimCurves* curves);
     void bindDurations(AnimDurations* durations);
+    void bindSprings(AnimSprings* springs);
 
     [[nodiscard]] QEasingCurve emphasized() const;
     [[nodiscard]] QEasingCurve emphasizedAccel() const;
@@ -49,10 +52,12 @@ public:
     [[nodiscard]] QEasingCurve expressiveDefaultEffects() const;
     [[nodiscard]] QEasingCurve expressiveSlowEffects() const;
     [[nodiscard]] AnimDurations* durations() const;
+    [[nodiscard]] AnimSprings* springs() const;
 
 signals:
     void curvesChanged();
     void durationsChanged();
+    void springsChanged();
 
 private:
     void rebuildCurves();
@@ -60,6 +65,7 @@ private:
 
     AnimCurves* m_curves = nullptr;
     AnimDurations* m_durations = nullptr;
+    AnimSprings* m_springs = nullptr;
 
     QEasingCurve m_emphasized;
     QEasingCurve m_emphasizedAccel;

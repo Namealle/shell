@@ -80,6 +80,7 @@ void Tokens::attachedParentChange(
 void Tokens::bindAnim() {
     m_anim->bindDurations(GlobalConfig::instance()->appearance()->anim()->durations());
     m_anim->bindCurves(TokenConfig::instance()->appearance()->curves());
+    m_anim->bindSprings(TokenConfig::instance()->appearance()->springs());
 }
 
 void Tokens::bindFont() {
