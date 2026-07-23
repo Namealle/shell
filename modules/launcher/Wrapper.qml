@@ -25,10 +25,18 @@ Item {
     property real offsetScale: shouldBeActive ? 0 : 1
 
     onShouldBeActiveChanged: {
-        if (shouldBeActive)
+        // Break BOTH bindings during the close anim. Width matters as much as
+        // height: closing out of the clipboard reader flips ContentList back to
+        // the list state, and a live width binding collapses the expanded
+        // reader down to itemWidth in a single frame while the launcher is
+        // still on screen.
+        if (shouldBeActive) {
             implicitHeight = Qt.binding(() => content.implicitHeight);
-        else
-            implicitHeight = implicitHeight; // Break binding during close anim
+            implicitWidth = Qt.binding(() => content.implicitWidth || 630);
+        } else {
+            implicitHeight = implicitHeight;
+            implicitWidth = implicitWidth;
+        }
     }
 
     visible: offsetScale < 1
