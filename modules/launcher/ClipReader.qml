@@ -217,13 +217,13 @@ Item {
     // holding the key pages steadily.
     function smoothScrollTo(y: real): void {
         const to = Math.max(0, Math.min(y, Math.max(0, viewport.contentHeight - viewport.height)));
-        const from = viewport.contentY;
-        scrollAnim.stop();
-        if (to === from)
-            return;
-        scrollAnim.from = from;
+        // Retarget in flight -- deliberately no stop() here. Killing the spring
+        // would zero its velocity, which is the whole reason a held PgDn used to
+        // re-accelerate from a standstill on every repeat.
         scrollAnim.to = to;
-        scrollAnim.start();
+        if (to === viewport.contentY && Math.abs(scrollAnim.velocity) < scrollAnim.settleEpsilon)
+            return;
+        scrollAnim.running = true;
     }
 
     function scrollPage(dir: int): void {
@@ -235,17 +235,68 @@ Item {
         smoothScrollTo(dir < 0 ? 0 : viewport.contentHeight);
     }
 
-    Anim {
+    // Physics, not a timed curve. Every easing curve has to end at a fixed
+    // instant, so its final frame is a velocity discontinuity; with a decel
+    // curve that lands exactly where the remaining distance is sub-pixel, which
+    // reads as "glides, then stops dead in one frame". A spring is asymptotic
+    // instead -- velocity decays continuously and we only snap once the
+    // distance AND the speed are both under half a pixel, by which point the
+    // snap is genuinely invisible.
+    //
+    // Deliberately NOT Qt's SpringAnimation: this needs to survive retargeting
+    // mid-flight with velocity intact, and hand-integrating is both clearer
+    // about that and tunable in Hyprland's stiffness/damping/mass terms.
+    FrameAnimation {
         id: scrollAnim
 
-        // Decel, not the spatial default: scrolling must settle exactly on its
-        // stop point (overshoot makes the text bounce), and it should ease
-        // into the stop rather than end abruptly (standard felt too linear).
-        type: Anim.Standard
-        easing: Tokens.anim.standardDecel
+        // damping = 2*sqrt(stiffness*mass) is critical damping: the fastest
+        // approach that never overshoots. Overshoot is not an option here --
+        // bouncing text was what ruled springs out in the first place. Drop
+        // damping below critical only if a little bounce is wanted.
+        // stiffness is the only speed knob: omega = sqrt(k/m) = 20/s here, so
+        // ~90% of any distance is covered in ~200ms with the rest fading out
+        // smoothly. Raise it to go faster -- damping re-derives itself, so it
+        // stays overshoot-free at any value.
+        property real stiffness: 400
+        property real mass: 1
+        property real damping: 2 * Math.sqrt(stiffness * mass)
+        readonly property real settleEpsilon: 0.5
 
-        target: viewport
-        property: "contentY"
+        property real to: 0
+        property real velocity: 0
+
+        running: false
+        onRunningChanged: {
+            if (!running)
+                velocity = 0;
+        }
+
+        onTriggered: {
+            // Clamp dt: a stalled frame (compositor hiccup, a decode landing)
+            // must not integrate one huge step and fling the viewport.
+            const dt = Math.min(frameTime, 1 / 30);
+            // Substep to at most 1/120s. Explicit integration diverges once the
+            // step approaches the spring's period -- without this it silently
+            // goes NaN somewhere above stiffness 650 on a clamped 30Hz frame,
+            // which would be a nasty trap the first time stiffness gets raised.
+            // With it, everything up to stiffness 3000 stays exact.
+            const steps = Math.max(1, Math.ceil(dt * 120));
+            const h = dt / steps;
+            // Semi-implicit Euler -- velocity first, then position from the new
+            // velocity. Far more stable than explicit at large dt.
+            let next = viewport.contentY;
+            for (let i = 0; i < steps; i++) {
+                velocity += (-stiffness * (next - to) - damping * velocity) / mass * h;
+                next += velocity * h;
+            }
+
+            if (Math.abs(next - to) < settleEpsilon && Math.abs(velocity) < settleEpsilon) {
+                viewport.contentY = to;
+                running = false;
+                return;
+            }
+            viewport.contentY = next;
+        }
     }
 
     // Select the first occurrence of the find term and scroll it into view.
