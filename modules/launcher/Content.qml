@@ -91,6 +91,21 @@ Item {
             }
         }
 
+        // The `;` is what opened clipboard mode, so erasing it is a request to
+        // leave -- close the reader with it instead of quarantining the edit.
+        // Animated exitReader, not resetReader, and deliberately no text
+        // restore (unlike ←, which puts the frozen filter back): the whole
+        // point here is to keep what the user just typed.
+        // Only while the launcher is actually open: closing clears this field
+        // (see the Connections at the bottom of this file), and that clear must
+        // not read as "the user erased the prefix" -- exiting the reader
+        // mid-close flips the content back to the list while the frozen reader
+        // width is still on screen, which is visible for the whole close anim.
+        onTextChanged: {
+            if (root.screenState.launcher && list.readerActive && !text.startsWith(GlobalConfig.launcher.clipboardPrefix))
+                list.exitReader();
+        }
+
         Keys.onUpPressed: list.readerActive ? list.browseReader(-1) : list.currentList?.decrementCurrentIndex()
         Keys.onDownPressed: list.readerActive ? list.browseReader(1) : list.currentList?.incrementCurrentIndex()
 

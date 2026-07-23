@@ -36,7 +36,10 @@ Item {
     // Owned, not derived from currentIndex: the entry being read is lifted OUT
     // of the list model, so list indices can't describe it.
     property var readerEntry: null
-    onCanReadChanged: if (!canRead) resetReader()
+    // Not while exiting: erasing the `;` unfreezes the list, which flips
+    // displayState off "clipboard" and would fire this hard reset straight
+    // through the exit slide that the erase itself just started.
+    onCanReadChanged: if (!canRead && !readerExiting) resetReader()
 
     function currentRowY(): real {
         const l = appList.item;
@@ -167,12 +170,17 @@ Item {
         }
     }
 
-    // Closing the launcher mid-read must drop the reader, the lift/mask AND the
-    // filter freeze, then re-sync (the freeze made the clear-on-close sync a
-    // no-op).
+    // Dropping the reader, the lift/mask and the filter freeze has to happen on
+    // REOPEN, not on close. Resetting on close flipped the state -- and with it
+    // implicitWidth -- out of the reader while the close animation was still on
+    // screen, which is the inner half of the width teleport (Wrapper.qml freezes
+    // the outer one). Closing needs no cleanup of its own: the content Loader
+    // tears this whole subtree down once the launcher is off screen. The only
+    // case that survives is a reopen that caught the still-alive tree, so clean
+    // up there, where the state flip is invisible anyway.
     Connections {
         function onLauncherChanged(): void {
-            if (!root.screenState.launcher && (root.readerActive || root.readerExiting)) {
+            if (root.screenState.launcher && (root.readerActive || root.readerExiting)) {
                 root.resetReader();
                 appList.item?.syncDisplayText();
             }
@@ -219,11 +227,12 @@ Item {
             // Keep appList alive (currentIndex/model persist for ↑/↓ browse) but
             // hidden under the reader; no left/right anchors so width is intrinsic
             // and grows to the reader's content, centred like the wallpapers state.
+            // appList.opacity is deliberately NOT a PropertyChanges -- see the
+            // binding on the Loader itself. It must not be state-restored.
             PropertyChanges {
                 root.implicitWidth: clipReader.item?.implicitWidth ?? root.Tokens.sizes.launcher.itemWidth
                 root.implicitHeight: Math.min(root.maxHeight, clipReader.item?.implicitHeight ?? 0)
                 appList.active: true
-                appList.opacity: 0
             }
         }
     ]
@@ -254,6 +263,15 @@ Item {
         active: false
 
         anchors.fill: parent
+
+        // A BINDING, not a PropertyChanges in the reader state. PropertyChanges
+        // restores the value it captured on state entry, and with the Behavior
+        // below still in flight that capture is the current animated value, not
+        // 1 -- so entering/exiting the reader faster than the Behavior can
+        // finish re-captures a lower base every cycle and decays the list's
+        // opacity geometrically to zero, permanently, across every launcher
+        // mode. A binding has a fixed target and cannot drift.
+        opacity: root.state === "reader" ? 0 : 1
 
         // Reader enter/exit: the other rows melt out fast under the travelling
         // header (the shared element carries the continuity, not a crossfade).
