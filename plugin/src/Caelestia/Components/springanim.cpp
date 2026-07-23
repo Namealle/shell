@@ -161,7 +161,16 @@ SpringAnim::SpringAnim(QObject* parent)
     // Any write to `easing` -- including a binding at a call site -- is taken as
     // an explicit override and pins this animation to the bezier path. See the
     // property docs in the header for why that has to be so.
-    connect(this, &QQuickPropertyAnimation::easingChanged, this, [this] { m_easingExplicit = true; });
+    //
+    // The guard is essential. The bezier path applies defaultEasing by calling
+    // setEasing(), which emits this very signal. Without the guard the first
+    // bezier animation latches m_easingExplicit and useSpring() then returns
+    // false forever -- so with springs disabled at startup they could never be
+    // enabled again, and the whole feature silently did nothing.
+    connect(this, &QQuickPropertyAnimation::easingChanged, this, [this] {
+        if (!m_applyingDefaultEasing)
+            m_easingExplicit = true;
+    });
 }
 
 bool SpringAnim::physics() const {
@@ -260,10 +269,13 @@ QAbstractAnimationJob* SpringAnim::transition(
     QQuickStateActions& actions, QQmlProperties& modified, TransitionDirection direction, QObject* defaultTarget) {
     if (!useSpring()) {
         // Bezier path. The call site's own easing wins if it set one; otherwise
-        // apply the curve the type maps to. Assigned through the base class so
-        // it does not trip m_easingExplicit.
-        if (!m_easingExplicit && m_defaultEasing != QEasingCurve())
+        // apply the curve the type maps to, flagged so the resulting
+        // easingChanged is not mistaken for a call site overriding us.
+        if (!m_easingExplicit && m_defaultEasing != QEasingCurve()) {
+            m_applyingDefaultEasing = true;
             QQuickPropertyAnimation::setEasing(m_defaultEasing);
+            m_applyingDefaultEasing = false;
+        }
         return QQuickNumberAnimation::transition(actions, modified, direction, defaultTarget);
     }
 

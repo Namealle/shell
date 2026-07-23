@@ -28,7 +28,7 @@ Item {
 
     property int failures: 0
     property int reported: 0
-    readonly property int total: overshootCases.count + carryCases.count
+    readonly property int total: overshootCases.count + carryCases.count + 1
 
     function report(name, detail, ok) {
         console.warn((ok ? "  PASS  " : "  FAIL  ") + name + "   " + detail);
@@ -85,6 +85,79 @@ Item {
                     const settled = Math.abs(oc.v - 1) < 0.001;
                     root.report(oc.modelData[0], `overshoot ${got.toFixed(2)}% (want ${want.toFixed(1)}%), settled=${settled}`, settled && Math.abs(got - want) <= oc.modelData[4]);
                 }
+            }
+        }
+    }
+
+    // -- the physics toggle must work in BOTH directions, repeatedly --
+    //
+    // Regression test for the bug that made the whole feature look like it did
+    // nothing: the bezier path applies `defaultEasing` via setEasing(), which
+    // emits easingChanged, which is the same signal used to detect "a call site
+    // overrode the easing". So the first bezier animation used to latch
+    // m_easingExplicit permanently and springs could never engage again. With
+    // springs.enabled=false at startup that meant they never ran at all, and
+    // flipping the toggle afterwards did nothing.
+    //
+    // Every other case here sets physics:true from the outset and so never
+    // touches the bezier path -- which is exactly why they all passed while the
+    // feature was dead in practice.
+    Item {
+        id: toggleCase
+
+        property real v: 0
+        property real trough: 1
+        property bool measuring: false
+
+        Behavior on v {
+            SpringAnim {
+                id: toggleSpring
+
+                physics: false
+                zeta: 0.605
+                omega: 29.40
+                duration: 350
+                // Must be set to something other than the default, or the
+                // bezier path skips setEasing() and the bug cannot reproduce.
+                //
+                // Deliberately the `standard` curve, which does NOT overshoot,
+                // even though zeta=0.605 corresponds to expressiveFastSpatial.
+                // Using the matching curve would make this test useless: the
+                // whole point of the fit is that spring and bezier look alike,
+                // so the two paths must be told apart by a feature they do not
+                // share. Here that is overshoot -- bezier gives 0%, spring 9.2%.
+                defaultEasing.type: Easing.BezierSpline
+                defaultEasing.bezierCurve: [0.2, 0, 0, 1, 1, 1]
+            }
+        }
+
+        onVChanged: if (measuring && v < trough)
+            trough = v
+
+        // Phase 1: run one animation, 0 -> 1, on the bezier path.
+        Component.onCompleted: v = 1
+
+        // Phase 2: enable physics and animate back, 1 -> 0. A spring at
+        // zeta=0.605 undershoots past its target by 9.2%; the bezier path
+        // cannot go below 0 at all, so any real undershoot proves the spring
+        // engaged.
+        Timer {
+            interval: 800
+            running: true
+            onTriggered: {
+                toggleSpring.physics = true;
+                toggleCase.measuring = true;
+                toggleCase.trough = 1;
+                toggleCase.v = 0;
+            }
+        }
+
+        Timer {
+            interval: 2000
+            running: true
+            onTriggered: {
+                const os = -toggleCase.trough * 100;
+                root.report("physics toggle off->on", `undershoot after enabling ${os.toFixed(2)}% (want ~9.2%, 0% = springs never engaged)`, os > 5);
             }
         }
     }

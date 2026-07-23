@@ -107,6 +107,11 @@ private:
     bool m_physics = true;
     // Set by any write to `easing`, including from a QML binding at a call site.
     bool m_easingExplicit = false;
+    // Guards the one write to `easing` we make ourselves, when applying
+    // defaultEasing on the bezier path. Without it that write trips
+    // m_easingExplicit via easingChanged and permanently disables the spring
+    // path -- see the comment on the connect() in the constructor.
+    bool m_applyingDefaultEasing = false;
 
     qreal m_velocity = 0.0;
     qreal m_zeta = 1.0;
