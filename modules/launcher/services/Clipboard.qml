@@ -57,8 +57,15 @@ Singleton {
     function cacheDecoded(entryId: string, text: string): void {
         root.decodedText[entryId] = text;
         const counts = Object.assign({}, root.lineCounts);
+        // Counted by scanning for newlines rather than split().length: the
+        // array split() builds is a second full copy of the entry, allocated
+        // and thrown away purely to read its length. On a megabyte entry that
+        // is measurable on the GUI thread, and it happens on every decode.
+        let lines = 1;
+        for (let p = text.indexOf("\n"); p >= 0; p = text.indexOf("\n", p + 1))
+            lines++;
         counts[entryId] = {
-            lines: text.length ? text.split("\n").length : 1,
+            lines: text.length ? lines : 1,
             chars: text.length
         };
         root.lineCounts = counts;
