@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import Quickshell
 import Quickshell.Io
 import Caelestia.Config
 import qs.components
@@ -48,6 +49,7 @@ Item {
         // the exit callback.
         slideAnim.stop();
         slideXAnim.stop();
+        root.perfStart("CLOSE");
         root.exitCb = cb;
         root.exiting = true;
         slideAnim.from = root.slideY;
@@ -77,12 +79,53 @@ Item {
         slideXAnim.start();
     }
 
+    // ---- TEMPORARY INSTRUMENTATION (remove after the old-vs-new comparison) ----
+    // Counts frames actually rendered during the open morph and the worst frame
+    // interval. A blocked GUI thread shows up as few frames + one huge interval;
+    // a smooth morph shows ~N frames at ~16ms. Identical in both arms.
+    property real perfT0: 0
+    property string perfTag: ""
+
+    FrameAnimation {
+        id: perfProbe
+
+        property int frames: 0
+        property real worst: 0
+
+        running: false
+        onTriggered: {
+            frames++;
+            const ms = frameTime * 1000;
+            if (ms > worst)
+                worst = ms;
+        }
+    }
+
+    function perfStart(tag: string): void {
+        root.perfTag = tag;
+        root.perfT0 = Date.now();
+        perfProbe.frames = 0;
+        perfProbe.worst = 0;
+        perfProbe.running = true;
+    }
+
+    function perfEnd(): void {
+        if (!perfProbe.running)
+            return;
+        perfProbe.running = false;
+        const wall = Date.now() - root.perfT0;
+        const line = `${root.perfTag} wallMs=${wall} frames=${perfProbe.frames} worstFrameMs=${perfProbe.worst.toFixed(1)} chars=${root.decoded.length} lines=${root.lineCount}`;
+        Quickshell.execDetached(["sh", "-c", "printf '%s\\n' \"$1\" >> /tmp/claude-1000/-home-namealle/c2e20d17-22a1-4c93-9aff-8f0d7261f550/scratchpad/clipperf.log", "p", line]);
+    }
+    // ---- END TEMPORARY INSTRUMENTATION ----
+
     Anim {
         id: slideAnim
 
         target: root
         property: "slideY"
         onStopped: {
+            root.perfEnd();
             const cb = root.exitCb;
             root.exitCb = null;
             if (cb)
@@ -107,15 +150,39 @@ Item {
     readonly property int minWidth: Tokens.sizes.launcher.itemWidth
 
     readonly property string decoded: cache.text
-    readonly property var lines: root.decoded.length > 0 ? root.decoded.split("\n") : [""]
-    readonly property int lineCount: root.lines.length
-    readonly property int longestLine: {
-        let m = 0;
-        for (const l of root.lines)
-            if (l.length > m)
-                m = l.length;
-        return m;
+    // One walk over the decoded text producing everything the reader needs to
+    // know about its line structure: where each line starts, and the longest.
+    //
+    // This used to be three passes plus a full duplication of the entry --
+    // split() materialising every line as its own string, then a scan over those
+    // strings for the longest, then another walk to accumulate offsets. Walking
+    // the string once with indexOf and keeping only integers measured 4.8ms ->
+    // 0.6ms on a 1M/6395-line entry and 60.8ms -> 7.6ms on a 100k-line one, with
+    // identical results.
+    readonly property var lineIndex: {
+        const s = root.decoded;
+        const offsets = [];
+        let longest = 0;
+        let p = 0;
+        for (;;) {
+            const nl = s.indexOf("\n", p);
+            offsets.push(p);
+            const len = (nl < 0 ? s.length : nl) - p;
+            if (len > longest)
+                longest = len;
+            if (nl < 0)
+                break;
+            p = nl + 1;
+        }
+        return {
+            offsets,
+            longest
+        };
     }
+
+    readonly property var lineOffsets: root.lineIndex.offsets
+    readonly property int lineCount: root.lineIndex.offsets.length
+    readonly property int longestLine: root.lineIndex.longest
 
     // All widths derive from CONTENT (never from the animated laid-out width),
     // so the text lays out once per entry -- not on every frame of the morph.
@@ -123,30 +190,163 @@ Item {
     readonly property real gutterWidth: fm.advanceWidth(String(Math.max(1, root.lineCount)))
     readonly property real contentW: root.implicitWidth - Tokens.padding.large * 2
     readonly property real textW: root.contentW - root.gutterWidth - Tokens.spacing.medium
-    // Rebuilt from the ACTUAL laid-out text (positionToRectangle), not from a
-    // chars-per-row estimate: with word wrapping the visual rows per logical
-    // line depend on where the words break, so the gutter asks the layout where
-    // each line landed and pads blank rows to match.
-    property string gutterText: ""
+    // One lowercased copy per entry rather than one per keystroke: at 1M chars
+    // toLowerCase() costs ~9ms, which a held key turns into a stutter.
+    readonly property string decodedLower: root.decoded.toLowerCase()
 
-    function rebuildGutter(): void {
-        if (!root.isText) {
-            root.gutterText = "";
+    // -- progressive body --
+    // Only a few screens' worth of text is laid out when the reader opens; the
+    // rest arrives as it is scrolled towards. The open path therefore costs the
+    // same for a 20-line entry and a 100k-line one, instead of the 803ms a full
+    // 100k-line layout takes on the GUI thread.
+    //
+    // Growth is always via insert(), never a text reassign: QTextDocument
+    // relayouts only the inserted blocks, so a slab costs the same however much
+    // is already loaded (measured over 3.5MB in 50 slabs: 0.9s total via insert,
+    // 19s via reassign).
+    // Slabs are measured in CHARACTERS, not lines. A line-sized slab does
+    // nothing for the shape that hurts most -- a megabyte-long blob is often one
+    // logical line, so "load 200 lines" loads all of it and the open path is
+    // back to a full layout. Characters bound the work whatever the shape.
+    // Slicing on char offsets also means slabs are contiguous, so no separator
+    // has to be re-inserted between them.
+    readonly property int initialChars: 8192
+    readonly property int chunkChars: 32768
+    property int loadedChars: 0
+    property bool loading: false
+    readonly property bool fullyLoaded: root.loadedChars >= root.decoded.length
+
+    // Lines the layout actually knows about. A slab may stop mid-line, in which
+    // case that line is partially present and still owns a number.
+    readonly property int loadedLines: root.fullyLoaded ? root.lineCount : root.lineOfOffset(root.loadedChars) + 1
+
+    // Qt's word wrap is quadratic in the length of an UNBREAKABLE run: it keeps
+    // rescanning for a break opportunity that never comes. One line of random
+    // alphanumerics measured 242ms at 100k chars, 3.7s at 400k, 23s at 1M. The
+    // same text with WrapAnywhere is linear -- 1M in 92ms. Anything with a line
+    // this long is a blob (base64, minified JS, one-line JSON, a hex dump), where
+    // character wrapping is also the more readable choice. Note that
+    // WrapAtWordBoundaryOrAnywhere is NOT a fix: it tries word boundaries first
+    // and pays the identical 23s.
+    readonly property int wrapAnywhereAbove: 4000
+    readonly property int bodyWrapMode: root.longestLine > root.wrapAnywhereAbove ? TextEdit.WrapAnywhere : TextEdit.Wrap
+
+    function resetBody(): void {
+        root.loadedChars = 0;
+        root.visibleLines = [];
+        bodyText.text = "";
+    }
+
+    // Feed decoded[loadedChars, target) into the TextEdit. wrapMode is set BEFORE
+    // the first slab: setting it afterwards relayouts the whole document a second
+    // time, and the first of those two layouts would be the slow one.
+    function loadTo(target: int): void {
+        const want = Math.min(target, root.decoded.length);
+        if (want <= root.loadedChars || !root.isText)
+            return;
+        root.loading = true;
+        const slab = root.decoded.slice(root.loadedChars, want);
+        if (root.loadedChars === 0) {
+            bodyText.wrapMode = root.bodyWrapMode;
+            bodyText.text = slab;
+        } else {
+            bodyText.insert(bodyText.length, slab);
+        }
+        root.loadedChars = want;
+        root.loading = false;
+    }
+
+    // Pull the next slab once the viewport is within a screen of the end of what
+    // is loaded.
+    //
+    // Measured against bodyText.contentHeight, NOT viewport.contentHeight: the
+    // latter reaches the Flickable through a binding on bodyRow.implicitHeight
+    // and can still read 0 in the turn right after a slab lands. That made the
+    // condition trivially true, so this drained the whole document in one go --
+    // progressive in name only. Requiring a real laid-out height is what keeps it
+    // honest.
+    function maybeLoadMore(): void {
+        if (root.fullyLoaded || root.loading || !root.isText)
+            return;
+        const h = bodyText.contentHeight;
+        if (h <= 0)
+            return;
+        if (viewport.contentY + viewport.height * 2 >= h)
+            root.loadTo(root.loadedChars + root.chunkChars);
+    }
+
+    // Turns "the character at the top of the viewport" back into a line number
+    // without walking the document. Offsets come from lineIndex.
+    function lineOfOffset(idx: int): int {
+        const o = root.lineOffsets;
+        let lo = 0;
+        let hi = o.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (o[mid] <= idx)
+                lo = mid;
+            else
+                hi = mid - 1;
+        }
+        return lo;
+    }
+
+    // Line numbers for the rows actually on screen, as {n, y} pairs.
+    //
+    // The old gutter asked the layout where EVERY logical line landed (100k
+    // positionToRectangle calls, measured 697ms) to fill a single Text item
+    // 1,800,000px tall, of which 640px is ever visible. This asks only about the
+    // ~40 rows in view and repositions them as the viewport moves, so the cost
+    // is per-screen instead of per-document. Wrapping still comes from the real
+    // layout, so numbers stay glued to their rows.
+    property var visibleLines: []
+
+    function updateGutter(): void {
+        if (!root.isText || bodyText.length === 0) {
+            root.visibleLines = [];
             return;
         }
-        const lh = bodyText.positionToRectangle(0).height;
-        if (lh <= 0)
-            return;
+        const top = viewport.contentY;
+        // Measured against maxHeight, NOT viewport.height. The viewport grows on
+        // every frame of the opening morph, so using its live height recomputed
+        // this set ~88 times per open -- and each assignment below hands the
+        // Repeater a new array, which destroys and recreates every delegate.
+        // maxHeight is the viewport's resting ceiling, so this window is a stable
+        // superset from the first frame; the overlay clips whatever hangs below.
+        const bottom = top + root.maxHeight;
+        // Start one line early: the line owning the topmost character may have
+        // begun above the fold, and its number belongs to its FIRST row.
+        let i = Math.max(0, root.lineOfOffset(bodyText.positionAt(0, top)) - 1);
         const out = [];
-        let off = 0;
-        for (let i = 0; i < root.lines.length; i++) {
-            const row = Math.round(bodyText.positionToRectangle(off).y / lh);
-            while (out.length < row)
-                out.push("");
-            out.push(String(i + 1));
-            off += root.lines[i].length + 1;
+        // Only numbers lines that are actually loaded -- lineOffsets covers the
+        // whole entry, but the layout only knows about what has been fed in.
+        while (i < root.loadedLines) {
+            const r = bodyText.positionToRectangle(root.lineOffsets[i]);
+            if (r.y > bottom)
+                break;
+            if (r.y + r.height >= top)
+                out.push({
+                    n: i + 1,
+                    y: r.y
+                });
+            i++;
         }
-        root.gutterText = out.join("\n");
+        // Only reassign when the set actually differs. Comparing ~40 numbers is
+        // far cheaper than a full delegate teardown, and it keeps a redundant
+        // call (several signals can land in one turn) from churning the overlay.
+        if (out.length === root.visibleLines.length) {
+            let same = true;
+            for (let k = 0; k < out.length; k++) {
+                const p = root.visibleLines[k];
+                if (p.n !== out[k].n || p.y !== out[k].y) {
+                    same = false;
+                    break;
+                }
+            }
+            if (same)
+                return;
+        }
+        root.visibleLines = out;
     }
 
     property string imgSrc: ""
@@ -166,6 +366,7 @@ Item {
 
     QtObject {
         id: cache
+
         property string text: ""
     }
 
@@ -180,8 +381,8 @@ Item {
         if (!e)
             return;
         if (root.isText && Clipboard.decodedText[e.entryId] !== undefined) {
+            // onDecodedChanged does the staging (reset, first slab, find).
             cache.text = Clipboard.decodedText[e.entryId];
-            Qt.callLater(root.applyFind);
             return;
         }
         debounce.restart();
@@ -205,6 +406,15 @@ Item {
         const raw = e.raw;
         if (id === undefined || raw === undefined)
             return;
+        // Already decoded once this session: serve it and skip the process
+        // entirely. This used to re-spawn cliphist and re-deliver the whole
+        // entry across to the JS engine on EVERY open, only to arrive at a
+        // string identical to the one already cached.
+        const cached = Clipboard.decodedText[id];
+        if (cached !== undefined) {
+            cache.text = cached;
+            return;
+        }
         decoder.running = false;
         decoder.entryId = id;
         decoder.line = raw;
@@ -215,8 +425,18 @@ Item {
     // edges -- always animated, never a one-frame jump. Repeated presses
     // accumulate against the in-flight target, not the current frame, so
     // holding the key pages steadily.
+    // The laid-out height of the body, read from the item that owns the layout.
+    //
+    // viewport.contentHeight reaches the Flickable through a binding on
+    // bodyRow.implicitHeight, and a positioner's implicitHeight only settles
+    // during polish -- so in the same turn as a slab insert it still reports the
+    // PREVIOUS height. Scrolling against it made End land at the old end and need
+    // a second press to reach the real one. bodyText.contentHeight is updated
+    // synchronously by insert(), so every scroll target measures against this.
+    readonly property real bodyHeight: root.isText ? bodyText.contentHeight : image.height
+
     function smoothScrollTo(y: real): void {
-        const to = Math.max(0, Math.min(y, Math.max(0, viewport.contentHeight - viewport.height)));
+        const to = Math.max(0, Math.min(y, Math.max(0, root.bodyHeight - viewport.height)));
         // Retarget in flight -- deliberately no stop() here. Killing the spring
         // would zero its velocity, which is the whole reason a held PgDn used to
         // re-accelerate from a standstill on every repeat.
@@ -232,7 +452,12 @@ Item {
     }
 
     function scrollEdge(dir: int): void {
-        smoothScrollTo(dir < 0 ? 0 : viewport.contentHeight);
+        // End means the real end, not the end of whatever happens to be loaded.
+        // Measured via bodyHeight so the target reflects the text just inserted,
+        // not the height the Flickable still thinks it has.
+        if (dir >= 0)
+            root.loadTo(root.decoded.length);
+        smoothScrollTo(dir < 0 ? 0 : root.bodyHeight);
     }
 
     // Physics, not a timed curve. Every easing curve has to end at a fixed
@@ -306,11 +531,15 @@ Item {
             bodyText.deselect();
             return;
         }
-        const idx = root.decoded.toLowerCase().indexOf(t);
+        const idx = root.decodedLower.indexOf(t);
         if (idx < 0) {
             bodyText.deselect();
             return;
         }
+        // Find searches the WHOLE entry, not just the loaded part, so a match
+        // past the loaded end has to be pulled in before select() -- otherwise it
+        // would land on an offset the document does not have yet.
+        root.loadTo(idx + t.length);
         bodyText.select(idx, idx + t.length);
         const r = bodyText.positionToRectangle(idx);
         smoothScrollTo(r.y - viewport.height / 3);
@@ -318,7 +547,17 @@ Item {
 
     onEntryChanged: root.stage()
     onFindTermChanged: root.applyFind()
+    // Every path that changes the decoded text lands here: cache hit, fresh
+    // decode, or clearing on entry change. Rebuild the body and seed the first
+    // few screens.
+    onDecodedChanged: {
+        root.resetBody();
+        if (root.isText && root.decoded.length)
+            root.loadTo(root.initialChars);
+        Qt.callLater(root.applyFind);
+    }
     Component.onCompleted: {
+        root.perfStart("OPEN");
         // Start exactly on the row's content, become the header.
         slideY = startY + rowAlignY;
         slideX = rowAlignX;
@@ -339,6 +578,9 @@ Item {
         onTriggered: root.refresh()
     }
 
+    // Ensures the thumbnail exists on disk (same cache file ClipItem writes),
+    // then points the Image at it -- Image won't retry a source that didn't
+    // exist when first set.
     Process {
         id: decoder
 
@@ -351,17 +593,13 @@ Item {
                 // Display convention: one trailing newline is not an extra line.
                 const t = text.replace(/\n$/, "");
                 Clipboard.cacheDecoded(decoder.entryId, t);
-                if (root.entry?.entryId === decoder.entryId) {
+                // onDecodedChanged does the staging (reset, first slab, find).
+                if (root.entry?.entryId === decoder.entryId)
                     cache.text = t;
-                    Qt.callLater(root.applyFind);
-                }
             }
         }
     }
 
-    // Ensures the thumbnail exists on disk (same cache file ClipItem writes),
-    // then points the Image at it -- Image won't retry a source that didn't
-    // exist when first set.
     Process {
         id: imgDecoder
 
@@ -454,6 +692,14 @@ Item {
         contentWidth: width
         contentHeight: root.isText ? bodyRow.implicitHeight : image.height
 
+        onContentYChanged: {
+            Qt.callLater(root.updateGutter);
+            Qt.callLater(root.maybeLoadMore);
+        }
+        // Deliberately NOT hooked to onHeightChanged: the height animates through
+        // the whole morph, and the gutter window is now sized from maxHeight so
+        // it does not depend on it. See updateGutter.
+
         StyledScrollBar.vertical: StyledScrollBar {
             flickable: viewport
         }
@@ -466,32 +712,38 @@ Item {
             width: root.contentW
             spacing: Tokens.spacing.medium
 
-            StyledText {
-                id: gutter
-
+            Item {
+                // Reserves the gutter column. The numbers themselves are drawn by
+                // the overlay below, outside the Flickable, so the gutter is never
+                // itself a document-sized item.
                 width: root.gutterWidth
-                text: root.gutterText
-                font: Tokens.font.mono.small
-                color: Colours.palette.m3outlineVariant
-                horizontalAlignment: Text.AlignRight
+                height: 1
             }
 
             TextEdit {
                 id: bodyText
 
                 width: root.textW
-                text: root.decoded
+                // NOT bound to root.decoded: text arrives in slabs via loadTo(),
+                // which uses insert() to keep each slab's layout cost flat. A
+                // binding here would reassign the whole document every time.
                 readOnly: true
                 selectByMouse: true
                 persistentSelection: true
                 textFormat: TextEdit.PlainText
                 // Word boundaries; only runs longer than a row split mid-word.
-                // The gutter follows the real layout (rebuildGutter), so it no
-                // longer needs fixed-chars-per-row wrapping.
+                // The gutter follows the real layout (updateGutter), so it does
+                // not need fixed-chars-per-row wrapping.
                 wrapMode: TextEdit.Wrap
-                onTextChanged: Qt.callLater(root.rebuildGutter)
-                onWidthChanged: Qt.callLater(root.rebuildGutter)
-                onContentHeightChanged: Qt.callLater(root.rebuildGutter)
+                onWidthChanged: Qt.callLater(root.updateGutter)
+                // A slab has landed and been laid out: renumber the visible rows,
+                // then re-check whether the viewport still needs more. Driving
+                // load-more from here (rather than from loadTo) is what
+                // guarantees the check sees a real contentHeight.
+                onContentHeightChanged: {
+                    Qt.callLater(root.updateGutter);
+                    Qt.callLater(root.maybeLoadMore);
+                }
                 color: Colours.palette.m3onSurface
                 selectionColor: Colours.palette.m3primary
                 selectedTextColor: Colours.palette.m3onPrimary
@@ -514,6 +766,36 @@ Item {
             cache: false
             asynchronous: true
             sourceSize.width: root.maxWidth
+        }
+    }
+
+    // -- gutter overlay --
+    // Sits over the viewport's left column rather than inside its content, so it
+    // holds ~40 small Text items instead of one item as tall as the document.
+    // Each number is placed at its row's y, offset by the scroll position.
+    Item {
+        id: gutter
+
+        x: viewport.x
+        y: viewport.y
+        width: root.gutterWidth
+        height: viewport.height
+        clip: true
+        visible: root.isText && !root.exiting
+
+        Repeater {
+            model: root.visibleLines
+
+            StyledText {
+                required property var modelData
+
+                width: root.gutterWidth
+                y: modelData.y - viewport.contentY
+                text: modelData.n
+                font: Tokens.font.mono.small
+                color: Colours.palette.m3outlineVariant
+                horizontalAlignment: Text.AlignRight
+            }
         }
     }
 
