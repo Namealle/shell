@@ -143,6 +143,11 @@ Item {
     readonly property bool isImage: root.entry?.isImage ?? false
     readonly property bool isBinary: !!(root.entry?.binMatch)
     readonly property bool isText: !!root.entry && !root.isBinary
+    // Entries whose row draws a SQUARE in the leading slot (image thumbnail,
+    // colour swatch) instead of a bare glyph. ClipItem sizes both from the
+    // icon's implicitHeight, so the header has to reserve that width too --
+    // see headerIcon.
+    readonly property bool squareSlot: root.isImage || (root.entry?.colour ?? "").length > 0
     readonly property string imgCache: root.isImage && root.entry ? `/tmp/caelestia-clip-preview-${root.entry.entryId}.png` : ""
 
     readonly property int maxWidth: 1000
@@ -631,6 +636,16 @@ Item {
             id: headerIcon
 
             anchors.verticalCenter: parent.verticalCenter
+            // A glyph is narrower than its own line height (41 vs 50px at the
+            // default icon size), so anchoring the title to the icon's right
+            // edge only matches the row for entries whose row also draws a bare
+            // glyph. Image and colour rows draw a square of implicitHeight
+            // there, and the title has to clear the same width -- otherwise it
+            // rides 9px left of the row's title for the whole slide and
+            // teleports across when the handoff unmasks the row. Centring the
+            // glyph in the wider slot also keeps it under the morph square.
+            width: root.squareSlot ? implicitHeight : implicitWidth
+            horizontalAlignment: Text.AlignHCenter
             text: root.entry?.icon ?? "content_paste"
             color: Colours.palette.m3onSurfaceVariant
             fontStyle: Tokens.font.icon.builders.large.scale(1.3).build()
