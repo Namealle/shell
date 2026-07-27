@@ -22,6 +22,12 @@ Item {
     readonly property var currentList: showWallpapers ? wallpaperList.item : appList.item // Can be either ListView or PathView, so can't type properly
     property string animState: showWallpapers ? "wallpapers" : "apps"
 
+    // The reader lifts its entry OUT of the list model (AppList.results filters
+    // out liftedEntry), so a filter that matched exactly one entry leaves the
+    // model empty while the reader is up. That is not "no results" -- without
+    // this the placeholder fades in on top of the reader's own body.
+    readonly property bool showEmpty: currentList?.count === 0 && !readerActive && !readerExiting
+
     // Clipboard reader (Option D): `→` morphs the launcher into a reader for the
     // highlighted entry, `←` morphs back. Only meaningful in clipboard mode.
     property bool readerActive: false
@@ -336,8 +342,8 @@ Item {
     Row {
         id: empty
 
-        opacity: root.currentList?.count === 0 ? 1 : 0
-        scale: root.currentList?.count === 0 ? 1 : 0.5
+        opacity: root.showEmpty ? 1 : 0
+        scale: root.showEmpty ? 1 : 0.5
 
         spacing: Tokens.spacing.medium
         padding: Tokens.padding.large
