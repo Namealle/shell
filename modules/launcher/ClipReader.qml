@@ -142,17 +142,53 @@ Item {
 
     readonly property bool isImage: root.entry?.isImage ?? false
     readonly property bool isBinary: !!(root.entry?.binMatch)
-    readonly property bool isText: !!root.entry && !root.isBinary
+    // A lone colour (hex/rgb/hsl, parsed by Clipboard.colourOf into Qt's
+    // #AARRGGBB) gets its own body: the row's swatch grown, plus the value in
+    // every notation worth pasting. It is deliberately NOT a text body -- no
+    // decode, no gutter, no find, since the preview IS the whole content. The
+    // header still shows the exact string that was copied.
+    readonly property string colour: root.entry?.colour ?? ""
+    readonly property bool isColour: root.colour.length > 0
+    readonly property color colourValue: root.isColour ? root.colour : "transparent"
+    readonly property bool isText: !!root.entry && !root.isBinary && !root.isColour
     // Entries whose row draws a SQUARE in the leading slot (image thumbnail,
     // colour swatch) instead of a bare glyph. ClipItem sizes both from the
     // icon's implicitHeight, so the header has to reserve that width too --
     // see headerIcon.
-    readonly property bool squareSlot: root.isImage || (root.entry?.colour ?? "").length > 0
+    readonly property bool squareSlot: root.isImage || root.isColour
+
+    // One notation per line. The hex line is always 6 digits: an 8-digit hex
+    // would be ambiguous (CSS #RRGGBBAA vs Qt #AARRGGBB), so alpha rides on the
+    // other two as rgba()/hsla() instead, and only when there is any.
+    readonly property string colourFormats: {
+        if (!root.isColour)
+            return "";
+        const c = root.colourValue;
+        const b255 = v => Math.round(v * 255);
+        const hex = v => b255(v).toString(16).padStart(2, "0");
+        // Qt reports hue -1 for achromatic colours (any grey). 0 is the
+        // conventional stand-in and round-trips to the same colour.
+        const h = Math.round(Math.max(0, c.hslHue) * 360);
+        const rgb = `${b255(c.r)}, ${b255(c.g)}, ${b255(c.b)}`;
+        const hsl = `${h}, ${Math.round(c.hslSaturation * 100)}%, ${Math.round(c.hslLightness * 100)}%`;
+        const lines = [`#${hex(c.r)}${hex(c.g)}${hex(c.b)}`];
+        if (c.a < 1) {
+            // parseFloat trims the trailing zero: 0.5, not 0.50.
+            const a = parseFloat(c.a.toFixed(2));
+            lines.push(`rgba(${rgb}, ${a})`, `hsla(${hsl}, ${a})`);
+        } else {
+            lines.push(`rgb(${rgb})`, `hsl(${hsl})`);
+        }
+        return lines.join("\n");
+    }
     readonly property string imgCache: root.isImage && root.entry ? `/tmp/caelestia-clip-preview-${root.entry.entryId}.png` : ""
 
     readonly property int maxWidth: 1000
     readonly property int maxHeight: 640
     readonly property int minWidth: Tokens.sizes.launcher.itemWidth
+    // Big enough to actually judge a colour, small enough that the launcher does
+    // not become a full-screen flash of it (and the notations stay in view).
+    readonly property int swatchHeight: 240
 
     readonly property string decoded: cache.text
     // One walk over the decoded text producing everything the reader needs to
@@ -438,7 +474,7 @@ Item {
     // PREVIOUS height. Scrolling against it made End land at the old end and need
     // a second press to reach the real one. bodyText.contentHeight is updated
     // synchronously by insert(), so every scroll target measures against this.
-    readonly property real bodyHeight: root.isText ? bodyText.contentHeight : image.height
+    readonly property real bodyHeight: root.isText ? bodyText.contentHeight : (root.isColour ? colourBody.implicitHeight : image.height)
 
     function smoothScrollTo(y: real): void {
         const to = Math.max(0, Math.min(y, Math.max(0, root.bodyHeight - viewport.height)));
@@ -705,7 +741,7 @@ Item {
 
         clip: true
         contentWidth: width
-        contentHeight: root.isText ? bodyRow.implicitHeight : image.height
+        contentHeight: root.isText ? bodyRow.implicitHeight : (root.isColour ? colourBody.implicitHeight : image.height)
 
         onContentYChanged: {
             Qt.callLater(root.updateGutter);
@@ -767,6 +803,54 @@ Item {
             }
         }
 
+        // Colour entries: the row's swatch at reading size, then the value in
+        // every notation -- selectable, so grabbing the format you need is the
+        // same mouse-select + Ctrl+C as any other entry.
+        Column {
+            id: colourBody
+
+            visible: root.isColour
+            width: root.contentW
+            spacing: Tokens.spacing.medium
+
+            // The swatch's space is reserved by this Item, not by the rect
+            // itself: the rect is hidden until the morph overlay lands on it,
+            // and a Column would collapse around a hidden child, dragging the
+            // notations up through the whole morph.
+            Item {
+                width: parent.width
+                height: root.swatchHeight
+
+                StyledRect {
+                    anchors.fill: parent
+                    // Hidden while the morph overlay is in flight -- the overlay
+                    // lands exactly on this rect, then hands off.
+                    visible: root.morphT >= 1
+                    radius: Tokens.rounding.small
+                    color: root.colourValue
+                    // Same 1px outline the row's swatch has, so a colour close
+                    // to the surface still reads as a swatch rather than a hole
+                    // -- and so the handoff from the morph is pixel-true.
+                    border.width: 1
+                    border.color: Colours.palette.m3outlineVariant
+                }
+            }
+
+            TextEdit {
+                width: parent.width
+                text: root.colourFormats
+                readOnly: true
+                selectByMouse: true
+                persistentSelection: true
+                textFormat: TextEdit.PlainText
+                color: Colours.palette.m3outline
+                selectionColor: Colours.palette.m3primary
+                selectedTextColor: Colours.palette.m3onPrimary
+                font: Tokens.font.mono.small
+                renderType: Text.NativeRendering
+            }
+        }
+
         // Image entries: the decoded thumbnail, aspect-fit, height capped.
         Image {
             id: image
@@ -814,18 +898,27 @@ Item {
         }
     }
 
-    // -- image morph: the row's thumbnail becomes the reader image --
-    // A second shared element for image entries, riding the same slide. At t=0
-    // it exactly covers the header's material icon slot -- which is pixel-
-    // identical to the row's thumbnail slot, so the icon really is "under" the
-    // thumbnail -- and at t=1 it exactly covers the rect the body image paints.
-    // Both endpoints are live bindings (the icon slot follows slideX/slideY),
-    // so enter, exit and mid-flight reversals all stay glued.
+    // -- leading-slot morphs: the row's thumbnail/swatch becomes the body --
+    // Second shared elements riding the same slide, one per entry kind that has
+    // something in its leading slot. At t=0 both exactly cover the header's
+    // material icon slot -- which is pixel-identical to the row's thumbnail /
+    // swatch slot, so the icon really is "under" it -- and at t=1 they exactly
+    // cover the rect the corresponding body item paints. Every endpoint is a
+    // live binding (the slot follows slideX/slideY), so enter, exit and
+    // mid-flight reversals all stay glued.
     property real morphT: 0
 
     Behavior on morphT {
         Anim {}
     }
+
+    // The source slot, shared by both morphs. See headerIcon for why the size is
+    // the icon's implicitHeight (a square) and not its glyph width.
+    readonly property real slotS: headerIcon.implicitHeight
+    readonly property real slotX: Tokens.padding.large + root.slideX
+    readonly property real slotY: Tokens.padding.large + root.slideY + (header.implicitHeight - root.slotS) / 2
+    // Top of the body's content in root coordinates -- where both morphs land.
+    readonly property real bodyTop: Tokens.padding.large + root.slideY + header.implicitHeight + Tokens.spacing.small - viewport.contentY
 
     StyledClippingRect {
         id: morphImg
@@ -836,17 +929,13 @@ Item {
         // height caps the box to the same value, so there is no letterbox.
         readonly property real fitW: ready ? Math.min(root.contentW, root.maxHeight * mImg.implicitWidth / mImg.implicitHeight) : root.contentW
         readonly property real fitH: ready ? fitW * mImg.implicitHeight / mImg.implicitWidth : root.contentW
-        readonly property real srcS: headerIcon.implicitHeight
-        readonly property real srcX: Tokens.padding.large + root.slideX
-        readonly property real srcY: Tokens.padding.large + root.slideY + (header.implicitHeight - srcS) / 2
         readonly property real dstX: Tokens.padding.large + (root.contentW - fitW) / 2
-        readonly property real dstY: Tokens.padding.large + root.slideY + header.implicitHeight + Tokens.spacing.small - viewport.contentY
 
         visible: root.isImage && root.morphT < 1
-        x: srcX + (dstX - srcX) * root.morphT
-        y: srcY + (dstY - srcY) * root.morphT
-        width: srcS + (fitW - srcS) * root.morphT
-        height: srcS + (fitH - srcS) * root.morphT
+        x: root.slotX + (dstX - root.slotX) * root.morphT
+        y: root.slotY + (root.bodyTop - root.slotY) * root.morphT
+        width: root.slotS + (fitW - root.slotS) * root.morphT
+        height: root.slotS + (fitH - root.slotS) * root.morphT
         radius: Tokens.rounding.small * (1 - root.morphT)
         color: Colours.palette.m3surfaceContainerHigh
 
@@ -860,5 +949,24 @@ Item {
             asynchronous: true
             sourceSize.width: root.maxWidth
         }
+    }
+
+    // The colour swatch's morph. Full body width at t=1, so the only endpoint
+    // that differs from the slot is the size -- and the radius stays put, since
+    // both the row's swatch and the body's use rounding.small. A plain rect,
+    // not a clipping one: there is no child to clip, and a Rectangle composites
+    // a semi-transparent colour without going through a shader.
+    StyledRect {
+        id: morphSwatch
+
+        visible: root.isColour && root.morphT < 1
+        x: root.slotX + (Tokens.padding.large - root.slotX) * root.morphT
+        y: root.slotY + (root.bodyTop - root.slotY) * root.morphT
+        width: root.slotS + (root.contentW - root.slotS) * root.morphT
+        height: root.slotS + (root.swatchHeight - root.slotS) * root.morphT
+        radius: Tokens.rounding.small
+        color: root.colourValue
+        border.width: 1
+        border.color: Colours.palette.m3outlineVariant
     }
 }
