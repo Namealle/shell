@@ -824,8 +824,9 @@ Item {
                 StyledRect {
                     anchors.fill: parent
                     // Hidden while the morph overlay is in flight -- the overlay
-                    // lands exactly on this rect, then hands off.
-                    visible: root.morphT >= 1
+                    // lands exactly on this rect, then hands off. See `morphing`
+                    // for why the test is the animation and not morphT >= 1.
+                    visible: root.morphT >= 1 && !root.morphing
                     radius: Tokens.rounding.small
                     color: root.colourValue
                     // Same 1px outline the row's swatch has, so a colour close
@@ -856,8 +857,9 @@ Item {
             id: image
 
             // Hidden while the morph overlay is in flight -- the overlay lands
-            // exactly on this rect, then hands off.
-            visible: root.isImage && root.morphT >= 1
+            // exactly on this rect, then hands off. See `morphing` for why the
+            // test is the animation and not morphT >= 1.
+            visible: root.isImage && root.morphT >= 1 && !root.morphing
             width: root.contentW
             height: status === Image.Ready && implicitWidth > 0 ? Math.min(root.maxHeight, width * implicitHeight / implicitWidth) : 0
             source: root.imgSrc
@@ -909,8 +911,21 @@ Item {
     property real morphT: 0
 
     Behavior on morphT {
-        Anim {}
+        Anim {
+            id: morphAnim
+        }
     }
+
+    // The handoff between a morph and the body item it lands on is keyed on the
+    // ANIMATION, not on morphT reaching 1 -- the expressive spatial curve
+    // overshoots (peak 1.0139), so it crosses 1.0 at only 47% of the duration
+    // (243ms of 514ms, measured). Keying on the value handed off there and
+    // snapped the last 271ms away invisibly: the morph appeared to arrive early
+    // and hard, with none of the overshoot the rest of the launcher has.
+    // `running` goes true synchronously with the assignment and stays true
+    // across a mid-flight retarget, so this neither flashes at the start nor
+    // breaks reenter().
+    readonly property bool morphing: morphAnim.running
 
     // The source slot, shared by both morphs. See headerIcon for why the size is
     // the icon's implicitHeight (a square) and not its glyph width.
@@ -931,12 +946,14 @@ Item {
         readonly property real fitH: ready ? fitW * mImg.implicitHeight / mImg.implicitWidth : root.contentW
         readonly property real dstX: Tokens.padding.large + (root.contentW - fitW) / 2
 
-        visible: root.isImage && root.morphT < 1
+        visible: root.isImage && (root.morphing || root.morphT < 1)
         x: root.slotX + (dstX - root.slotX) * root.morphT
         y: root.slotY + (root.bodyTop - root.slotY) * root.morphT
         width: root.slotS + (fitW - root.slotS) * root.morphT
         height: root.slotS + (fitH - root.slotS) * root.morphT
-        radius: Tokens.rounding.small * (1 - root.morphT)
+        // Clamped: morphT passes 1 on the overshoot, which would otherwise ask
+        // for a negative radius.
+        radius: Tokens.rounding.small * Math.max(0, 1 - root.morphT)
         color: Colours.palette.m3surfaceContainerHigh
 
         Image {
@@ -959,7 +976,7 @@ Item {
     StyledRect {
         id: morphSwatch
 
-        visible: root.isColour && root.morphT < 1
+        visible: root.isColour && (root.morphing || root.morphT < 1)
         x: root.slotX + (Tokens.padding.large - root.slotX) * root.morphT
         y: root.slotY + (root.bodyTop - root.slotY) * root.morphT
         width: root.slotS + (root.contentW - root.slotS) * root.morphT
