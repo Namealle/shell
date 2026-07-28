@@ -97,7 +97,13 @@ Item {
 
                 anchors.fill: parent
                 fillMode: Image.PreserveAspectCrop
-                cache: false
+                // Cached, unlike every other Image in the clipboard UI. The
+                // reader's opening morph loads this exact url at this exact
+                // sourceSize, so leaving the entry in QQuickPixmapCache makes
+                // that load a synchronous hit -- which is the only reason the
+                // morph has something to draw before the full-res decode
+                // finishes. Cheap to keep: this is a ~50px square.
+                cache: true
                 asynchronous: true
                 sourceSize.width: width * 2
                 sourceSize.height: height * 2

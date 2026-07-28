@@ -392,6 +392,26 @@ Item {
 
     property string imgSrc: ""
 
+    // Aspect ratio of the current image entry, taken from whichever copy has
+    // decoded -- mThumb and mImg are the same picture, so the thumbnail's ratio
+    // is the real one, and it is a cache hit from the row (see mThumb) rather
+    // than a fresh decode.
+    //
+    // EVERYTHING that needs the image's final size reads this, not mImg
+    // directly. The launcher's own open animation is driven by implicitHeight
+    // -> viewport.contentHeight -> image.height; keying that on the full-res
+    // decode meant the window sized itself to an EMPTY body, collapsed to a
+    // single row, and only grew once the decode landed ~60ms later. The morph
+    // was scaling up correctly the whole time -- it was the window around it
+    // that was animating to the wrong size and then correcting.
+    readonly property bool imgReady: mImg.status === Image.Ready && mImg.implicitHeight > 0
+    readonly property bool thumbReady: mThumb.status === Image.Ready && mThumb.implicitHeight > 0
+    readonly property real imgArW: root.imgReady ? mImg.implicitWidth : (root.thumbReady ? mThumb.implicitWidth : 0)
+    readonly property real imgArH: root.imgReady ? mImg.implicitHeight : (root.thumbReady ? mThumb.implicitHeight : 0)
+    // The height the body's aspect-FIT image settles at, known as soon as the
+    // ratio is. 0 only while neither copy has decoded.
+    readonly property real imgFitH: root.imgArH > 0 ? Math.min(root.maxHeight, root.contentW * root.imgArH / root.imgArW) : 0
+
     implicitWidth: {
         if (!root.isText)
             return root.minWidth;
@@ -861,10 +881,18 @@ Item {
             // test is the animation and not morphT >= 1.
             visible: root.isImage && root.morphT >= 1 && !root.morphing
             width: root.contentW
-            height: status === Image.Ready && implicitWidth > 0 ? Math.min(root.maxHeight, width * implicitHeight / implicitWidth) : 0
+            // Shared ratio, NOT this Image's own status -- this height is what
+            // the launcher sizes itself from, and it has to be right before the
+            // full-res decode lands. See imgFitH.
+            height: root.imgFitH
             source: root.imgSrc
             fillMode: Image.PreserveAspectFit
-            cache: false
+            // Same url and sourceSize as the morph's mImg, so with caching on
+            // at both ends the two share one decode instead of racing two
+            // identical ones. That matters on large images: the duplicate was
+            // competing for the same CPU and pushing back the moment the morph
+            // could show full res.
+            cache: true
             asynchronous: true
             sourceSize.width: root.maxWidth
         }
@@ -938,12 +966,14 @@ Item {
     StyledClippingRect {
         id: morphImg
 
-        readonly property bool ready: mImg.status === Image.Ready && mImg.implicitWidth > 0 && mImg.implicitHeight > 0
         // The rect the body's aspect-FIT image actually paints inside
         // contentW x maxHeight. Only horizontal centring can occur: a capped
         // height caps the box to the same value, so there is no letterbox.
-        readonly property real fitW: ready ? Math.min(root.contentW, root.maxHeight * mImg.implicitWidth / mImg.implicitHeight) : root.contentW
-        readonly property real fitH: ready ? fitW * mImg.implicitHeight / mImg.implicitWidth : root.contentW
+        // Uses the shared ratio (see imgArW), so the box flies to the true
+        // shape from frame 1 instead of aiming at a contentW square and then
+        // snapping when the full decode arrives.
+        readonly property real fitW: root.imgArH > 0 ? Math.min(root.contentW, root.maxHeight * root.imgArW / root.imgArH) : root.contentW
+        readonly property real fitH: root.imgArH > 0 ? root.imgFitH : root.contentW
         readonly property real dstX: Tokens.padding.large + (root.contentW - fitW) / 2
 
         visible: root.isImage && (root.morphing || root.morphT < 1)
@@ -956,15 +986,45 @@ Item {
         radius: Tokens.rounding.small * Math.max(0, 1 - root.morphT)
         color: Colours.palette.m3surfaceContainerHigh
 
+        // The picture the row was already showing, scaled up. Same url and same
+        // sourceSize as ClipItem's `thumb` with caching on at both ends, so
+        // this is a synchronous QQuickPixmapCache hit and the morph has real
+        // content from its first frame. Blurry at full size, but it is the
+        // right image at the right aspect, and mImg fades over it. Underneath
+        // sits the rect's surface colour, which now only shows for entries
+        // whose row thumbnail has not decoded yet either.
+        Image {
+            id: mThumb
+
+            anchors.fill: parent
+            source: root.imgSrc
+            fillMode: Image.PreserveAspectCrop
+            cache: true
+            asynchronous: true
+            sourceSize.width: root.slotS * 2
+            sourceSize.height: root.slotS * 2
+        }
+
         Image {
             id: mImg
 
             anchors.fill: parent
             source: root.imgSrc
             fillMode: Image.PreserveAspectCrop
-            cache: false
+            // Shares its decode with the body's `image` -- see the note there.
+            cache: true
             asynchronous: true
             sourceSize.width: root.maxWidth
+            // Cross-fade over the thumbnail rather than popping. Effects-fast,
+            // not spatial: the geometry is already animating underneath and a
+            // slow fade would just read as the picture arriving late.
+            opacity: root.imgReady ? 1 : 0
+
+            Behavior on opacity {
+                Anim {
+                    type: Anim.FastEffects
+                }
+            }
         }
     }
 
