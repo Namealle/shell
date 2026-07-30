@@ -50,12 +50,46 @@ Singleton {
     // bindings react.
     property var lineCounts: ({})
 
+    // Testing switch: true makes every reader open take the cold path -- no text
+    // reuse, no image decode reuse, no pixmap reuse, no prefetch. Only useful
+    // for watching the uncached path deliberately; the reader's transition is
+    // built on this being false.
+    readonly property bool noCache: false
+
     // entryId -> decoded text (single trailing newline stripped), shared by the
     // reader across open/close so browsing back to an entry is instant.
+    //
+    // Never invalidated, because a cliphist entry is IMMUTABLE: ids are handed
+    // out in sequence and content is only ever added, never rewritten in place
+    // (re-copying something identical dedupes to a NEW id). So a decode is good
+    // for as long as the id exists, and the only reason to drop one is memory.
     property var decodedText: ({})
 
+    // Insertion order of decodedText, oldest first. Only reason this exists is
+    // the budget below -- JS objects do not keep insertion order for the
+    // numeric-looking keys cliphist hands out, so it cannot be recovered from
+    // decodedText itself.
+    property var cacheOrder: []
+    property int cacheChars: 0
+    // Prefetch pulls in entries that were never opened, and a clipboard happily
+    // holds megabyte pastes -- a 750-entry history could otherwise sit on
+    // hundreds of MB of strings that nothing will ever read again.
+    readonly property int cacheBudget: 8 * 1024 * 1024
+
     function cacheDecoded(entryId: string, text: string): void {
-        root.decodedText[entryId] = text;
+        if (!root.noCache && root.decodedText[entryId] === undefined) {
+            root.decodedText[entryId] = text;
+            root.cacheOrder.push(entryId);
+            root.cacheChars += text.length;
+            // Oldest out first. Never down to empty: the entry just decoded is
+            // the one about to be read, and on a single paste over budget this
+            // would otherwise evict it immediately and decode it again.
+            while (root.cacheChars > root.cacheBudget && root.cacheOrder.length > 1) {
+                const old = root.cacheOrder.shift();
+                root.cacheChars -= root.decodedText[old]?.length ?? 0;
+                delete root.decodedText[old];
+            }
+        }
         const counts = Object.assign({}, root.lineCounts);
         // Counted by scanning for newlines rather than split().length: the
         // array split() builds is a second full copy of the entry, allocated
@@ -69,6 +103,56 @@ Singleton {
             chars: text.length
         };
         root.lineCounts = counts;
+    }
+
+    // -- prefetch --
+    //
+    // The reader's transition is only instant if the text is already there when
+    // the key is pressed, so decode around the highlight before it is asked for.
+    // Entries being immutable (see decodedText) is what makes this safe to do
+    // eagerly: there is no invalidation, a prefetch is either wasted or a hit.
+    //
+    // One entry per process, worked through in order, because the alternative --
+    // one sh emitting many entries - needs framing for content that contains
+    // every possible delimiter. Order is the whole value here anyway: the queue
+    // is REPLACED on every move, so changing direction re-prioritises instantly
+    // instead of draining a stale window first.
+    property var prefetchQueue: []
+
+    function prefetch(entries: var): void {
+        if (root.noCache)
+            return;
+        const q = [];
+        const seen = {};
+        for (const e of entries) {
+            // Images decode to a file cache of their own; binaries are never
+            // read as text.
+            if (!e || e.isImage || e.binMatch)
+                continue;
+            const id = e.entryId;
+            if (!id || seen[id] || root.decodedText[id] !== undefined)
+                continue;
+            seen[id] = true;
+            q.push(e);
+        }
+        root.prefetchQueue = q;
+        root.pumpPrefetch();
+    }
+
+    function pumpPrefetch(): void {
+        while (root.prefetchQueue.length > 0) {
+            if (prefetchProc.running)
+                return;
+            const e = root.prefetchQueue[0];
+            root.prefetchQueue = root.prefetchQueue.slice(1);
+            // May have been decoded by the reader itself while queued.
+            if (!e.entryId || root.decodedText[e.entryId] !== undefined)
+                continue;
+            prefetchProc.entryId = e.entryId;
+            prefetchProc.line = e.raw;
+            prefetchProc.running = true;
+            return;
+        }
     }
 
     // One background sh for ALL uncounted entries (not a process per row):
@@ -654,6 +738,22 @@ Singleton {
 
         command: ["sh", "-c", "printf '%s' \"$1\" | cliphist delete", "del", delProc.line]
         onExited: root.reload()
+    }
+
+    Process {
+        id: prefetchProc
+
+        property string entryId: ""
+        property string line: ""
+
+        command: ["sh", "-c", "printf '%s' \"$1\" | cliphist decode", "clip", prefetchProc.line]
+        stdout: StdioCollector {
+            // Same trailing-newline convention as the reader's own decode, or a
+            // prefetched entry would differ from a freshly decoded one by a
+            // character and re-lay-out on open.
+            onStreamFinished: root.cacheDecoded(prefetchProc.entryId, text.replace(/\n$/, ""))
+        }
+        onExited: root.pumpPrefetch()
     }
 
     Process {

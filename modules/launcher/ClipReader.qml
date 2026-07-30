@@ -50,6 +50,19 @@ Item {
         slideAnim.stop();
         slideXAnim.stop();
         root.perfStart("CLOSE");
+        // Drop any dip in flight: the exit collapses the reader to the row, and
+        // a held height would be animating against that the whole way down.
+        holdTimer.stop();
+        maxHold.stop();
+        root.heldHeight = 0;
+        root.dip = 0;
+        // Same for a slide: the body is about to be folded back into the row, and
+        // an offset still easing out would ride along inside the shrinking morph.
+        // Now that the travel is viewport-sized, leaving it running is visible.
+        bodySlideAnim.stop();
+        bodyFadeAnim.stop();
+        root.bodyOffset = 0;
+        root.bodyFade = 1;
         root.exitCb = cb;
         root.exiting = true;
         slideAnim.from = root.slideY;
@@ -151,11 +164,6 @@ Item {
     readonly property bool isColour: root.colour.length > 0
     readonly property color colourValue: root.isColour ? root.colour : "transparent"
     readonly property bool isText: !!root.entry && !root.isBinary && !root.isColour
-    // Entries whose row draws a SQUARE in the leading slot (image thumbnail,
-    // colour swatch) instead of a bare glyph. ClipItem sizes both from the
-    // icon's implicitHeight, so the header has to reserve that width too --
-    // see headerIcon.
-    readonly property bool squareSlot: root.isImage || root.isColour
 
     // One notation per line. The hex line is always 6 digits: an 8-digit hex
     // would be ambiguous (CSS #RRGGBBAA vs Qt #AARRGGBB), so alpha rides on the
@@ -418,7 +426,13 @@ Item {
         const natural = root.gutterWidth + Tokens.spacing.medium + root.longestLine * root.charWidth;
         return Math.max(root.minWidth, Math.min(root.maxWidth, natural + Tokens.padding.large * 2));
     }
-    implicitHeight: header.implicitHeight + Math.min(root.maxHeight, viewport.contentHeight) + Tokens.padding.large * 2 + Tokens.spacing.small
+    // The height the current content actually wants. implicitHeight only follows
+    // it when no swap is in flight -- see heldHeight.
+    readonly property real liveHeight: header.implicitHeight + Math.min(root.maxHeight, viewport.contentHeight) + Tokens.padding.large * 2 + Tokens.spacing.small
+    // The dip must never eat the header; below this there is nothing left to
+    // shrink and it would read as the reader breaking rather than breathing.
+    readonly property real minHeight: header.implicitHeight + Tokens.padding.large * 2
+    implicitHeight: Math.max(root.minHeight, (root.heldHeight > 0 ? root.heldHeight : root.liveHeight) - root.dip)
 
     FontMetrics {
         id: fm
@@ -431,22 +445,266 @@ Item {
         property string text: ""
     }
 
-    // Entry changed while browsing: serve from cache instantly, else debounce the
-    // decode so ↑/↓ key-repeat doesn't spawn a process per intermediate row.
-    function stage(): void {
-        const e = root.entry;
-        cache.text = "";
-        root.imgSrc = "";
-        scrollAnim.stop();
-        viewport.contentY = 0;
-        if (!e)
-            return;
-        if (root.isText && Clipboard.decodedText[e.entryId] !== undefined) {
-            // onDecodedChanged does the staging (reset, first slab, find).
-            cache.text = Clipboard.decodedText[e.entryId];
+    // -- entry-change transition --
+    //
+    // Browsing used to animate whatever the data happened to do. stage() blanked
+    // the body, so the launcher collapsed towards its minimum and grew back only
+    // when the decode landed: the depth and the duration of that move were both
+    // functions of decode latency, the whole thing disappeared once an entry was
+    // cached, and two entries of equal height swapped with no motion at all.
+    // One keypress, three behaviours.
+    //
+    // The fix is not a nicer wait -- it is not waiting. Clipboard.prefetch keeps
+    // the entries around the highlight decoded, so by the time a key is pressed
+    // the text is almost always already in hand, and then the reader swaps on
+    // that same frame and goes to the new height in ONE continuous move. That is
+    // the snappy path, and it is the normal one.
+    //
+    // What is left is the genuine miss: an entry nothing has decoded yet. There
+    // the reader dips by a fraction of its height and holds the old body at the
+    // old height until the text lands. So the dip means "working" -- it shows up
+    // only when something is actually being waited for, which is also why it is
+    // allowed to be latency-shaped. What it must never do is add a pause to a
+    // transition that had everything it needed; a dip in front of a ready swap
+    // is just a delay wearing an animation's clothes.
+    //
+    // Holding the old body is what replaced the collapse: the previous entry's
+    // height is the honest one until a new one exists, and blanking the body
+    // made the window animate to a size that meant nothing.
+    //
+    // Nothing here animates directly. It steps implicitHeight and lets
+    // ContentList's Behavior do the animating, exactly as the blanking did.
+    property real dip: 0
+    // Implicit height to keep reporting while a swap is in flight; 0 = follow
+    // the live content.
+    property real heldHeight: 0
+    // True means "nothing is holding". Defaults that way deliberately: commit()
+    // is gated on it, and the reader must never depend on a kick having run to
+    // be able to show its first entry.
+    property bool holdElapsed: true
+    property var pendingText: null
+    property string pendingImgSrc: ""
+    // What the body is currently SHOWING (not what `entry` says). Set at commit.
+    property string shownType: ""
+    // Guard for the reader's own first staging, which runs during creation --
+    // the dip must not fire into the open morph.
+    property bool opened: false
+
+    readonly property string entryType: root.isImage ? "image" : (root.isColour ? "colour" : (root.isText ? "text" : "other"))
+    // Proportional, because a fixed pixel dip is violent on a 200px reader and
+    // invisible on a 640px one. Capped so a full-height entry does not swing.
+    readonly property real dipFraction: 0.09
+    readonly property real dipMax: 44
+
+    // Saturating: a change arriving mid-dip keeps the first depth and only
+    // extends the hold, so holding ↑/↓ rests at one steady dip instead of
+    // walking the window down a step per row.
+    function kick(base: real): void {
+        if (!root.opened || root.exiting) {
+            // Open path: no dip, and nothing to wait for -- let the first
+            // content through as soon as it exists.
+            root.holdElapsed = true;
             return;
         }
-        debounce.restart();
+        if (root.heldHeight <= 0) {
+            root.heldHeight = base;
+            root.dip = Math.min(root.dipMax, base * root.dipFraction);
+            maxHold.restart();
+        }
+        root.holdElapsed = false;
+        holdTimer.restart();
+    }
+
+    // Swap the prepared entry in and release the dip. Called from every path
+    // that could complete the transition -- the hold expiring, a decode
+    // finishing, a cache hit -- and does nothing until both halves are ready.
+    function commit(): void {
+        if (!root.holdElapsed)
+            return;
+        // Still no content for the new entry: hold. This is the branch that
+        // replaces the old collapse-to-nothing.
+        if (root.isText && root.pendingText === null)
+            return;
+        if (root.isImage && root.pendingImgSrc === "")
+            return;
+        if (root.pendingText !== null) {
+            // onDecodedChanged does the rest (reset, first slab, find).
+            cache.text = root.pendingText;
+            root.pendingText = null;
+        }
+        if (root.pendingImgSrc !== "") {
+            root.imgSrc = root.pendingImgSrc;
+            root.pendingImgSrc = "";
+        }
+        root.shownType = root.entryType;
+        scrollAnim.stop();
+        viewport.contentY = 0;
+        holdTimer.stop();
+        maxHold.stop();
+        root.heldHeight = 0;
+        root.dip = 0;
+        // Last: the swap above is what there is to announce, and slideIn reads
+        // nothing that is not already settled by this point.
+        root.slideIn();
+    }
+
+    // Entry changed while browsing. Prepare the new content, hold the old.
+    function stage(): void {
+        const e = root.entry;
+        if (!e)
+            return;
+        // Captured BEFORE anything is cleared below -- clearing the body drops
+        // the live height, and the whole point is to hold what it was.
+        const base = root.liveHeight;
+        // Across a type change there is nothing worth holding: a text body under
+        // an image entry's header is not continuity, it is a leftover. The
+        // HEIGHT is still held either way, which is what stops the collapse.
+        if (root.entryType !== root.shownType) {
+            cache.text = "";
+            root.imgSrc = "";
+        }
+        root.pendingText = null;
+        root.pendingImgSrc = "";
+        if (root.isText) {
+            const c = Clipboard.decodedText[e.entryId];
+            if (c !== undefined)
+                root.pendingText = c;
+            else
+                // Debounced so key-repeat doesn't spawn a process per row.
+                debounce.restart();
+        } else if (root.isImage) {
+            debounce.restart();
+        }
+        // Already in hand -- and with prefetch running that is the normal case.
+        // Straight to the new size in ONE move, starting on this frame. A dip
+        // here would only be a delay wearing an animation's clothes: it would
+        // put a pause between the keypress and the resize, which is exactly the
+        // sluggishness the dip was supposed to be fixing.
+        if (root.contentReady()) {
+            root.holdElapsed = true;
+            root.commit();
+            return;
+        }
+        // Nothing to show yet: dip, and hold the old body at the old height
+        // until there is. The dip means "working", not "transitioning" -- it
+        // appears only when something is actually being waited for.
+        root.kick(base);
+    }
+
+    // -- entry-change slide --
+    //
+    // A same-size swap has nothing to animate: the height does not change, so
+    // the body changed under a stationary frame in a single frame and read as a
+    // glitch. What was missing there was never motion for its own sake, it was
+    // DIRECTION -- nothing told you which way you had moved, so two similar
+    // entries left you checking whether the key had registered at all.
+    //
+    // So the new body enters from the side you came from: ↓ brings it up from
+    // below, ↑ brings it down from above. Purely presentational -- the content
+    // is already committed and the height is already animating by the time this
+    // starts, so it gates nothing and can never make a swap feel slower.
+    //
+    // Same curve as the launcher's own resize, the reader's header morph and
+    // every other spatial move in the shell (DefaultSpatial, the one with the
+    // 1.21 overshoot), so the body settles on the same beat as the window around
+    // it instead of reading as a separate event. That curve is heavily
+    // front-loaded, which is why 500ms nominal still feels immediate: most of
+    // the travel is over in the first fifth of it.
+    //
+    // Deliberately NOT the scroll's spring, even though PgUp/PgDn is right next
+    // door. The scroll is a continuous gesture the user steers, so it wants
+    // physics that survive retargeting; a swap is a discrete event that should
+    // land on the same beat as the frame resizing around it, and the frame is on
+    // this curve. Matching the neighbour would have cost matching the parent.
+    property int browseStep: 0
+    property real bodyOffset: 0
+    property real bodyFade: 1
+    // Sized to the viewport, not fixed: the travel has to be a real fraction of
+    // the body to read as the text MOVING rather than twitching, and a distance
+    // that does that in a 640px reader would throw a three-line entry clean off
+    // its own frame. Floor so short entries still travel visibly, ceiling so a
+    // full-height one does not turn into a page turn.
+    //
+    // Note this scales the overshoot with it: the curve swings ~21% of the
+    // travel past zero before settling, so at the ceiling the body passes about
+    // 29px the other way. That is the bounce, and it is why the ceiling is not
+    // higher.
+    readonly property real slideDist: Math.max(56, Math.min(140, viewport.height * 0.34))
+
+    function slideIn(): void {
+        // Never during the open or close morph -- the body is the thing the
+        // header is unfolding, and a second motion on top just muddies it.
+        if (!root.opened || root.exiting || root.browseStep === 0)
+            return;
+        // Read BEFORE stopping, which clears it.
+        const settled = !bodyFadeAnim.running;
+        bodySlideAnim.stop();
+        bodyFadeAnim.stop();
+        root.bodyOffset = root.browseStep > 0 ? root.slideDist : -root.slideDist;
+        // Opacity is only pulled back to 0 when the body is actually settled.
+        // Key repeat arrives faster than the fade completes, and yanking it to 0
+        // on every row would hold the body dim for as long as the arrow is down.
+        // Resuming from where it is means a held key just slides, and the fade
+        // goes back to being what it is for: the settle on a single move.
+        if (settled)
+            root.bodyFade = 0;
+        bodySlideAnim.start();
+        bodyFadeAnim.start();
+    }
+
+    Anim {
+        id: bodySlideAnim
+
+        target: root
+        property: "bodyOffset"
+        to: 0
+    }
+
+    // Deliberately NOT the spatial curve: opacity has nowhere to overshoot to,
+    // and the fade wants to finish before the slide does so the text is legible
+    // while it is still settling rather than only once it stops.
+    Anim {
+        id: bodyFadeAnim
+
+        target: root
+        property: "bodyFade"
+        to: 1
+        type: Anim.FastEffects
+    }
+
+    function contentReady(): bool {
+        if (root.isText)
+            return root.pendingText !== null;
+        if (root.isImage)
+            return root.pendingImgSrc !== "";
+        return true;
+    }
+
+    // A FLOOR on how long a dip is visible, not a delay before the swap. Content
+    // that arrives after this commits the moment it lands; this only stops a
+    // decode that finishes in 15ms from showing a one-frame flicker of dip.
+    Timer {
+        id: holdTimer
+
+        interval: 80
+        onTriggered: {
+            root.holdElapsed = true;
+            root.commit();
+        }
+    }
+
+    // A ceiling on the coalescing above, for a sustained scroll through entries
+    // that are all missing: holdTimer keeps being restarted, so without this the
+    // header would run through rows over a frozen body for as long as the key is
+    // down. Only reachable when prefetch is losing the race.
+    Timer {
+        id: maxHold
+
+        interval: 500
+        onTriggered: {
+            root.holdElapsed = true;
+            root.commit();
+        }
     }
 
     function refresh(): void {
@@ -473,7 +731,8 @@ Item {
         // string identical to the one already cached.
         const cached = Clipboard.decodedText[id];
         if (cached !== undefined) {
-            cache.text = cached;
+            root.pendingText = cached;
+            root.commit();
             return;
         }
         decoder.running = false;
@@ -630,12 +889,19 @@ Item {
         slideXAnim.start();
         morphT = 1;
         root.refresh();
+        // Last: refresh()'s cache-hit path commits synchronously, and that has
+        // to happen on the open's terms (no dip) rather than the browse's.
+        root.opened = true;
     }
 
+    // Coalesces key-repeat so a held arrow doesn't spawn a decode per row. Only
+    // reachable on a prefetch miss now, and it sits directly in front of the dip
+    // -- so it is tuned to the shortest interval that still swallows a repeat
+    // burst (~40ms at typical repeat rates) rather than to a comfortable margin.
     Timer {
         id: debounce
 
-        interval: 140
+        interval: 60
         onTriggered: root.refresh()
     }
 
@@ -654,9 +920,12 @@ Item {
                 // Display convention: one trailing newline is not an extra line.
                 const t = text.replace(/\n$/, "");
                 Clipboard.cacheDecoded(decoder.entryId, t);
-                // onDecodedChanged does the staging (reset, first slab, find).
-                if (root.entry?.entryId === decoder.entryId)
-                    cache.text = t;
+                // Still the entry being read? Hand it to the transition, which
+                // swaps it in once the dip has had its hold.
+                if (root.entry?.entryId === decoder.entryId) {
+                    root.pendingText = t;
+                    root.commit();
+                }
             }
         }
     }
@@ -664,10 +933,14 @@ Item {
     Process {
         id: imgDecoder
 
-        command: ["sh", "-c", "test -s \"$2\" || (printf '%s' \"$1\" | cliphist decode > \"$2\")", "dec", root.entry?.raw ?? "", root.imgCache]
+        // The `test -s` skip is what makes a reopened image instant; dropping it
+        // under noCache re-runs cliphist every open.
+        command: Clipboard.noCache ? ["sh", "-c", "printf '%s' \"$1\" | cliphist decode > \"$2\"", "dec", root.entry?.raw ?? "", root.imgCache] : ["sh", "-c", "test -s \"$2\" || (printf '%s' \"$1\" | cliphist decode > \"$2\")", "dec", root.entry?.raw ?? "", root.imgCache]
         onExited: {
-            if (root.isImage)
-                root.imgSrc = `file://${root.imgCache}`;
+            if (root.isImage) {
+                root.pendingImgSrc = `file://${root.imgCache}`;
+                root.commit();
+            }
         }
     }
 
@@ -692,16 +965,11 @@ Item {
             id: headerIcon
 
             anchors.verticalCenter: parent.verticalCenter
-            // A glyph is narrower than its own line height (41 vs 50px at the
-            // default icon size), so anchoring the title to the icon's right
-            // edge only matches the row for entries whose row also draws a bare
-            // glyph. Image and colour rows draw a square of implicitHeight
-            // there, and the title has to clear the same width -- otherwise it
-            // rides 9px left of the row's title for the whole slide and
-            // teleports across when the handoff unmasks the row. Centring the
-            // glyph in the wider slot also keeps it under the morph square.
-            width: root.squareSlot ? implicitHeight : implicitWidth
-            horizontalAlignment: Text.AlignHCenter
+            // Natural width, matching ClipItem's leading slot exactly: the row
+            // reserves one 1em square for every entry type, so the header does
+            // too, and the title sits at the same x in both. Any mismatch here
+            // rides visibly through the whole slide and teleports across when
+            // the handoff unmasks the row.
             text: root.entry?.icon ?? "content_paste"
             color: Colours.palette.m3onSurfaceVariant
             fontStyle: Tokens.font.icon.builders.large.scale(1.3).build()
@@ -733,7 +1001,7 @@ Item {
                 anchors.top: title.bottom
                 text: {
                     if (root.isText && root.decoded.length)
-                        return `${root.decoded.length} characters · ${root.lineCount} ${root.lineCount === 1 ? "line" : "lines"}`;
+                        return `${root.decoded.length} ${root.decoded.length === 1 ? "character" : "characters"} · ${root.lineCount} ${root.lineCount === 1 ? "line" : "lines"}`;
                     return root.entry?.desc ?? "";
                 }
                 font: Tokens.font.body.small
@@ -782,6 +1050,15 @@ Item {
             visible: root.isText
             width: root.contentW
             spacing: Tokens.spacing.medium
+            opacity: root.bodyFade
+
+            // A transform, not a y offset: this must not touch the layout the
+            // Flickable scrolls, or contentHeight and contentY would move with
+            // the animation. The Flickable clips, so the travel stays inside the
+            // body and never spills over the header.
+            transform: Translate {
+                y: root.bodyOffset
+            }
 
             Item {
                 // Reserves the gutter column. The numbers themselves are drawn by
@@ -832,6 +1109,11 @@ Item {
             visible: root.isColour
             width: root.contentW
             spacing: Tokens.spacing.medium
+            opacity: root.bodyFade
+
+            transform: Translate {
+                y: root.bodyOffset
+            }
 
             // The swatch's space is reserved by this Item, not by the rect
             // itself: the rect is hidden until the morph overlay lands on it,
@@ -880,6 +1162,11 @@ Item {
             // exactly on this rect, then hands off. See `morphing` for why the
             // test is the animation and not morphT >= 1.
             visible: root.isImage && root.morphT >= 1 && !root.morphing
+            opacity: root.bodyFade
+
+            transform: Translate {
+                y: root.bodyOffset
+            }
             width: root.contentW
             // Shared ratio, NOT this Image's own status -- this height is what
             // the launcher sizes itself from, and it has to be right before the
@@ -892,7 +1179,7 @@ Item {
             // identical ones. That matters on large images: the duplicate was
             // competing for the same CPU and pushing back the moment the morph
             // could show full res.
-            cache: true
+            cache: !Clipboard.noCache
             asynchronous: true
             sourceSize.width: root.maxWidth
         }
@@ -911,6 +1198,14 @@ Item {
         height: viewport.height
         clip: true
         visible: root.isText && !root.exiting
+        // The numbers live outside the Flickable, so they have to be carried by
+        // the same slide -- otherwise the text travels and the line numbers it
+        // belongs to stay nailed in place.
+        opacity: root.bodyFade
+
+        transform: Translate {
+            y: root.bodyOffset
+        }
 
         Repeater {
             model: root.visibleLines
@@ -955,9 +1250,16 @@ Item {
     // breaks reenter().
     readonly property bool morphing: morphAnim.running
 
-    // The source slot, shared by both morphs. See headerIcon for why the size is
-    // the icon's implicitHeight (a square) and not its glyph width.
-    readonly property real slotS: headerIcon.implicitHeight
+    // The source slot, shared by both morphs: the square the ROW draws, which is
+    // the icon's 1em advance (see headerIcon and ClipItem). implicitWidth, not
+    // implicitHeight -- the line box is 1.2em and a morph starting from it would
+    // begin 8px larger than the thumbnail it is supposed to be lifting off.
+    //
+    // Also fixes the thumbnail sourceSize on both ends at 2x this: ClipItem's
+    // `thumb` and this file's `mThumb` load the same url at the same size, which
+    // is what makes the morph's first frame a synchronous cache hit rather than
+    // an empty rect. They have to move together or that silently stops working.
+    readonly property real slotS: headerIcon.implicitWidth
     readonly property real slotX: Tokens.padding.large + root.slideX
     readonly property real slotY: Tokens.padding.large + root.slideY + (header.implicitHeight - root.slotS) / 2
     // Top of the body's content in root coordinates -- where both morphs land.
@@ -999,7 +1301,7 @@ Item {
             anchors.fill: parent
             source: root.imgSrc
             fillMode: Image.PreserveAspectCrop
-            cache: true
+            cache: !Clipboard.noCache
             asynchronous: true
             sourceSize.width: root.slotS * 2
             sourceSize.height: root.slotS * 2
@@ -1012,7 +1314,7 @@ Item {
             source: root.imgSrc
             fillMode: Image.PreserveAspectCrop
             // Shares its decode with the body's `image` -- see the note there.
-            cache: true
+            cache: !Clipboard.noCache
             asynchronous: true
             sourceSize.width: root.maxWidth
             // Cross-fade over the thumbnail rather than popping. Effects-fast,
