@@ -4,6 +4,7 @@ import QtQuick
 import Caelestia.Config
 import qs.components
 import qs.components.controls
+import qs.modules.launcher.services
 import qs.services
 import qs.utils
 
@@ -42,6 +43,9 @@ Item {
     // Owned, not derived from currentIndex: the entry being read is lifted OUT
     // of the list model, so list indices can't describe it.
     property var readerEntry: null
+    // Which way the last ↑/↓ went, for the reader's body slide. 0 means "not a
+    // browse" -- an open has no direction, and its morph must not get one.
+    property int readerStep: 0
     // Not while exiting: erasing the `;` unfreezes the list, which flips
     // displayState off "clipboard" and would fire this hard reset straight
     // through the exit slide that the erase itself just started.
@@ -61,6 +65,7 @@ Item {
             l.pendingIndex = -1;
         }
         readerEntry = null;
+        readerStep = 0;
         readerActive = false;
         readerExiting = false;
     }
@@ -99,10 +104,17 @@ Item {
         if (!l?.currentEntry)
             return;
         readerStartY = currentRowY();
+        // An open is not a browse: clear the direction left over from the last
+        // one, or the body would slide while the header is still morphing.
+        readerStep = 0;
         readerEntry = l.currentEntry;
         const i = l.fullResults.indexOf(readerEntry);
         l.setLifted(readerEntry, Math.max(0, Math.min(i, l.fullResults.length - 2)));
         readerActive = true;
+        // Explicit rather than left to the currentEntry hook: lifting the entry
+        // out of the model moves currentEntry to a neighbour, so that hook would
+        // centre the window one row off.
+        prefetchAround(1);
     }
 
     // PgUp/PgDn/Home/End inside the reader scroll its text (smoothly).
@@ -125,8 +137,50 @@ Item {
         const j = i + step;
         if (i < 0 || j < 0 || j >= full.length)
             return;
+        // BEFORE readerEntry: changing that runs the reader's staging
+        // synchronously, and the slide it starts has to already know which way
+        // it is going.
+        readerStep = step;
         readerEntry = full[j];
         l.setLifted(readerEntry, Math.max(0, Math.min(j, full.length - 2)));
+        root.prefetchAround(step);
+    }
+
+    // Decode around the highlight so the reader's next entry is already in hand
+    // when the key is pressed -- the reader can only swap instantly if it has
+    // nothing to wait for.
+    //
+    // Weighted towards travel, and re-issued on every move: the queue is
+    // replaced, not appended to, so reversing direction re-prioritises at once
+    // rather than finishing a window you have already left. Always includes the
+    // CURRENT entry, which is what makes → into the reader instant too.
+    function prefetchAround(step: int): void {
+        const l = appList.item;
+        if (!l || !canRead)
+            return;
+        const full = l.fullResults;
+        const cur = readerActive ? readerEntry : l.currentEntry;
+        const i = full.indexOf(cur);
+        if (i < 0)
+            return;
+        const dir = step >= 0 ? 1 : -1;
+        const out = [cur];
+        // Asymmetric on purpose: the row you are heading towards is far likelier
+        // to be read than the one you just left, but backing up one step is
+        // common enough to be worth covering.
+        const ahead = 4;
+        const behind = 2;
+        for (let d = 1; d <= ahead; d++) {
+            const f = full[i + dir * d];
+            if (f)
+                out.push(f);
+            if (d <= behind) {
+                const b = full[i - dir * d];
+                if (b)
+                    out.push(b);
+            }
+        }
+        Clipboard.prefetch(out);
     }
 
     // Mirror of enter, staged so the reorder is actually SEEN: the header
@@ -297,6 +351,18 @@ Item {
         }
     }
 
+    // Prefetch while browsing the LIST too, not just inside the reader. This is
+    // the one that makes → open instantly: by the time the reader is created its
+    // entry has usually been decoded already.
+    Connections {
+        target: appList.item
+
+        function onCurrentEntryChanged(): void {
+            if (!root.readerActive && !root.readerExiting)
+                root.prefetchAround(1);
+        }
+    }
+
     Loader {
         id: clipReader
 
@@ -308,6 +374,7 @@ Item {
 
         sourceComponent: ClipReader {
             entry: root.readerEntry
+            browseStep: root.readerStep
             startY: root.readerStartY
             // Search text minus the `;` prefix: seeded with the list filter on
             // entry, live as the user keeps typing (the list itself is frozen).
