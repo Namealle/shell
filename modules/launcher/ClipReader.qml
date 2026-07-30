@@ -49,7 +49,6 @@ Item {
         // the exit callback.
         slideAnim.stop();
         slideXAnim.stop();
-        root.perfStart("CLOSE");
         // Drop any dip in flight: the exit collapses the reader to the row, and
         // a held height would be animating against that the whole way down.
         holdTimer.stop();
@@ -92,53 +91,12 @@ Item {
         slideXAnim.start();
     }
 
-    // ---- TEMPORARY INSTRUMENTATION (remove after the old-vs-new comparison) ----
-    // Counts frames actually rendered during the open morph and the worst frame
-    // interval. A blocked GUI thread shows up as few frames + one huge interval;
-    // a smooth morph shows ~N frames at ~16ms. Identical in both arms.
-    property real perfT0: 0
-    property string perfTag: ""
-
-    FrameAnimation {
-        id: perfProbe
-
-        property int frames: 0
-        property real worst: 0
-
-        running: false
-        onTriggered: {
-            frames++;
-            const ms = frameTime * 1000;
-            if (ms > worst)
-                worst = ms;
-        }
-    }
-
-    function perfStart(tag: string): void {
-        root.perfTag = tag;
-        root.perfT0 = Date.now();
-        perfProbe.frames = 0;
-        perfProbe.worst = 0;
-        perfProbe.running = true;
-    }
-
-    function perfEnd(): void {
-        if (!perfProbe.running)
-            return;
-        perfProbe.running = false;
-        const wall = Date.now() - root.perfT0;
-        const line = `${root.perfTag} wallMs=${wall} frames=${perfProbe.frames} worstFrameMs=${perfProbe.worst.toFixed(1)} chars=${root.decoded.length} lines=${root.lineCount}`;
-        Quickshell.execDetached(["sh", "-c", "printf '%s\\n' \"$1\" >> /tmp/claude-1000/-home-namealle/c2e20d17-22a1-4c93-9aff-8f0d7261f550/scratchpad/clipperf.log", "p", line]);
-    }
-    // ---- END TEMPORARY INSTRUMENTATION ----
-
     Anim {
         id: slideAnim
 
         target: root
         property: "slideY"
         onStopped: {
-            root.perfEnd();
             const cb = root.exitCb;
             root.exitCb = null;
             if (cb)
@@ -877,7 +835,6 @@ Item {
         Qt.callLater(root.applyFind);
     }
     Component.onCompleted: {
-        root.perfStart("OPEN");
         // Start exactly on the row's content, become the header.
         slideY = startY + rowAlignY;
         slideX = rowAlignX;
