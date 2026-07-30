@@ -63,6 +63,16 @@ Item {
 
             visible: !root.isImage && !root.isColour
             anchors.verticalCenter: parent.verticalCenter
+            // Natural width, and that width IS the row's leading slot -- the
+            // swatch and thumbnail below size themselves from it. Safe to build
+            // the column on because Material Symbols is a uniform-advance font:
+            // numberOfHMetrics is 1, so every one of its 6301 glyphs advances
+            // exactly 1em (41.7px here) and no icon can shift its own row.
+            //
+            // Deliberately NOT the line height, which is 1.2em / 50px. That
+            // extra 0.2em is leading -- vertical space for stacking lines of
+            // text, of which there are none in an icon slot. 1em is the box the
+            // glyphs are actually drawn to.
             text: root.modelData?.icon ?? "content_paste"
             color: Colours.palette.m3onSurfaceVariant
             fontStyle: Tokens.font.icon.builders.large.scale(1.3).build()
@@ -74,8 +84,12 @@ Item {
 
             visible: root.isColour
             anchors.verticalCenter: parent.verticalCenter
-            implicitWidth: icon.implicitHeight
-            implicitHeight: icon.implicitHeight
+            // Square on the icon's ADVANCE, so the leading slot is one width for
+            // every entry type and the titles line up down the list. Both
+            // dimensions read implicitWidth on purpose -- implicitHeight is the
+            // 1.2em line box and would make this 8px taller than it is wide.
+            implicitWidth: icon.implicitWidth
+            implicitHeight: icon.implicitWidth
             radius: Tokens.rounding.small
             color: root.isColour ? root.swatchColour : "transparent"
             border.width: 1
@@ -87,8 +101,9 @@ Item {
 
             visible: root.isImage
             anchors.verticalCenter: parent.verticalCenter
-            implicitWidth: icon.implicitHeight
-            implicitHeight: icon.implicitHeight
+            // Same square as the swatch -- see there.
+            implicitWidth: icon.implicitWidth
+            implicitHeight: icon.implicitWidth
             radius: Tokens.rounding.small
             color: Colours.palette.m3surfaceContainerHigh
 
@@ -115,7 +130,11 @@ Item {
         Item {
             id: textCol
 
-            anchors.left: root.isImage ? thumbWrapper.right : (root.isColour ? swatch.right : icon.right)
+            // All three leading slots are the same 1em square at the same x, so
+            // there is nothing to branch on -- which is the point. icon is the
+            // one to measure from: the other two derive their size from it, and
+            // it is laid out for every entry type rather than only its own.
+            anchors.left: icon.right
             anchors.leftMargin: Tokens.spacing.medium
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
