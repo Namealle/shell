@@ -372,13 +372,61 @@ Item {
     // that was animating to the wrong size and then correcting.
     readonly property bool imgReady: mImg.status === Image.Ready && mImg.implicitHeight > 0
     readonly property bool thumbReady: mThumb.status === Image.Ready && mThumb.implicitHeight > 0
-    readonly property real imgArW: root.imgReady ? mImg.implicitWidth : (root.thumbReady ? mThumb.implicitWidth : 0)
-    readonly property real imgArH: root.imgReady ? mImg.implicitHeight : (root.thumbReady ? mThumb.implicitHeight : 0)
-    // The height the body's aspect-FIT image settles at, known as soon as the
-    // ratio is. 0 only while neither copy has decoded.
-    readonly property real imgFitH: root.imgArH > 0 ? Math.min(root.maxHeight, root.contentW * root.imgArH / root.imgArW) : 0
+    // cliphist's own descriptor first: it is exact, it is the TRUE resolution
+    // (a decoded copy only ever reports its sourceSize-capped size), and it is
+    // there before anything has been decoded at all. The decoded copies remain
+    // as the fallback for entries whose descriptor carries no WxH.
+    readonly property var imgDims: root.isImage ? (root.entry?.imgDims ?? null) : null
+    readonly property real imgArW: root.imgDims ? root.imgDims.w : (root.imgReady ? mImg.implicitWidth : (root.thumbReady ? mThumb.implicitWidth : 0))
+    readonly property real imgArH: root.imgDims ? root.imgDims.h : (root.imgReady ? mImg.implicitHeight : (root.thumbReady ? mThumb.implicitHeight : 0))
+    // The natural-resolution clamp, which is NOT the same fallback chain as the
+    // ratio above: mThumb is an 82px copy, so its width is a valid ratio but a
+    // useless resolution, and clamping to it would open every descriptor-less
+    // image at thumbnail size and then pop to full size when mImg landed. Only
+    // the descriptor and mImg are honest here (mImg's own cap is maxWidth,
+    // which is the ceiling anyway); until one of them speaks, don't clamp.
+    readonly property real imgNatW: root.imgDims ? root.imgDims.w : (root.imgReady ? mImg.implicitWidth : root.maxWidth)
+
+    // How far a low-resolution image may be enlarged past its own pixels. 1:1 is
+    // the sharpest an image can be, but it is not always the most readable one:
+    // a small clip left at native size sits in a puddle of empty body with bars
+    // either side, and squinting at a sharp postage stamp is worse than reading
+    // a slightly soft one. 2x is the usual place that trade turns over -- past
+    // it the softness stops reading as "small picture" and starts reading as
+    // "broken picture".
+    readonly property real maxUpscale: 2
+
+    // The box the body's image actually paints in -- the single source of truth
+    // for the reader's width, its height, and both of the morph's endpoints.
+    //
+    // Two hard ceilings, which nothing may cross:
+    //   maxWidth   - the same 1000px text gets, so an image reads at the same
+    //                scale as a wide code block rather than staying pinned to
+    //                the launcher's list width.
+    //   maxHeight  - a portrait image that would blow past the 640 ceiling is
+    //                width-limited instead, so it fills the box it is given
+    //                rather than being letterboxed inside a too-wide one.
+    //
+    // Then a floor, which is the only thing allowed to enlarge past `natural`:
+    // fill the body the launcher has at its DEFAULT width, but never by more
+    // than maxUpscale. Deliberately measured against minWidth and not maxWidth
+    // -- upscaling exists to close the bars in a window that is already there,
+    // never to make the window bigger for a picture that has no detail to put
+    // in it. So a small image can grow to fill 600px of launcher and stop; only
+    // real resolution ever pushes past that towards 1000.
+    // 0 while the ratio is still unknown -- callers fall back to minWidth.
+    readonly property real imgBoxCap: Math.min(root.maxWidth - Tokens.padding.large * 2, root.maxHeight * root.imgArW / root.imgArH)
+    readonly property real imgBoxFloor: Math.min(root.minWidth - Tokens.padding.large * 2, root.imgNatW * root.maxUpscale, root.imgBoxCap)
+    readonly property real imgBoxW: root.imgArW > 0 ? Math.min(root.imgBoxCap, Math.max(root.imgNatW, root.imgBoxFloor)) : 0
+    // The height that box settles at, known as soon as the ratio is.
+    readonly property real imgFitH: root.imgBoxW > 0 ? root.imgBoxW * root.imgArH / root.imgArW : 0
 
     implicitWidth: {
+        // Images size to their content exactly as text does; everything else
+        // (colour swatch, bare binary descriptor) has no natural width to grow
+        // to and stays at the launcher's list width.
+        if (root.isImage)
+            return Math.max(root.minWidth, root.imgBoxW + Tokens.padding.large * 2);
         if (!root.isText)
             return root.minWidth;
         const natural = root.gutterWidth + Tokens.spacing.medium + root.longestLine * root.charWidth;
@@ -1124,7 +1172,12 @@ Item {
             transform: Translate {
                 y: root.bodyOffset
             }
-            width: root.contentW
+            // The painted box, NOT the full content width: PreserveAspectFit
+            // fills the item it is given, so a box wider than the image would
+            // upscale it rather than leave it alone. Centred, for the case the
+            // reader is held at minWidth by an image narrower than the launcher.
+            width: root.imgBoxW
+            x: (root.contentW - width) / 2
             // Shared ratio, NOT this Image's own status -- this height is what
             // the launcher sizes itself from, and it has to be right before the
             // full-res decode lands. See imgFitH.
@@ -1225,14 +1278,14 @@ Item {
     StyledClippingRect {
         id: morphImg
 
-        // The rect the body's aspect-FIT image actually paints inside
-        // contentW x maxHeight. Only horizontal centring can occur: a capped
-        // height caps the box to the same value, so there is no letterbox.
-        // Uses the shared ratio (see imgArW), so the box flies to the true
-        // shape from frame 1 instead of aiming at a contentW square and then
-        // snapping when the full decode arrives.
-        readonly property real fitW: root.imgArH > 0 ? Math.min(root.contentW, root.maxHeight * root.imgArW / root.imgArH) : root.contentW
-        readonly property real fitH: root.imgArH > 0 ? root.imgFitH : root.contentW
+        // The rect the body's image actually paints -- the same imgBoxW the
+        // body Image is sized to, so the handoff at t=1 is exact by
+        // construction rather than by two expressions agreeing. Only horizontal
+        // centring can occur: the box is the image's own shape, so there is no
+        // letterbox. Uses the shared ratio (see imgArW), which now comes from
+        // the descriptor, so the box flies to the true shape from frame 1.
+        readonly property real fitW: root.imgBoxW > 0 ? root.imgBoxW : root.contentW
+        readonly property real fitH: root.imgBoxW > 0 ? root.imgFitH : root.contentW
         readonly property real dstX: Tokens.padding.large + (root.contentW - fitW) / 2
 
         visible: root.isImage && (root.morphing || root.morphT < 1)
