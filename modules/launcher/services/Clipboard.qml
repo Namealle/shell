@@ -677,6 +677,24 @@ Singleton {
         // cliphist renders binaries as "[[ binary data 234 KiB png 1815x596 ]]"
         readonly property var binMatch: entry.preview.match(/^\[\[ binary data (.+) \]\]$/)
         readonly property bool isImage: !!entry.binMatch && /\b(?:png|jpe?g|gif|bmp|webp|tiff?|svg|ico)\b/i.test(entry.binMatch[1])
+        // The descriptor already carries the image's pixel size, so the reader
+        // knows the real aspect AND the real resolution from frame 0 -- no
+        // decode, no waiting. Null when cliphist could not determine it (it
+        // omits the WxH for formats it cannot probe, e.g. some svg/ico), in
+        // which case the reader falls back to measuring a decoded copy.
+        readonly property var imgDims: {
+            if (!entry.isImage)
+                return null;
+            const m = entry.binMatch[1].match(/\b(\d+)x(\d+)\b/);
+            if (!m)
+                return null;
+            const w = parseInt(m[1]);
+            const h = parseInt(m[2]);
+            return w > 0 && h > 0 ? {
+                w,
+                h
+            } : null;
+        }
 
         // Non-empty when the entry is a lone colour → delegate paints a swatch.
         readonly property string colour: entry.binMatch ? "" : root.colourOf(entry.preview)
