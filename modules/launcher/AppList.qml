@@ -142,6 +142,12 @@ StyledListView {
     state: screenState.launcher && !frozen ? requestedState : displayState
 
     onStateChanged: {
+        // Gates the launcher's full-size image preload (see Wrapper): the
+        // picker's pictures are only worth decoding once the picker is what is
+        // on screen. Assigned on every state change, not just the clipboard
+        // one, so leaving the mode turns it back off.
+        Clipboard.picking = state === "clipboard";
+
         if (state === "scheme" || state === "variant")
             Schemes.reload();
         else if (state === "clipboard")
