@@ -114,39 +114,15 @@ Item {
     readonly property bool isImage: root.entry?.isImage ?? false
     readonly property bool isBinary: !!(root.entry?.binMatch)
     // A lone colour (hex/rgb/hsl, parsed by Clipboard.colourOf into Qt's
-    // #AARRGGBB) gets its own body: the row's swatch grown, plus the value in
-    // every notation worth pasting. It is deliberately NOT a text body -- no
-    // decode, no gutter, no find, since the preview IS the whole content. The
-    // header still shows the exact string that was copied.
+    // #AARRGGBB) gets its own body: just the row's swatch grown. It is
+    // deliberately NOT a text body -- no decode, no gutter, no find, since the
+    // preview IS the whole content. The header still shows the exact string
+    // that was copied.
     readonly property string colour: root.entry?.colour ?? ""
     readonly property bool isColour: root.colour.length > 0
     readonly property color colourValue: root.isColour ? root.colour : "transparent"
     readonly property bool isText: !!root.entry && !root.isBinary && !root.isColour
 
-    // One notation per line. The hex line is always 6 digits: an 8-digit hex
-    // would be ambiguous (CSS #RRGGBBAA vs Qt #AARRGGBB), so alpha rides on the
-    // other two as rgba()/hsla() instead, and only when there is any.
-    readonly property string colourFormats: {
-        if (!root.isColour)
-            return "";
-        const c = root.colourValue;
-        const b255 = v => Math.round(v * 255);
-        const hex = v => b255(v).toString(16).padStart(2, "0");
-        // Qt reports hue -1 for achromatic colours (any grey). 0 is the
-        // conventional stand-in and round-trips to the same colour.
-        const h = Math.round(Math.max(0, c.hslHue) * 360);
-        const rgb = `${b255(c.r)}, ${b255(c.g)}, ${b255(c.b)}`;
-        const hsl = `${h}, ${Math.round(c.hslSaturation * 100)}%, ${Math.round(c.hslLightness * 100)}%`;
-        const lines = [`#${hex(c.r)}${hex(c.g)}${hex(c.b)}`];
-        if (c.a < 1) {
-            // parseFloat trims the trailing zero: 0.5, not 0.50.
-            const a = parseFloat(c.a.toFixed(2));
-            lines.push(`rgba(${rgb}, ${a})`, `hsla(${hsl}, ${a})`);
-        } else {
-            lines.push(`rgb(${rgb})`, `hsl(${hsl})`);
-        }
-        return lines.join("\n");
-    }
     readonly property string imgCache: root.isImage && root.entry ? `/tmp/caelestia-clip-preview-${root.entry.entryId}.png` : ""
 
     // Defined by the Clipboard service, which owns the image box formula so the
@@ -154,9 +130,26 @@ Item {
     readonly property int maxWidth: Clipboard.readerMaxWidth
     readonly property int maxHeight: Clipboard.readerMaxHeight
     readonly property int minWidth: Tokens.sizes.launcher.itemWidth
+    // How slim the reader may get for a tall image -- the only content allowed
+    // to pull the window in below the list width at all. A portrait image is
+    // width-limited by maxHeight (a 4K 9:16 clip paints 360 wide), and holding
+    // the window at the list width around it just frames the picture in two
+    // dead bars that nothing can ever fill: the image cannot grow into them
+    // without growing taller than the height ceiling, which for that aspect
+    // means a ~980px body, and for a phone screenshot ~1230px. The free axis is
+    // the one to spend, so the window closes on the picture instead.
+    //
+    // The floor exists because that reasoning runs out: nothing stops an aspect
+    // getting narrower, and a 40x2000 sliver would otherwise collapse the
+    // launcher into a straw with a header too narrow to read. 0.6 is chosen to
+    // clear the 4K portrait case exactly -- the slimmest thing worth fitting --
+    // and to leave the header's title a legible run after the icon.
+    readonly property int minImageWidth: Math.round(root.minWidth * 0.6)
     // Big enough to actually judge a colour, small enough that the launcher does
-    // not become a full-screen flash of it (and the notations stay in view).
-    readonly property int swatchHeight: 240
+    // not become a full-screen flash of it. The body used to be a 240px swatch
+    // plus three notation lines; the notations are gone, so the swatch takes the
+    // space they occupied and the reader keeps the size it has always had.
+    readonly property int swatchHeight: 240 + Tokens.spacing.medium + Math.round(fm.height * 3)
 
     readonly property string decoded: cache.text
     // One walk over the decoded text producing everything the reader needs to
@@ -419,11 +412,17 @@ Item {
     readonly property int imgFitH: root.imgBoxW > 0 ? Math.round(root.imgBoxW * root.imgArH / root.imgArW) : 0
 
     implicitWidth: {
-        // Images size to their content exactly as text does; everything else
-        // (colour swatch, bare binary descriptor) has no natural width to grow
-        // to and stays at the launcher's list width.
+        // Images size to their content exactly as text does, except that they
+        // may also size DOWN past the list width -- see minImageWidth. No test
+        // for "is this a tall image" is needed: readerImageWidth's floor already
+        // grows every other image to fill the body at the default width, so the
+        // only box that can come back narrower than that is one the height
+        // ceiling cut down. Everything else (colour swatch, bare binary
+        // descriptor) has no natural width to grow to and stays at the list
+        // width -- as does an image whose ratio has not landed yet, which would
+        // otherwise open slim on a box of 0 and widen once it does.
         if (root.isImage)
-            return Math.max(root.minWidth, root.imgBoxW + Tokens.padding.large * 2);
+            return root.imgBoxW > 0 ? Math.max(root.minImageWidth, root.imgBoxW + Tokens.padding.large * 2) : root.minWidth;
         if (!root.isText)
             return root.minWidth;
         const natural = root.gutterWidth + Tokens.spacing.medium + root.longestLine * root.charWidth;
@@ -1109,15 +1108,13 @@ Item {
             }
         }
 
-        // Colour entries: the row's swatch at reading size, then the value in
-        // every notation -- selectable, so grabbing the format you need is the
-        // same mouse-select + Ctrl+C as any other entry.
+        // Colour entries: the row's swatch at reading size, nothing else. The
+        // header already carries the exact string that was copied.
         Column {
             id: colourBody
 
             visible: root.isColour
             width: root.contentW
-            spacing: Tokens.spacing.medium
             opacity: root.bodyFade
 
             transform: Translate {
@@ -1126,8 +1123,9 @@ Item {
 
             // The swatch's space is reserved by this Item, not by the rect
             // itself: the rect is hidden until the morph overlay lands on it,
-            // and a Column would collapse around a hidden child, dragging the
-            // notations up through the whole morph.
+            // and a Column would collapse around a hidden child -- taking the
+            // body height (and so the reader's own height) to zero for the
+            // whole morph.
             Item {
                 width: parent.width
                 height: root.swatchHeight
@@ -1147,20 +1145,6 @@ Item {
                     border.color: Colours.palette.m3outlineVariant
                 }
             }
-
-            TextEdit {
-                width: parent.width
-                text: root.colourFormats
-                readOnly: true
-                selectByMouse: true
-                persistentSelection: true
-                textFormat: TextEdit.PlainText
-                color: Colours.palette.m3outline
-                selectionColor: Colours.palette.m3primary
-                selectedTextColor: Colours.palette.m3onPrimary
-                font: Tokens.font.mono.small
-                renderType: Text.NativeRendering
-            }
         }
 
         // Image entries: the decoded thumbnail, aspect-fit, height capped.
@@ -1178,8 +1162,10 @@ Item {
             }
             // The painted box, NOT the full content width: PreserveAspectFit
             // fills the item it is given, so a box wider than the image would
-            // upscale it rather than leave it alone. Centred, for the case the
-            // reader is held at minWidth by an image narrower than the launcher.
+            // upscale it rather than leave it alone. Still centred, for the one
+            // case that survives the window closing on the picture: an aspect
+            // narrow enough to hit minImageWidth, where the bars are the floor's
+            // doing and cannot be closed.
             width: root.imgBoxW
             x: (root.contentW - width) / 2
             // Shared ratio, NOT this Image's own status -- this height is what
