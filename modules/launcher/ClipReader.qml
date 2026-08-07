@@ -149,8 +149,10 @@ Item {
     }
     readonly property string imgCache: root.isImage && root.entry ? `/tmp/caelestia-clip-preview-${root.entry.entryId}.png` : ""
 
-    readonly property int maxWidth: 1000
-    readonly property int maxHeight: 640
+    // Defined by the Clipboard service, which owns the image box formula so the
+    // prefetcher can warm the exact decode this asks for. See readerImageWidth.
+    readonly property int maxWidth: Clipboard.readerMaxWidth
+    readonly property int maxHeight: Clipboard.readerMaxHeight
     readonly property int minWidth: Tokens.sizes.launcher.itemWidth
     // Big enough to actually judge a colour, small enough that the launcher does
     // not become a full-screen flash of it (and the notations stay in view).
@@ -387,39 +389,34 @@ Item {
     // which is the ceiling anyway); until one of them speaks, don't clamp.
     readonly property real imgNatW: root.imgDims ? root.imgDims.w : (root.imgReady ? mImg.implicitWidth : root.maxWidth)
 
-    // How far a low-resolution image may be enlarged past its own pixels. 1:1 is
-    // the sharpest an image can be, but it is not always the most readable one:
-    // a small clip left at native size sits in a puddle of empty body with bars
-    // either side, and squinting at a sharp postage stamp is worse than reading
-    // a slightly soft one. 2x is the usual place that trade turns over -- past
-    // it the softness stops reading as "small picture" and starts reading as
-    // "broken picture".
-    readonly property real maxUpscale: 2
+    // The box the body's image paints in -- the single source of truth for the
+    // reader's width, its height, and both of the morph's endpoints. 0 while the
+    // ratio is still unknown; callers fall back to minWidth.
+    readonly property real imgBoxW: Clipboard.readerImageWidth(root.imgArW, root.imgArH, root.imgNatW)
 
-    // The box the body's image actually paints in -- the single source of truth
-    // for the reader's width, its height, and both of the morph's endpoints.
+    // The size to DECODE at, which is now the size it is drawn at rather than a
+    // flat ceiling. A texture bigger than its box has to be minified on the way
+    // to the screen, and Qt's default filtering there is 4-tap bilinear with no
+    // mipmaps -- which cannot represent a large reduction and aliases instead of
+    // averaging. A portrait clip used to decode 1000px wide and paint at 360:
+    // permanently undersampled, at rest, for no benefit. Matching the two makes
+    // the draw exactly 1:1, which is both the sharpest it can be and the least
+    // memory it can cost.
     //
-    // Two hard ceilings, which nothing may cross:
-    //   maxWidth   - the same 1000px text gets, so an image reads at the same
-    //                scale as a wide code block rather than staying pinned to
-    //                the launcher's list width.
-    //   maxHeight  - a portrait image that would blow past the 640 ceiling is
-    //                width-limited instead, so it fills the box it is given
-    //                rather than being letterboxed inside a too-wide one.
-    //
-    // Then a floor, which is the only thing allowed to enlarge past `natural`:
-    // fill the body the launcher has at its DEFAULT width, but never by more
-    // than maxUpscale. Deliberately measured against minWidth and not maxWidth
-    // -- upscaling exists to close the bars in a window that is already there,
-    // never to make the window bigger for a picture that has no detail to put
-    // in it. So a small image can grow to fill 600px of launcher and stop; only
-    // real resolution ever pushes past that towards 1000.
-    // 0 while the ratio is still unknown -- callers fall back to minWidth.
-    readonly property real imgBoxCap: Math.min(root.maxWidth - Tokens.padding.large * 2, root.maxHeight * root.imgArW / root.imgArH)
-    readonly property real imgBoxFloor: Math.min(root.minWidth - Tokens.padding.large * 2, root.imgNatW * root.maxUpscale, root.imgBoxCap)
-    readonly property real imgBoxW: root.imgArW > 0 ? Math.min(root.imgBoxCap, Math.max(root.imgNatW, root.imgBoxFloor)) : 0
+    // Computed straight from the descriptor rather than read off imgBoxW, which
+    // is what keeps imgNatW's mImg fallback from closing a loop
+    // (sourceSize -> implicitWidth -> imgNatW -> imgBoxW -> sourceSize). With a
+    // descriptor both paths evaluate the same formula on the same numbers, so
+    // the texture still matches the box exactly; without one this is a constant
+    // and the loop has nowhere to close.
+    readonly property int imgDecodeW: root.imgDims ? Clipboard.readerDecodeWidth(root.imgDims) : root.maxWidth
     // The height that box settles at, known as soon as the ratio is.
-    readonly property real imgFitH: root.imgBoxW > 0 ? root.imgBoxW * root.imgArH / root.imgArW : 0
+    // Whole pixels, for the same reason imgBoxW is: the texture Qt decodes is an
+    // integer number of rows, so a fractional painted height resamples the image
+    // vertically no matter how exact the width is. The rounding costs at most
+    // half a pixel of aspect, which is under a tenth of a percent and invisible;
+    // the resample it avoids is not.
+    readonly property int imgFitH: root.imgBoxW > 0 ? Math.round(root.imgBoxW * root.imgArH / root.imgArW) : 0
 
     implicitWidth: {
         // Images size to their content exactly as text does; everything else
@@ -871,7 +868,14 @@ Item {
         smoothScrollTo(r.y - viewport.height / 3);
     }
 
-    onEntryChanged: root.stage()
+    onEntryChanged: {
+        // Reading an entry is the strongest possible signal that it is wanted,
+        // and browsing past one is what makes the next few worth holding. Keeps
+        // the reader's own copy alive independently of whether its row still has
+        // a delegate -- the list scrolls underneath and recycles them.
+        Clipboard.retain(root.entry);
+        root.stage();
+    }
     onFindTermChanged: root.applyFind()
     // Every path that changes the decoded text lands here: cache hit, fresh
     // decode, or clearing on entry change. Rebuild the body and seed the first
@@ -1183,15 +1187,33 @@ Item {
             // full-res decode lands. See imgFitH.
             height: root.imgFitH
             source: root.imgSrc
-            fillMode: Image.PreserveAspectFit
+            // Crop, not Fit, and it matters for a reason that has nothing to do
+            // with cropping: fillMode is part of the pixmap cache key
+            // (QQuickImage::load folds it into providerOptions), so this and
+            // mImg only share one decode if they agree on it. They did not --
+            // Fit here against Crop there quietly meant two full decodes of the
+            // same file, and made both invisible to the launcher's preload.
+            //
+            // Safe to change because this box is already the image's own shape:
+            // width is imgBoxW and height is that times the aspect, so Crop has
+            // nothing to crop and lands pixel-identical to Fit.
+            fillMode: Image.PreserveAspectCrop
             // Same url and sourceSize as the morph's mImg, so with caching on
             // at both ends the two share one decode instead of racing two
             // identical ones. That matters on large images: the duplicate was
             // competing for the same CPU and pushing back the moment the morph
             // could show full res.
+            //
+            // mipmap must match mImg's for the same reason it must load the
+            // same url at the same size: they share ONE QSGTexture, and a
+            // texture cannot have mipmaps for one consumer and not the other --
+            // Qt logs "Mipmap settings changed without having image data
+            // available" and silently falls back. Free here anyway: this draws
+            // at 1:1, where only the base level is ever sampled.
             cache: !Clipboard.noCache
             asynchronous: true
-            sourceSize.width: root.maxWidth
+            mipmap: true
+            sourceSize.width: root.imgDecodeW
         }
     }
 
@@ -1246,7 +1268,7 @@ Item {
     Behavior on morphT {
         Anim {
             id: morphAnim
-        }
+            }
     }
 
     // The handoff between a morph and the body item it lands on is keyed on the
@@ -1275,8 +1297,23 @@ Item {
     // Top of the body's content in root coordinates -- where both morphs land.
     readonly property real bodyTop: Tokens.padding.large + root.slideY + header.implicitHeight + Tokens.spacing.small - viewport.contentY
 
-    StyledClippingRect {
+    Item {
         id: morphImg
+
+        // A plain scissor clip, NOT a StyledClippingRect. That type does its
+        // rounded clipping by rendering the content into a ShaderEffectSource
+        // and sampling the result, and a whole extra texture round-trip costs
+        // real detail: measured against the body Image at identical geometry,
+        // the picture carried 7% less high-frequency energy inside the
+        // ClippingRectangle than outside it, so the handoff at t=1 read as the
+        // image suddenly sharpening. Scissor clipping is exact -- with it the
+        // two paths measure 0.992 of each other, i.e. the same picture.
+        //
+        // The cost is that the corners no longer round during the morph (the
+        // backing rect below still does, for entries whose thumbnail has not
+        // decoded). An 8px radius on a 41px box for the first frames is a
+        // cheaper thing to lose than a visible snap on a 968px one.
+        clip: true
 
         // The rect the body's image actually paints -- the same imgBoxW the
         // body Image is sized to, so the handoff at t=1 is exact by
@@ -1288,15 +1325,35 @@ Item {
         readonly property real fitH: root.imgBoxW > 0 ? root.imgFitH : root.contentW
         readonly property real dstX: Tokens.padding.large + (root.contentW - fitW) / 2
 
+        // POSITION rides the raw curve, including its 1.39% overshoot -- that is
+        // the bounce, and it is shared with the header, the window and every
+        // other spatial move in the shell.
+        //
+        // SIZE deliberately does not. The texture is decoded at exactly fitW, so
+        // any overshoot past 1 asks the image to be drawn larger than it has
+        // pixels for: a magnification, soft for the whole tail of the animation,
+        // resolving in one frame the instant the curve settles. Sizing the
+        // texture for the peak instead only moves that softness onto the resting
+        // image, which is worse. Clamping here means the morph only ever
+        // minifies -- the direction with real pixels behind it -- and the last
+        // frame of the morph is pixel-identical to the body image it hands off
+        // to. The 13px of size bounce this gives up is the cheapest part of the
+        // overshoot; the travel still carries it.
+        readonly property real sizeT: Math.min(1, root.morphT)
+
         visible: root.isImage && (root.morphing || root.morphT < 1)
         x: root.slotX + (dstX - root.slotX) * root.morphT
         y: root.slotY + (root.bodyTop - root.slotY) * root.morphT
-        width: root.slotS + (fitW - root.slotS) * root.morphT
-        height: root.slotS + (fitH - root.slotS) * root.morphT
+        width: root.slotS + (fitW - root.slotS) * sizeT
+        height: root.slotS + (fitH - root.slotS) * sizeT
         // Clamped: morphT passes 1 on the overshoot, which would otherwise ask
         // for a negative radius.
-        radius: Tokens.rounding.small * Math.max(0, 1 - root.morphT)
-        color: Colours.palette.m3surfaceContainerHigh
+
+        StyledRect {
+            anchors.fill: parent
+            radius: Tokens.rounding.small * Math.max(0, 1 - root.morphT)
+            color: Colours.palette.m3surfaceContainerHigh
+        }
 
         // The picture the row was already showing, scaled up. Same url and same
         // sourceSize as ClipItem's `thumb` with caching on at both ends, so
@@ -1326,7 +1383,14 @@ Item {
             // Shares its decode with the body's `image` -- see the note there.
             cache: !Clipboard.noCache
             asynchronous: true
-            sourceSize.width: root.maxWidth
+            // This is the one that actually needs the mipmaps. The morph draws
+            // this texture into a box that starts at slotS (~41px) and grows to
+            // imgBoxW, so early frames are a 20x-plus reduction. Four bilinear
+            // taps cannot represent that and shimmer instead; a mip chain
+            // pre-averages it. The extra softness only exists while the box is
+            // tiny, which is exactly when there is no detail to lose.
+            mipmap: true
+            sourceSize.width: root.imgDecodeW
             // Cross-fade over the thumbnail rather than popping. Effects-fast,
             // not spatial: the geometry is already animating underneath and a
             // slow fade would just read as the picture arriving late.
