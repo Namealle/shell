@@ -15,6 +15,239 @@ import Caelestia.Config
 Singleton {
     id: root
 
+    // -- reader image box geometry --
+    //
+    // Lives in the service, not in ClipReader, because two places have to agree
+    // on it EXACTLY: the reader, which asks QQuickPixmapCache for a decode, and
+    // the prefetcher, which warms that same cache. The cache key is url +
+    // sourceSize, so a second copy of this formula that drifted by one pixel
+    // would silently turn every prefetch into a miss -- and it would fail
+    // invisibly, since a miss just looks like the old behaviour.
+    readonly property int readerMaxWidth: 1000
+    readonly property int readerMaxHeight: 640
+    // How far a low-resolution image may be enlarged past its own pixels. 1:1 is
+    // the sharpest an image can be, but it is not always the most readable one:
+    // a small clip left at native size sits in a puddle of empty body with bars
+    // either side, and squinting at a sharp postage stamp is worse than reading
+    // a slightly soft one. 2x is the usual place that trade turns over -- past
+    // it the softness stops reading as "small picture" and starts reading as
+    // "broken picture".
+    readonly property real readerMaxUpscale: 2
+
+    // The width the reader's body image is painted at.
+    //
+    // Two hard ceilings, which nothing may cross:
+    //   maxWidth  - the same width text gets, so an image reads at the same
+    //               scale as a wide code block rather than staying pinned to
+    //               the launcher's list width.
+    //   maxHeight - a portrait image that would blow past the height ceiling is
+    //               width-limited instead, so it fills the box it is given
+    //               rather than being letterboxed inside a too-wide one.
+    //
+    // Then a floor, the only thing allowed to enlarge past `natW`: fill the body
+    // the launcher has at its DEFAULT width, but never by more than
+    // readerMaxUpscale. Deliberately measured against the list width and not
+    // maxWidth -- upscaling exists to close the bars in a window that is already
+    // there, never to make the window bigger for a picture that has no detail to
+    // put in it. So a small image grows to fill 600px of launcher and stops;
+    // only real resolution ever pushes past that.
+    //
+    // `natW` is passed separately from `arW` because they are not always the
+    // same measurement: the aspect can be read off an 82px thumbnail, but that
+    // thumbnail's WIDTH is not the image's resolution.
+    //
+    // Returns a WHOLE number of pixels, which is the whole point: the reader
+    // paints the image at this size and decodes its texture at this size, and
+    // those two only cancel out exactly when both are integers. A box of 764.4
+    // against a 765-wide texture is a full bilinear resample of every pixel in
+    // the image -- sub-pixel in magnitude, but a resample is a resample, and it
+    // costs far more sharpness than its percentage suggests.
+    function readerImageWidth(arW: real, arH: real, natW: real): int {
+        if (!(arW > 0) || !(arH > 0))
+            return 0;
+        const pad = Tokens.padding.large * 2;
+        const cap = Math.min(root.readerMaxWidth - pad, root.readerMaxHeight * arW / arH);
+        const floor = Math.min(Tokens.sizes.launcher.itemWidth - pad, natW * root.readerMaxUpscale, cap);
+        return Math.round(Math.min(cap, Math.max(natW, floor)));
+    }
+
+    // The sourceSize the reader will ask for -- and therefore the only one worth
+    // prefetching. Exactly the resting box, so the image at rest is a true 1:1
+    // blit: one texel per pixel, no resample in either direction, which is the
+    // sharpest a picture can be drawn.
+    //
+    // Nothing is added here for the morph's overshoot. That was tried, and it
+    // trades one defect for its mirror image: a texture cut for the 1.39% peak
+    // leaves the RESTING draw a 1.4% minification, and a permanent softness on
+    // the thing you spend all your time looking at is a far worse bargain than a
+    // brief one on the thing that is still moving. The morph earns its sharpness
+    // a different way -- by not overshooting in size at all, so it only ever
+    // minifies from this texture. See morphImg.
+    //
+    // Falls back to the flat ceiling when the entry carries no dimensions: the
+    // box cannot be known ahead of the decode there, so the decode has to pick a
+    // size the reader will also pick, and that is the only one left.
+    function readerDecodeWidth(dims: var): int {
+        const w = dims ? root.readerImageWidth(dims.w, dims.h, dims.w) : 0;
+        return w > 0 ? w : root.readerMaxWidth;
+    }
+
+    // -- preload --
+    //
+    // The picker's images are warmed BEFORE they are asked for, in two stages
+    // that match the two moments the user commits to something:
+    //
+    //   launcher opens  -> the row thumbnails, so `;` paints a full list at once
+    //                      instead of filling in as each row decodes.
+    //   `;` is pressed  -> the reader-size copies, so `→` on any visible row is
+    //                      instant rather than paying a 32-53ms decode inside
+    //                      the opening morph.
+    //
+    // Only the rows that can actually be on screen: maxShown is what the list
+    // draws, so warming past it buys nothing and costs a full-size pixmap each.
+    // Unfiltered and newest-first, which is exactly the list `;` opens on -- a
+    // filtered query narrows it, and those rows are warmed by ClipItem as they
+    // render.
+    //
+    // Held for as long as the shell runs rather than expiring on a timer: this
+    // set only changes when the clipboard does, re-warming it costs a decode per
+    // entry, and the whole point is that the picker is never caught cold. The
+    // bound is the count, not a clock -- at most maxShown pictures, ~1.6MB each
+    // at the largest, so worst case is around 11MB and typically far less.
+    readonly property var preloadEntries: {
+        const out = [];
+        const n = GlobalConfig.launcher.maxShown;
+        for (const e of root.entries) {
+            if (out.length >= n)
+                break;
+            if (e?.isImage && e.entryId)
+                out.push(e);
+        }
+        return out;
+    }
+
+    // True while the launcher is actually showing the clipboard picker. Gates the
+    // full-size stage, which is the expensive one -- opening the launcher to run
+    // an app should not decode a screenful of pictures nobody asked for.
+    property bool picking: false
+
+    // The full-size preload waits for this, not for `picking` itself.
+    //
+    // Qt decodes images on ONE background thread, in request order. Firing a
+    // screenful of full-size decodes the instant the picker opens puts 7 jobs of
+    // 32-53ms each in front of the row thumbnails, which are what the user is
+    // actually looking at -- measured 43-179ms before a thumbnail could paint,
+    // i.e. the picker visibly filling in one row at a time. The preload is
+    // groundwork for a keypress that has not happened yet; it has no business
+    // outranking the frame on screen.
+    //
+    // A quarter second is long enough for seven small decodes to clear and short
+    // enough that `→` is still warm by any human reaction time.
+    property bool pickingSettled: false
+
+    onPickingChanged: {
+        if (root.picking) {
+            settleTimer.restart();
+        } else {
+            settleTimer.stop();
+            root.pickingSettled = false;
+        }
+    }
+
+    Timer {
+        id: settleTimer
+
+        interval: 250
+        onTriggered: root.pickingSettled = true
+    }
+
+    // -- retained set --
+    //
+    // Which images are being held decoded, most recently wanted first. The
+    // launcher's Wrapper renders one hidden Image per entry here; this list is
+    // the bookkeeping, those Images are the memory.
+    //
+    // Seeded with the visible rows when the picker opens, then moved along by
+    // whatever asks for an image: a row rendering, or the reader landing on an
+    // entry. So browsing DOWN the list in the reader keeps pulling entries in,
+    // and -- because entries are only pushed to the front, never dropped on the
+    // way past -- turning around and going back up finds them all still warm.
+    // A window of immediate neighbours cannot do that; it forgets everything the
+    // moment you leave it, which is exactly when you are most likely to return.
+    //
+    // Bounded by count rather than a clock. These are capped at the reader's box
+    // size (at most ~968x640), so a count is already a bound on memory -- worst
+    // case around 25MB, typically far less -- and a timer would either expire
+    // mid-browse or keep holding pictures long after the launcher closed.
+    readonly property int retainMax: 10
+    property var retained: []
+
+    // Decode size for the row thumbnails, shared by the delegate that draws them
+    // and the launcher that holds them warm. ONE definition on purpose: it is
+    // half of the pixmap cache key, so two copies that drifted would mean the
+    // launcher warming an entry the list never asks for -- and it would fail
+    // silently, since a miss just looks like a slow row.
+    //
+    // A flat number rather than the icon slot's measured 1em advance, which is
+    // what this used to be. sourceSize is only a decode hint, so it does not
+    // have to equal the layout; making it a constant drops a font metric out of
+    // a cache key and lets the launcher warm these before any row exists to
+    // measure. 96 covers the ~42px slot at 2x with room to spare, and costs 37KB.
+    readonly property int thumbSize: 96
+
+    function retain(entry: var): void {
+        if (root.noCache || !entry?.isImage || !entry.entryId)
+            return;
+        if (root.retained[0] === entry)
+            return;
+        const out = [entry];
+        for (const e of root.retained) {
+            if (out.length >= root.retainMax)
+                break;
+            if (e !== entry && e?.entryId)
+                out.push(e);
+        }
+        root.retained = out;
+    }
+
+    function seedRetained(): void {
+        if (root.noCache)
+            return;
+        for (const e of root.preloadEntries.slice().reverse())
+            root.retain(e);
+    }
+
+    // Thumbnails cannot load until the entry has been decoded to its file, and
+    // that is normally done per row by ClipItem -- which only runs once the row
+    // exists, i.e. too late to help the first paint. One sh for the whole
+    // preload set instead of a process per entry, and `test -s` makes it a no-op
+    // for everything already on disk, which after the first use is all of it.
+    function preloadDecode(): void {
+        if (root.noCache || preloadProc.running)
+            return;
+        const raws = root.preloadEntries.map(e => e.raw);
+        if (raws.length === 0)
+            return;
+        preloadProc.lines = raws;
+        preloadProc.running = true;
+    }
+
+    // False until the preload set is known to be on disk. The launcher's warm
+    // copies wait for it: an Image will not retry a url that was missing when it
+    // first tried, so pointing them at files preloadDecode() has not written yet
+    // would silently leave them empty for the whole session.
+    property bool preloadReady: false
+
+    Process {
+        id: preloadProc
+
+        property var lines: []
+
+        onExited: root.preloadReady = true
+
+        command: ["sh", "-c", `for l in "$@"; do id=\${l%%	*}; f=/tmp/caelestia-clip-preview-$id.png; test -s "$f" || printf '%s' "$l" | cliphist decode > "$f"; done`, "preload", ...preloadProc.lines]
+    }
+
     // Raw `cliphist list` lines, newest first.
     property var rawEntries: []
     readonly property list<QtObject> entries: variants.instances
@@ -125,14 +358,16 @@ Singleton {
         const q = [];
         const seen = {};
         for (const e of entries) {
-            // Images decode to a file cache of their own; binaries are never
-            // read as text.
-            if (!e || e.isImage || e.binMatch)
+            if (!e)
                 continue;
             const id = e.entryId;
-            if (!id || seen[id] || root.decodedText[id] !== undefined)
+            if (!id || seen[id])
                 continue;
             seen[id] = true;
+            // Images are precached per row by ClipItem, which sees exactly what
+            // is on screen; binaries are never read as text.
+            if (e.isImage || e.binMatch || root.decodedText[id] !== undefined)
+                continue;
             q.push(e);
         }
         root.prefetchQueue = q;

@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell.Io
 import Caelestia.Config
 import qs.components
+import qs.modules.launcher.services
 import qs.services
 
 // Delegate for a clipboard-history entry (the `;` launcher mode). A fixed-height
@@ -20,13 +21,33 @@ Item {
     readonly property bool isColour: root.swatchColour.length > 0
     readonly property string imgCache: root.isImage ? `/tmp/caelestia-clip-preview-${root.modelData.entryId}.png` : ""
 
-    // Re-decode whenever the delegate is recycled onto a different image entry.
+    // Re-point the thumbnail whenever the delegate is recycled onto a different
+    // image entry.
+    //
+    // Assigned STRAIGHT to the file, not after waiting for `decoder`. The file
+    // is normally already on disk -- Clipboard.preloadDecode() writes the whole
+    // visible set when the launcher opens -- and its pixmap is normally already
+    // in QQuickPixmapCache, so this resolves synchronously and the row paints
+    // with no gap at all. Routing it through the Process meant every entry into
+    // the picker blanked each thumbnail and left it empty for a process spawn,
+    // just to run `test -s` on a file that was already there: a visible flicker
+    // on `;`, bought for nothing. The Process is now only a repair path, below.
+    //
+    // The empty assignment still happens, in the same turn, so a recycled
+    // delegate cannot show the PREVIOUS entry's picture while the new one
+    // resolves. Same turn matters: nothing renders between the two statements,
+    // so on the normal cached path no blank frame is ever drawn.
     readonly property string decodeKey: root.isImage ? (root.modelData?.raw ?? "") : ""
     onDecodeKeyChanged: {
-        thumb.source = "";
         decoder.running = false;
-        if (root.decodeKey)
-            decoder.running = true;
+        thumb.source = "";
+        if (root.decodeKey) {
+            thumb.source = `file://${root.imgCache}`;
+            // Hold the full-size copy too, so `→` on this row is instant. The
+            // pixmaps live in the launcher's Wrapper, which outlives this
+            // delegate; this only registers interest.
+            Clipboard.retain(root.modelData);
+        }
     }
 
     implicitHeight: Tokens.sizes.launcher.itemHeight
@@ -44,12 +65,21 @@ Item {
         onClicked: root.modelData?.onClicked(root.list)
     }
 
-    // Decode the image entry to a cached thumbnail file (skips if already done).
+    // Repair path only: reached when the file was NOT already on disk, which
+    // after preloadDecode() means a row scrolled to beyond the preloaded set.
+    // Decode it, then bounce the source -- an Image will not retry a url that
+    // failed to load, so re-assigning the same string is a no-op and it has to
+    // be cleared first.
     Process {
         id: decoder
 
         command: ["sh", "-c", "test -s \"$2\" || (printf '%s' \"$1\" | cliphist decode > \"$2\")", "dec", root.modelData?.raw ?? "", root.imgCache]
-        onExited: thumb.source = root.imgCache ? `file://${root.imgCache}` : ""
+        onExited: {
+            if (!root.imgCache)
+                return;
+            thumb.source = "";
+            thumb.source = `file://${root.imgCache}`;
+        }
     }
 
     Item {
@@ -120,8 +150,15 @@ Item {
                 // finishes. Cheap to keep: this is a ~50px square.
                 cache: true
                 asynchronous: true
-                sourceSize.width: width * 2
-                sourceSize.height: height * 2
+                // Shared with the launcher's warm copy -- see Clipboard.thumbSize.
+                sourceSize.width: Clipboard.thumbSize
+                sourceSize.height: Clipboard.thumbSize
+                // The file was not there -- decode it and come back. Only
+                // reachable past the preloaded set; see `decoder`.
+                onStatusChanged: {
+                    if (status === Image.Error && root.decodeKey && !decoder.running)
+                        decoder.running = true;
+                }
             }
         }
 
