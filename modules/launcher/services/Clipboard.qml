@@ -23,16 +23,30 @@ Singleton {
     // sourceSize, so a second copy of this formula that drifted by one pixel
     // would silently turn every prefetch into a miss -- and it would fail
     // invisibly, since a miss just looks like the old behaviour.
+    // Note the two are not measured the same way: maxWidth caps the WINDOW (the
+    // image gets it minus the reader's own padding), maxHeight caps the IMAGE
+    // (the header and padding sit on top of it). They read as a pair but only
+    // the first is a window dimension.
     readonly property int readerMaxWidth: 1000
+    // Editorial, not a fit constraint: the launcher's own ceiling is nearly the
+    // whole screen (see Wrapper's maxHeight), so this is only a statement about
+    // how much of it a preview should take.
+    //
+    // Raising it was tried and deliberately not kept. Against maxWidth's 968 of
+    // content this box is landscape-shaped, which costs portrait images twice --
+    // cut on the axis they are short of, while the axis they have to spare goes
+    // unspent, so a 9:16 clip paints 360 wide. At 880 that same clip paints 495
+    // and a phone screenshot stops hitting minImageWidth entirely, both strictly
+    // better framings; the reason it went back is that a portrait entry then
+    // takes ~1030px of window, which is more of the screen than a quick picker
+    // should occupy, and the morph has to travel that whole distance out of an
+    // 82px row. Landscape entries never notice either value -- anything wider
+    // than about 1.5:1 is capped by the width first.
+    //
+    // Worth revisiting as a config token rather than a constant: the trade is
+    // entirely about screen size and how much of it the picker may borrow, which
+    // is a preference, not something this file can know.
     readonly property int readerMaxHeight: 640
-    // How far a low-resolution image may be enlarged past its own pixels. 1:1 is
-    // the sharpest an image can be, but it is not always the most readable one:
-    // a small clip left at native size sits in a puddle of empty body with bars
-    // either side, and squinting at a sharp postage stamp is worse than reading
-    // a slightly soft one. 2x is the usual place that trade turns over -- past
-    // it the softness stops reading as "small picture" and starts reading as
-    // "broken picture".
-    readonly property real readerMaxUpscale: 2
 
     // The width the reader's body image is painted at.
     //
@@ -45,12 +59,20 @@ Singleton {
     //               rather than being letterboxed inside a too-wide one.
     //
     // Then a floor, the only thing allowed to enlarge past `natW`: fill the body
-    // the launcher has at its DEFAULT width, but never by more than
-    // readerMaxUpscale. Deliberately measured against the list width and not
-    // maxWidth -- upscaling exists to close the bars in a window that is already
-    // there, never to make the window bigger for a picture that has no detail to
-    // put in it. So a small image grows to fill 600px of launcher and stops;
-    // only real resolution ever pushes past that.
+    // the launcher has at its DEFAULT width, however far past its own pixels
+    // that is. Deliberately measured against the list width and not maxWidth --
+    // upscaling exists to close the bars in a window that is already there,
+    // never to make the window bigger for a picture that has no detail to put in
+    // it. So a small image grows to fill 600px of launcher and stops; only real
+    // resolution ever pushes past that.
+    //
+    // There is no ceiling on the enlargement, and a 40x30 clip really is drawn
+    // ~14x up. It is soft, unavoidably -- but a preview's job is to answer "is
+    // this the thing I copied", and a legible blur answers it where a sharp
+    // 40px postage stamp adrift in an empty body does not. The one case this
+    // gets wrong is deliberate pixel art, which wants nearest-neighbour rather
+    // than a bigger box; if that turns out to matter, it is a filtering
+    // decision at the Image, not a sizing one here.
     //
     // `natW` is passed separately from `arW` because they are not always the
     // same measurement: the aspect can be read off an 82px thumbnail, but that
@@ -67,8 +89,8 @@ Singleton {
             return 0;
         const pad = Tokens.padding.large * 2;
         const cap = Math.min(root.readerMaxWidth - pad, root.readerMaxHeight * arW / arH);
-        const floor = Math.min(Tokens.sizes.launcher.itemWidth - pad, natW * root.readerMaxUpscale, cap);
-        return Math.round(Math.min(cap, Math.max(natW, floor)));
+        const floor = Math.min(Tokens.sizes.launcher.itemWidth - pad, cap);
+        return Math.round(Math.max(floor, Math.min(cap, natW)));
     }
 
     // The sourceSize the reader will ask for -- and therefore the only one worth
