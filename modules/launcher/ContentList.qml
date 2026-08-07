@@ -354,12 +354,25 @@ Item {
     // Prefetch while browsing the LIST too, not just inside the reader. This is
     // the one that makes → open instantly: by the time the reader is created its
     // entry has usually been decoded already.
+    // Which row the highlight was on last, so the window can be aimed the way
+    // you are actually travelling. The reader's own browse passes a real step;
+    // this signal does not carry one, and assuming "down" pointed the window
+    // backwards for the entire time you were arrowing up -- the direction the
+    // weighting exists to serve.
+    property int prefetchLastIndex: -1
+
     Connections {
         target: appList.item
 
         function onCurrentEntryChanged(): void {
-            if (!root.readerActive && !root.readerExiting)
-                root.prefetchAround(1);
+            if (root.readerActive || root.readerExiting)
+                return;
+            const i = appList.item?.currentIndex ?? -1;
+            // First move of a session has no direction yet; down is the way a
+            // list is read, and it is what a fresh highlight at the top wants.
+            const step = root.prefetchLastIndex < 0 || i >= root.prefetchLastIndex ? 1 : -1;
+            root.prefetchLastIndex = i;
+            root.prefetchAround(step);
         }
     }
 
