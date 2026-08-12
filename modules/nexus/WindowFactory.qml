@@ -10,8 +10,14 @@ import qs.modules.nexus
 Singleton {
     id: root
 
+    function activeScreen(): ShellScreen {
+        return Quickshell.screens.find(s => s.name === Hypr.focusedMonitor?.name) ?? Quickshell.screens[0];
+    }
+
     function create(parent: Item, props: var): void {
-        nexusComp.createObject(parent ?? dummy, props);
+        nexusComp.createObject(parent ?? dummy, Object.assign({
+            screen: activeScreen()
+        }, props ?? {}));
     }
 
     QtObject {
