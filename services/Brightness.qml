@@ -50,13 +50,13 @@ Singleton {
     function increaseBrightness(): void {
         const monitor = getMonitor("active");
         if (monitor)
-            monitor.setBrightness(monitor.brightness + GlobalConfig.services.brightnessIncrement);
+            monitor.setBrightness(monitor.pendingBrightness + GlobalConfig.services.brightnessIncrement);
     }
 
     function decreaseBrightness(): void {
         const monitor = getMonitor("active");
         if (monitor)
-            monitor.setBrightness(monitor.brightness - GlobalConfig.services.brightnessIncrement);
+            monitor.setBrightness(monitor.pendingBrightness - GlobalConfig.services.brightnessIncrement);
     }
 
     onMonitorsChanged: {
@@ -115,7 +115,7 @@ Singleton {
 
         // Allows searching by active/model/serial/id/name
         function getFor(query: string): real {
-            return root.getMonitor(query)?.brightness ?? -1;
+            return root.getMonitor(query)?.pendingBrightness ?? -1;
         }
 
         function set(value: string): string {
@@ -131,19 +131,19 @@ Singleton {
             let targetBrightness;
             if (value.endsWith("%-")) {
                 const percent = parseFloat(value.slice(0, -2));
-                targetBrightness = monitor.brightness - (percent / 100);
+                targetBrightness = monitor.pendingBrightness - (percent / 100);
             } else if (value.startsWith("+") && value.endsWith("%")) {
                 const percent = parseFloat(value.slice(1, -1));
-                targetBrightness = monitor.brightness + (percent / 100);
+                targetBrightness = monitor.pendingBrightness + (percent / 100);
             } else if (value.endsWith("%")) {
                 const percent = parseFloat(value.slice(0, -1));
                 targetBrightness = percent / 100;
             } else if (value.startsWith("+")) {
                 const increment = parseFloat(value.slice(1));
-                targetBrightness = monitor.brightness + increment;
+                targetBrightness = monitor.pendingBrightness + increment;
             } else if (value.endsWith("-")) {
                 const decrement = parseFloat(value.slice(0, -1));
-                targetBrightness = monitor.brightness - decrement;
+                targetBrightness = monitor.pendingBrightness - decrement;
             } else if (value.includes("%") || value.includes("-") || value.includes("+")) {
                 return `Invalid brightness format: ${value}\nExpected: 0.1, +0.1, 0.1-, 10%, +10%, 10%-`;
             } else {
@@ -172,6 +172,14 @@ Singleton {
         property real brightness
         property real queuedBrightness: NaN
 
+        // The value a relative adjustment should build on. DDC writes are
+        // throttled to one per 500ms, and while that timer runs `brightness`
+        // holds the last value actually written -- not where we are heading.
+        // Stepping off `brightness` therefore makes every adjustment inside a
+        // single throttle window compute the same result, so a fast scroll or
+        // knob spin collapses into one step instead of accumulating.
+        readonly property real pendingBrightness: isNaN(queuedBrightness) ? brightness : queuedBrightness
+
         readonly property Process initProc: Process {
             stdout: StdioCollector {
                 onStreamFinished: {
@@ -186,12 +194,65 @@ Singleton {
             }
         }
 
+        // Some panels acknowledge a DDC write and then sit at a different value
+        // -- the MSI QD-OLED does this, and it also fails `ddcutil capabilities`
+        // outright, so its DDC implementation is simply unreliable. Once the
+        // value has settled, read the monitor back and re-send if it disagrees,
+        // backing off each time and eventually giving up rather than fighting a
+        // panel that is never going to comply.
+        //
+        // Deliberately NOT reusing initProc: that one assigns `brightness` from
+        // the hardware, which would accept a failed write as the new truth.
+        readonly property int verifyRetries: 3
+        readonly property int verifyDelay: 800 // comfortably > one ~430ms DDC transaction
+        property int verifyAttempt: 0
+
+        readonly property Timer verifyTimer: Timer {
+            interval: monitor.verifyDelay
+            // A queued value means another write is still coming; verifying now
+            // would read an intermediate state and re-send a stale value.
+            onTriggered: {
+                if (monitor.isDdc && isNaN(monitor.queuedBrightness) && !monitor.verifyProc.running)
+                    monitor.verifyProc.running = true;
+            }
+        }
+
+        readonly property Process verifyProc: Process {
+            command: ["ddcutil", "-b", monitor.busNum, "getvcp", "10", "--brief"]
+            stdout: StdioCollector {
+                onStreamFinished: {
+                    const actual = parseInt(text.trim().split(" ")[3]);
+                    if (isNaN(actual))
+                        return; // read failed -- don't guess, leave it alone
+
+                    const want = Math.round(monitor.brightness * 100);
+                    if (actual === want) {
+                        monitor.verifyAttempt = 0;
+                        return;
+                    }
+
+                    if (monitor.verifyAttempt >= monitor.verifyRetries)
+                        return; // panel won't take it; stop rather than loop forever
+
+                    monitor.verifyAttempt++;
+                    Quickshell.execDetached(["ddcutil", "-b", monitor.busNum, "setvcp", "10", want]);
+                    // Back off 1600/3200/6400ms: if it missed twice the bus is
+                    // busy or the panel is stuck, and retrying harder won't help.
+                    monitor.verifyTimer.interval = monitor.verifyDelay * Math.pow(2, monitor.verifyAttempt);
+                    monitor.verifyTimer.restart();
+                }
+            }
+        }
+
         readonly property Timer timer: Timer {
             interval: 500
             onTriggered: {
                 if (!isNaN(monitor.queuedBrightness)) {
-                    monitor.setBrightness(monitor.queuedBrightness);
+                    // Clear before re-entering: setBrightness compares against
+                    // pendingBrightness, which reads this very value while set.
+                    const queued = monitor.queuedBrightness;
                     monitor.queuedBrightness = NaN;
+                    monitor.setBrightness(queued);
                 }
             }
         }
@@ -199,7 +260,10 @@ Singleton {
         function setBrightness(value: real): void {
             value = Math.max(0, Math.min(1, value));
             const rounded = Math.round(value * 100);
-            if (Math.round(brightness * 100) === rounded)
+            // Compare against where we are heading, not where we last wrote --
+            // otherwise a step that lands back on the last written value is
+            // dropped while a contradicting queued value is still pending.
+            if (Math.round(pendingBrightness * 100) === rounded)
                 return;
 
             if (isDdc && timer.running) {
@@ -216,8 +280,14 @@ Singleton {
             else
                 Quickshell.execDetached(["brightnessctl", "s", `${rounded}%`]);
 
-            if (isDdc)
+            if (isDdc) {
                 timer.restart();
+                // Fresh intent: drop any retry budget spent on the old value and
+                // re-arm the check, so it only runs once writes have settled.
+                verifyAttempt = 0;
+                verifyTimer.interval = verifyDelay;
+                verifyTimer.restart();
+            }
         }
 
         function initBrightness(): void {
