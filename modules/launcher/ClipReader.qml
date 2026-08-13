@@ -36,6 +36,17 @@ Item {
     property bool exiting: false
     property var exitCb: null
 
+    // How far the list has scrolled since exitTo's target was measured.
+    //
+    // That target is a viewport coordinate, computed once from the list's
+    // contentY when the exit starts. Scroll during the slide and the row moves
+    // out from under it, so the header animates to where the row USED to be.
+    // A scroll is a pure translation of the shared element, so nothing needs
+    // retargeting -- just shift everything the slide positions. Fed by
+    // ContentList, which owns the list.
+    property real exitScroll: 0
+    readonly property real slidePos: root.slideY - root.exitScroll
+
     // The header's resting insets differ from the row content's insets in the
     // list (padding.large vs padding.medium horizontally; top padding vs row
     // centring vertically). The slide targets the row CONTENT's exact position
@@ -59,9 +70,8 @@ Item {
         // an offset still easing out would ride along inside the shrinking morph.
         // Now that the travel is viewport-sized, leaving it running is visible.
         bodySlideAnim.stop();
-        bodyFadeAnim.stop();
         root.bodyOffset = 0;
-        root.bodyFade = 1;
+        root.railing = false;
         // The morph folds the body back into the row off LIVE endpoints, so a
         // zoomed image would hand a magnified, off-centre picture to a landing
         // computed for the fitted one. Back to fit before the slide starts.
@@ -641,6 +651,18 @@ Item {
         const e = root.entry;
         if (!e)
             return;
+        // The outgoing frame's geometry, captured HERE and not in slideIn().
+        //
+        // By the time slideIn() runs the reader has already resized: implicitHeight
+        // is a plain binding on liveHeight, and root.height follows it in the same
+        // tick, so bodyArea is measured at the size of the entry that is ARRIVING.
+        // Reading it there gave the frozen texture a box belonging to the wrong
+        // entry -- squashing or stretching it depending on which way the sizes
+        // went -- and a travel too short for the outgoing frame to clear, which
+        // is what left it ghosting on screen. Same reason `base` below is read
+        // before anything is cleared.
+        root.stagedW = bodyArea.width;
+        root.stagedH = bodyArea.height;
         // Captured BEFORE anything is cleared below -- clearing the body drops
         // the live height, and the whole point is to hold what it was.
         const base = root.liveHeight;
@@ -679,85 +701,162 @@ Item {
         root.kick(base);
     }
 
-    // -- entry-change slide --
+    // -- entry-change rail --
     //
-    // A same-size swap has nothing to animate: the height does not change, so
-    // the body changed under a stationary frame in a single frame and read as a
-    // glitch. What was missing there was never motion for its own sake, it was
-    // DIRECTION -- nothing told you which way you had moved, so two similar
-    // entries left you checking whether the key had registered at all.
+    // Browsing is a scroll, not a swap. Both entries are on screen for the whole
+    // move, one rail-step apart, travelling together: ↓ carries the current
+    // entry up and out of the top while the next one arrives from below, ↑ the
+    // reverse. A gallery, a TikTok feed, `imv` with the arrow keys down.
     //
-    // So the new body enters from the side you came from: ↓ brings it up from
-    // below, ↑ brings it down from above. Purely presentational -- the content
-    // is already committed and the height is already animating by the time this
-    // starts, so it gates nothing and can never make a swap feel slower.
+    // This replaces a slide that only ever animated the INCOMING body, over a
+    // travel capped at 140px. That version was solving a narrower problem: a
+    // same-size swap has nothing to animate, so the body changed under a
+    // stationary frame in one frame and read as a glitch, and what it needed was
+    // DIRECTION -- some sign of which way you had gone. It got that. What it
+    // could not give was the sense of moving PAST something, because the thing
+    // you were moving past was never drawn.
     //
-    // Same curve as the launcher's own resize, the reader's header morph and
-    // every other spatial move in the shell (DefaultSpatial, the one with the
-    // 1.21 overshoot), so the body settles on the same beat as the window around
-    // it instead of reading as a separate event. That curve is heavily
-    // front-loaded, which is why 500ms nominal still feels immediate: most of
-    // the travel is over in the first fifth of it.
+    // Nothing about the frame's own behaviour changes. implicitWidth and
+    // implicitHeight still snap to the new entry's content the instant the key
+    // is pressed and animate there on their own curve (ContentList's Behaviors),
+    // and the rail does not wait for them. So the two entries in flight have
+    // different sizes and the frame is a third size on its way between them --
+    // whatever hangs outside gets cropped by bodyClip, exactly as the old slide
+    // was already being cropped, and it is not something the eye tracks on
+    // content that is moving a whole frame in 300ms.
     //
-    // Deliberately NOT the scroll's spring, even though PgUp/PgDn is right next
-    // door. The scroll is a continuous gesture the user steers, so it wants
-    // physics that survive retargeting; a swap is a discrete event that should
-    // land on the same beat as the frame resizing around it, and the frame is on
-    // this curve. Matching the neighbour would have cost matching the parent.
+    // The cost is one texture. See `outgoing` for why this is not two live
+    // bodies, which is what "3 entries at once" would otherwise mean -- and note
+    // that nothing further down the rail than these two is ever on screen, since
+    // the third entry is a full frame away in either direction.
     property int browseStep: 0
     property real bodyOffset: 0
-    property real bodyFade: 1
-    // Sized to the viewport, not fixed: the travel has to be a real fraction of
-    // the body to read as the text MOVING rather than twitching, and a distance
-    // that does that in a 640px reader would throw a three-line entry clean off
-    // its own frame. Floor so short entries still travel visibly, ceiling so a
-    // full-height one does not turn into a page turn.
+    // One whole frame plus the gap between entries -- this is what makes the
+    // move read as travel rather than as a hint of it. The old slide was capped
+    // at 140px against a body up to 640 tall, which is why it said "you moved"
+    // without ever showing you moving PAST anything.
     //
-    // Note this scales the overshoot with it: the curve swings ~21% of the
-    // travel past zero before settling, so at the ceiling the body passes about
-    // 29px the other way. That is the bounce, and it is why the ceiling is not
-    // higher.
-    readonly property real slideDist: Math.max(56, Math.min(140, viewport.height * 0.34))
+    // Bound to the LIVE height rather than frozen at the start of the move, so
+    // it tracks the frame resizing underneath: outgoing sits at exactly one
+    // step away at every instant, and stays glued a full frame off no matter
+    // how much the window grows or shrinks on the way.
+    // The height the body is heading FOR, which is not the height it has: the
+    // frame is mid-animation for the whole move (ContentList's Behaviors), so
+    // reading bodyClip would be reading a number that is still travelling.
+    readonly property real bodyTargetH: Math.min(root.maxHeight, viewport.contentHeight)
+    // Which way the rail is travelling, held for the whole move. browseStep is
+    // the same number, but it is also what stage() reads, so the rail keeps its
+    // own copy rather than depending on when that one is written.
+    property int railSign: 0
+    property bool railing: false
+
+    // -- latched at the freeze, deliberately not bound --
+    //
+    // Every one of these described the frame at the instant the texture was
+    // taken, and every one of them would otherwise follow the frame as it
+    // animates to the NEXT entry's size. Binding them was two bugs at once:
+    //
+    //   size - a ShaderEffectSource paints its texture into its own width and
+    //          height, so a frozen bitmap in a box shrinking towards a shorter
+    //          entry gets SQUASHED rather than scrolled. Big text going to small
+    //          text visibly compressed on its way out.
+    //   dist - the travel shrank with the frame too, so the outgoing texture was
+    //          asked to clear a distance smaller than its own height and simply
+    //          never left. That is why it was still on screen at the end of the
+    //          move to be seen compressing in the first place.
+    //
+    // The texture holds the last rendered frame, so these are the numbers that
+    // frame was rendered at -- nothing has re-laid-out between that render and
+    // slideIn(), which is what makes reading them there correct.
+    property real outW: 0
+    property real outH: 0
+    // Sampled in stage(), which is the last moment the body still belongs to the
+    // entry on screen. See there.
+    property real stagedW: 0
+    property real stagedH: 0
+    // One travel for BOTH halves, so the pair moves as one rigid rail with a
+    // fixed gap. It has to clear the taller of the two frames or the incoming
+    // entry starts already overlapping the outgoing one.
+    property real railDist: 0
+
+    // How far the outgoing frame travels, which is NOT always the rail's own
+    // distance -- the two directions leave past different edges, and only one of
+    // those edges holds still.
+    //
+    //   down - the outgoing leaves past bodyClip's TOP, which is pinned to the
+    //          header. The distance needed is its own height, and outH is exact
+    //          and known at the freeze, so railDist covers it.
+    //   up   - it leaves past the BOTTOM, and bodyClip grows DOWNWARD, so that
+    //          edge retreats as the frame expands. The distance needed is the
+    //          FINAL frame height, which is not knowable at the freeze: text
+    //          bodies load progressively (see loadTo), so contentHeight is still
+    //          small when slideIn runs and keeps growing afterwards. Measured
+    //          dist=69 against a frame that settled at clipH=152 -- the outgoing
+    //          came to rest inside the viewport and simply stayed there.
+    //
+    // So the upward exit reads the live height instead of a latched one, and
+    // takes the max so it can only ever be pushed further out, never pulled back
+    // towards the middle. It is below the fold the whole way either way, so the
+    // rail's spacing is unaffected by this being the one thing that is not rigid.
+    readonly property real outExit: root.railSign < 0 ? Math.max(root.railDist, bodyClip.height + Tokens.spacing.medium) : root.railDist
 
     function slideIn(): void {
         // Never during the open or close morph -- the body is the thing the
         // header is unfolding, and a second motion on top just muddies it.
         if (!root.opened || root.exiting || root.browseStep === 0)
             return;
-        // Read BEFORE stopping, which clears it.
-        const settled = !bodyFadeAnim.running;
         bodySlideAnim.stop();
-        bodyFadeAnim.stop();
-        root.bodyOffset = root.browseStep > 0 ? root.slideDist : -root.slideDist;
-        // Opacity is only pulled back to 0 when the body is actually settled.
-        // Key repeat arrives faster than the fade completes, and yanking it to 0
-        // on every row would hold the body dim for as long as the arrow is down.
-        // Resuming from where it is means a held key just slides, and the fade
-        // goes back to being what it is for: the settle on a single move.
-        if (settled)
-            root.bodyFade = 0;
+        root.railSign = root.browseStep > 0 ? 1 : -1;
+        // Only on a move that starts from rest. Mid-flight (a held arrow), the
+        // texture is already frozen on an earlier entry and CANNOT be refreshed
+        // -- nothing renders between a keypress and here -- so re-latching would
+        // pair that old texture with a newer entry's dimensions and distort it.
+        // Keeping the geometry it was captured with is what makes a fast scroll
+        // merely show a stale frame instead of a smeared one.
+        const fresh = !root.railing;
+        if (fresh) {
+            root.outW = root.stagedW;
+            root.outH = root.stagedH;
+        }
+        // Has to clear the taller of the two frames, or the arriving entry
+        // starts already on top of the leaving one. Monotonic while a move is in
+        // flight: the outgoing frame may be pushed further out as later entries
+        // turn out to be taller, but never pulled back in, which would make it
+        // jump towards the middle of the screen.
+        const want = Math.max(root.outH, root.bodyTargetH) + Tokens.spacing.medium;
+        root.railDist = fresh ? want : Math.max(root.railDist, want);
+        // Freeze `outgoing` BEFORE the offset is written.
+        root.railing = true;
+        root.bodyOffset = root.railSign * root.railDist;
         bodySlideAnim.start();
-        bodyFadeAnim.start();
     }
 
+    // DefaultSpatial -- the shell's overshoot curve, the same one the launcher's
+    // own resize, the header morph and every other spatial move in this file
+    // ride. So the rail settles on the same beat as the frame resizing around
+    // it, which is the thing that stops a browse reading as two separate events.
+    //
+    // Standard (no overshoot) was tried first, on the reasoning that the curve
+    // swings ~21% of its travel past the target: worth 29px on the old 140px
+    // slide, but ~134px against a full frame. Chosen anyway -- a scroll that
+    // matches its own window is worth more than one that stops dead.
+    //
+    // The fade the old slide had is still gone: it existed to cover a body
+    // appearing out of nothing 140px from home, and there is nothing to cover
+    // when both entries are fully drawn and simply moving.
     Anim {
         id: bodySlideAnim
 
         target: root
         property: "bodyOffset"
         to: 0
-    }
-
-    // Deliberately NOT the spatial curve: opacity has nowhere to overshoot to,
-    // and the fade wants to finish before the slide does so the text is legible
-    // while it is still settling rather than only once it stops.
-    Anim {
-        id: bodyFadeAnim
-
-        target: root
-        property: "bodyFade"
-        to: 1
-        type: Anim.FastEffects
+        // finished, NOT stopped. stopped() fires on an explicit stop() too --
+        // including the one at the top of slideIn() -- so `railing` was dropping
+        // to false and back to true inside a single browse. That flips `live`
+        // true for long enough to re-arm the capture, and the texture then
+        // re-renders on the NEXT frame, by which point the content it grabs is
+        // the entry that just arrived rather than the one that is leaving.
+        onFinished: root.railing = false
     }
 
     function contentReady(): bool {
@@ -1049,7 +1148,7 @@ Item {
         // slideY/slideX carry the shared-element motion; the body is anchored
         // below, so it compresses/unfolds with the header rather than being
         // overlapped.
-        anchors.topMargin: Tokens.padding.large + root.slideY
+        anchors.topMargin: Tokens.padding.large + root.slidePos
         anchors.leftMargin: Tokens.padding.large + root.slideX
         anchors.bottomMargin: 0
 
@@ -1105,8 +1204,16 @@ Item {
     }
 
     // -- body --
-    StyledFlickable {
-        id: viewport
+    //
+    // A stationary clipper around a rail that moves. bodyArea carries the live
+    // body AND its gutter, so the whole reading surface travels as one piece;
+    // `outgoing` is the previous entry's last rendered frame, glued a full frame
+    // away on the side you came from. Two entries are on screen for the whole
+    // transition, moving together -- the frame keeps resizing underneath exactly
+    // as it always did, and whatever does not fit is cropped, which is what the
+    // clip was already doing to the old slide.
+    Item {
+        id: bodyClip
 
         // During exit the list is already returning underneath; only the header
         // (the shared element) stays visible for the slide back onto its row.
@@ -1121,7 +1228,68 @@ Item {
         anchors.rightMargin: Tokens.padding.large
         anchors.bottomMargin: Tokens.padding.large
 
+        // The clip that used to live on the Flickable. It has to be on the
+        // STATIONARY item, not on the one that moves -- a clip region riding the
+        // rail would travel with the content it is supposed to be cutting.
         clip: true
+
+        // The entry you just left, exactly as it last looked.
+        //
+        // A texture rather than a second live body, and the reason is layout
+        // cost: a real outgoing body would mean two of everything the text path
+        // owns -- a second progressive loadTo(), a second lineIndex, a second
+        // gutter -- for content that is on screen for 300ms and can never be
+        // interacted with. This is one FBO and no layout at all, and it is
+        // pixel-exact by construction, because it IS the frame that was on
+        // screen rather than a re-rendering of it.
+        ShaderEffectSource {
+            id: outgoing
+
+            // Live while nothing is moving, frozen the instant a swap starts:
+            // at that moment the last rendered frame is still the OLD entry
+            // (the QML content change has not been painted yet), so freezing
+            // here is what captures it. Nothing renders between the two, which
+            // is why this cannot be done by scheduling an update instead.
+            live: !root.railing
+            hideSource: false
+            sourceItem: bodyArea
+
+            // Follows the frame only while it is LIVE, which is what keeps the
+            // texture being captured at full size. The moment it freezes it
+            // holds the size it was captured at instead, so the bitmap is
+            // scrolled rather than scaled into whatever the frame becomes.
+            width: root.railing ? root.outW : parent.width
+            height: root.railing ? root.outH : parent.height
+            // Exactly one rail-step behind the live body, so the two travel as
+            // a rigid pair: at the start of the move this lands on 0 -- the
+            // spot the outgoing entry was actually occupying -- and at the end
+            // it is a full frame plus the gap out of sight.
+            //
+            // Deliberately never `visible: false`. An invisible
+            // ShaderEffectSource is not guaranteed to keep refreshing its
+            // texture, and a stale texture is precisely the bug this would be
+            // introducing -- so it is parked out of frame instead and left for
+            // bodyClip to cut away.
+            y: root.railing ? root.bodyOffset - root.railSign * root.outExit : -parent.height * 2
+        }
+
+        Item {
+            id: bodyArea
+
+            anchors.fill: parent
+
+            // The rail. A transform and not a y, for the same reason the old
+            // body slide was one: this must not touch the layout the Flickable
+            // measures, or contentHeight and contentY would move with it.
+            transform: Translate {
+                y: root.bodyOffset
+            }
+
+    StyledFlickable {
+        id: viewport
+
+        anchors.fill: parent
+
         contentWidth: width
         contentHeight: root.isText ? bodyRow.implicitHeight : (root.isColour ? colourBody.implicitHeight : image.height)
 
@@ -1144,15 +1312,6 @@ Item {
             visible: root.isText
             width: root.contentW
             spacing: Tokens.spacing.medium
-            opacity: root.bodyFade
-
-            // A transform, not a y offset: this must not touch the layout the
-            // Flickable scrolls, or contentHeight and contentY would move with
-            // the animation. The Flickable clips, so the travel stays inside the
-            // body and never spills over the header.
-            transform: Translate {
-                y: root.bodyOffset
-            }
 
             Item {
                 // Reserves the gutter column. The numbers themselves are drawn by
@@ -1201,11 +1360,6 @@ Item {
 
             visible: root.isColour
             width: root.contentW
-            opacity: root.bodyFade
-
-            transform: Translate {
-                y: root.bodyOffset
-            }
 
             // The swatch's space is reserved by this Item, not by the rect
             // itself: the rect is hidden until the morph overlay lands on it,
@@ -1241,7 +1395,6 @@ Item {
             // exactly on this rect, then hands off. See `morphing` for why the
             // test is the animation and not morphT >= 1.
             visible: root.isImage && root.morphT >= 1 && !root.morphing
-            opacity: root.bodyFade
 
             // Scale first, about the centre, then translate -- so panX/panY are
             // plain screen-space offsets and the clamp in setPan can be written
@@ -1258,7 +1411,7 @@ Item {
                 },
                 Translate {
                     x: root.panX
-                    y: root.panY + root.bodyOffset
+                    y: root.panY
                 }
             ]
 
@@ -1403,23 +1556,19 @@ Item {
     // Sits over the viewport's left column rather than inside its content, so it
     // holds ~40 small Text items instead of one item as tall as the document.
     // Each number is placed at its row's y, offset by the scroll position.
+    //
+    // A sibling of the Flickable INSIDE bodyArea, so the rail carries it without
+    // it needing a transform of its own -- otherwise the text would travel and
+    // the line numbers it belongs to would stay nailed in place.
     Item {
         id: gutter
 
-        x: viewport.x
-        y: viewport.y
+        x: 0
+        y: 0
         width: root.gutterWidth
-        height: viewport.height
+        height: parent.height
         clip: true
-        visible: root.isText && !root.exiting
-        // The numbers live outside the Flickable, so they have to be carried by
-        // the same slide -- otherwise the text travels and the line numbers it
-        // belongs to stay nailed in place.
-        opacity: root.bodyFade
-
-        transform: Translate {
-            y: root.bodyOffset
-        }
+        visible: root.isText
 
         Repeater {
             model: root.visibleLines
@@ -1434,6 +1583,8 @@ Item {
                 color: Colours.palette.m3outlineVariant
                 horizontalAlignment: Text.AlignRight
             }
+        }
+    }
         }
     }
 
@@ -1475,9 +1626,9 @@ Item {
     // an empty rect. They have to move together or that silently stops working.
     readonly property real slotS: headerIcon.implicitWidth
     readonly property real slotX: Tokens.padding.large + root.slideX
-    readonly property real slotY: Tokens.padding.large + root.slideY + (header.implicitHeight - root.slotS) / 2
+    readonly property real slotY: Tokens.padding.large + root.slidePos + (header.implicitHeight - root.slotS) / 2
     // Top of the body's content in root coordinates -- where both morphs land.
-    readonly property real bodyTop: Tokens.padding.large + root.slideY + header.implicitHeight + Tokens.spacing.small - viewport.contentY
+    readonly property real bodyTop: Tokens.padding.large + root.slidePos + header.implicitHeight + Tokens.spacing.small - viewport.contentY
 
     Item {
         id: morphImg
