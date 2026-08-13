@@ -62,6 +62,10 @@ Item {
         bodyFadeAnim.stop();
         root.bodyOffset = 0;
         root.bodyFade = 1;
+        // The morph folds the body back into the row off LIVE endpoints, so a
+        // zoomed image would hand a magnified, off-centre picture to a landing
+        // computed for the fitted one. Back to fit before the slide starts.
+        root.resetZoom();
         root.exitCb = cb;
         root.exiting = true;
         slideAnim.from = root.slideY;
@@ -411,6 +415,84 @@ Item {
     // the resample it avoids is not.
     readonly property int imgFitH: root.imgBoxW > 0 ? Math.round(root.imgBoxW * root.imgArH / root.imgArW) : 0
 
+    // -- image zoom / pan --
+    //
+    // imv's two gestures and nothing else: wheel zooms about the cursor, drag
+    // pans, double-click resets. Deliberately a TRANSFORM on the Image and never
+    // a change to its width/height -- imgBoxW drives implicitWidth and imgFitH
+    // drives contentHeight, so resizing the image here would drag the whole
+    // window's geometry along with the gesture.
+    //
+    // Nothing had to be given up for the wheel: readerImageWidth caps the box by
+    // maxHeight (cap = min(maxWidth - pad, maxHeight * ar)), so imgFitH can never
+    // exceed the viewport and an image entry's Flickable is never scrollable.
+    // The wheel did nothing here before.
+    //
+    // 1 is the FLOOR, not a midpoint -- there is no zooming out past fit. The
+    // window is cut to the picture, so a smaller picture inside it could only
+    // ever be the picture plus dead bars, which is the one thing this file's
+    // whole sizing chain exists to avoid (see minImageWidth).
+    property real zoom: 1
+    property real panX: 0
+    property real panY: 0
+
+    // 1:1 with the source pixels is the meaningful ceiling, exactly as it is in
+    // any viewer: past it there is no more picture to find. The floor of 2 is for
+    // images the reader already upscales (a 40x30 clip is drawn ~14x up), where
+    // that ratio is below 1 and would otherwise mean no zoom at all -- they have
+    // no detail to reveal, but the gesture should still work.
+    readonly property real maxZoom: Math.max(2, Math.min(16, root.imgNatW / Math.max(1, root.imgBoxW)))
+    readonly property bool zoomed: root.zoom > 1.001
+
+    // Latched rather than bound to `zoomed`, so pinching back to fit and in again
+    // does not throw away the full-res decode and pay for it twice. Cleared per
+    // entry in commit(), which is what bounds the cost to one picture at a time.
+    property bool wantHiRes: false
+
+    // The image is centred in a viewport it exactly fills, so the overhang on
+    // each side is half the growth. At zoom 1 both are 0 -- which is what makes
+    // dragging a no-op at rest instead of something that has to be special-cased.
+    readonly property real maxPanX: root.imgBoxW * (root.zoom - 1) / 2
+    readonly property real maxPanY: root.imgFitH * (root.zoom - 1) / 2
+
+    // Clamped so an edge can never come inside the viewport. Same reasoning as
+    // the zoom floor: the picture may leave the frame, the frame may never show
+    // anything that is not picture.
+    function setPan(x: real, y: real): void {
+        root.panX = Math.max(-root.maxPanX, Math.min(root.maxPanX, x));
+        root.panY = Math.max(-root.maxPanY, Math.min(root.maxPanY, y));
+    }
+
+    function resetZoom(): void {
+        root.zoom = 1;
+        root.panX = 0;
+        root.panY = 0;
+        root.wantHiRes = false;
+    }
+
+    // Zoom about the cursor: the content point under the pointer must not move.
+    // With s = centre + p * zoom + pan, holding s fixed across a zoom change
+    // gives pan -= p * dZoom, where p is that point in unscaled image coords.
+    //
+    // Multiplicative steps, because zoom is perceptually logarithmic -- a fixed
+    // +0.25 crawls near 1x and leaps near the ceiling. Scaled by the reported
+    // delta so a high-resolution wheel or a touchpad stays proportional instead
+    // of jumping a full notch per event.
+    function zoomAt(cx: real, cy: real, delta: real): void {
+        const from = root.zoom;
+        const to = Math.max(1, Math.min(root.maxZoom, from * Math.pow(1.15, delta / 120)));
+        if (to === from)
+            return;
+        const px = (cx - root.imgBoxW / 2 - root.panX) / from;
+        const py = (cy - root.imgFitH / 2 - root.panY) / from;
+        root.zoom = to;
+        if (to > 1)
+            root.wantHiRes = true;
+        // Re-clamps against the new maxPan, which is what walks the picture back
+        // into frame when zooming out rather than leaving a bar behind.
+        root.setPan(root.panX - px * (to - from), root.panY - py * (to - from));
+    }
+
     implicitWidth: {
         // Images size to their content exactly as text does, except that they
         // may also size DOWN past the list width -- see minImageWidth. No test
@@ -541,6 +623,10 @@ Item {
         root.shownType = root.entryType;
         scrollAnim.stop();
         viewport.contentY = 0;
+        // Same reasoning as contentY: a new entry opens at the top, unzoomed.
+        // Also what frees the full-res copy -- hiRes drops its source with
+        // wantHiRes, so at most one oversized pixmap is ever alive.
+        root.resetZoom();
         holdTimer.stop();
         maxHold.stop();
         root.heldHeight = 0;
@@ -1157,8 +1243,118 @@ Item {
             visible: root.isImage && root.morphT >= 1 && !root.morphing
             opacity: root.bodyFade
 
-            transform: Translate {
-                y: root.bodyOffset
+            // Scale first, about the centre, then translate -- so panX/panY are
+            // plain screen-space offsets and the clamp in setPan can be written
+            // against the overhang directly. Neither touches the layout the
+            // Flickable measures, exactly as the body slide's Translate does not:
+            // contentHeight stays imgFitH at every zoom, so the window does not
+            // breathe while you scroll.
+            transform: [
+                Scale {
+                    origin.x: image.width / 2
+                    origin.y: image.height / 2
+                    xScale: root.zoom
+                    yScale: root.zoom
+                },
+                Translate {
+                    x: root.panX
+                    y: root.panY + root.bodyOffset
+                }
+            ]
+
+            // Deliberately unanimated. A Behavior here would ease `zoom` while
+            // zoomAt has already written the pan for the final value, so the
+            // point under the cursor would drift and settle rather than stay
+            // pinned -- and imv's zoom is instant anyway. The 1.15 steps are
+            // small enough to read as smooth on their own.
+            WheelHandler {
+                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                onWheel: event => root.zoomAt(event.x, event.y, event.angleDelta.y)
+            }
+
+            // target: null -- this drives root.panX/panY through the clamp rather
+            // than letting the handler move the item, which would bypass it and
+            // let the picture be dragged clean off its own frame.
+            DragHandler {
+                id: panHandler
+
+                property real fromX: 0
+                property real fromY: 0
+
+                target: null
+                enabled: root.zoomed
+                cursorShape: Qt.ClosedHandCursor
+
+                onActiveChanged: {
+                    if (active) {
+                        fromX = root.panX;
+                        fromY = root.panY;
+                    }
+                }
+                // translationChanged, not activeTranslationChanged: that IS
+                // activeTranslation's NOTIFY signal (it is shared with
+                // persistentTranslation), and naming the real signal avoids
+                // leaning on QML's property-handler mapping for a rename.
+                onTranslationChanged: root.setPan(fromX + activeTranslation.x, fromY + activeTranslation.y)
+            }
+
+            HoverHandler {
+                enabled: root.zoomed && !panHandler.active
+                cursorShape: Qt.OpenHandCursor
+            }
+
+            TapHandler {
+                onDoubleTapped: root.resetZoom()
+            }
+
+            // The full-resolution copy, decoded only once you have actually
+            // zoomed -- and never held for an entry you have not.
+            //
+            // A child, so it inherits the transform above rather than restating
+            // the geometry. It fades in OVER the base image, which keeps
+            // painting underneath the whole time: the sharpening is the only
+            // thing you see, never a blank frame.
+            //
+            // Why not just raise the base image's sourceSize instead: that is
+            // part of the pixmap cache key, so it would fork this Image off the
+            // decode it shares with mImg (see the cache/mipmap notes below) and
+            // blank the body until the new one landed -- mid-gesture, which is
+            // the worst possible moment.
+            //
+            // And why not decode everything full-size up front: the picker warms
+            // maxShown of these on `;`, which is what makes `→` instant. At the
+            // box size that is ~1.6MB each; at 4K it is ~33MB each, on the one
+            // decode thread the row thumbnails also queue on.
+            Image {
+                anchors.fill: parent
+
+                // Exactly what maxZoom can ask for and no more -- past 1:1 with
+                // the source there is nothing further to resolve, so a bigger
+                // decode would be memory spent on nothing.
+                readonly property int hiResW: Math.round(root.imgBoxW * root.maxZoom)
+
+                visible: root.isImage
+                // Cleared with wantHiRes on the next entry, which is what frees
+                // the pixmap: `cache: false` means nothing outlives this source.
+                source: root.wantHiRes ? root.imgSrc : ""
+                sourceSize.width: hiResW
+                // Matches the base image for the same reason the base matches
+                // mImg: same url and fillMode or the two are separate decodes.
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+                // The one image in this file that must NOT be retained. It is
+                // the largest thing the reader ever decodes and it is wanted for
+                // exactly one entry, so leaving it in Qt's cache would undo the
+                // bound the box-sized decodes are chosen to keep.
+                cache: false
+                // Drawn magnified when it matters, so unlike the base image this
+                // one really does sample below the base level.
+                mipmap: true
+                opacity: status === Image.Ready ? 1 : 0
+
+                Behavior on opacity {
+                    Anim {}
+                }
             }
             // The painted box, NOT the full content width: PreserveAspectFit
             // fills the item it is given, so a box wider than the image would
