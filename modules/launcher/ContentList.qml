@@ -37,6 +37,8 @@ Item {
     // slides to the top, and slides back down here on exit.
     property real readerStartY: 0
     property bool readerExiting: false
+    // The list's contentY when exitReader measured the header's landing target.
+    property real exitContentY: 0
     // displayState, NOT state: state's binding involves `frozen` (which we set
     // from readerActive), so reading it here would close a binding loop.
     readonly property bool canRead: (appList.item?.displayState ?? "") === "clipboard"
@@ -205,7 +207,11 @@ Item {
             // fixed-height, so index math gives the settled position directly
             // (and covers the last-row case with no special branch).
             const target = l.originY + i * (root.Tokens.sizes.launcher.itemHeight + l.spacing) - l.contentY;
+            // The contentY `target` is relative to. Scrolling during the slide
+            // shifts the header by the difference (see ClipReader.exitScroll).
+            exitContentY = l.contentY;
             partTimer.index = i;
+            partTimer.fromIndex = l.currentIndex;
             readerActive = false;
             r.exitTo(target, () => {
                 l.maskedEntry = null;
@@ -218,16 +224,58 @@ Item {
         }
     }
 
+    // Put the lifted entry back. Normally on partTimer, so the neighbours are
+    // seen parting mid-slide; early if a keypress needs the model settled first.
+    function reinsert(): void {
+        const l = appList.item;
+        if (!root.readerExiting || !l)
+            return;
+        // Carry over anything ↑/↓ did during the slide. Restoring the captured
+        // index flat undid those keypresses ~140ms after they landed, which read
+        // as the first key after ← being ignored.
+        //
+        // A DELTA rather than currentIndex itself: while the entry is lifted the
+        // index counts the filtered list, and it is additionally clamped to
+        // length-2 on the last row, so the two only coincide in the common case.
+        const want = partTimer.index + l.currentIndex - partTimer.fromIndex;
+        l.clearLift(Math.max(0, Math.min(want, l.fullResults.length - 1)));
+    }
+
+    // ↑/↓ outside the reader. Ordinary navigation, except inside the exit window.
+    //
+    // The re-insert shifts every row below the gap, so a keypress landing in the
+    // 140ms before it starts the highlight towards a row that then moves out from
+    // under it -- traced at 327 → 389 → 324 in 9ms, a glide cancelled and
+    // restarted for no net movement. The press was not dropped, it was spent.
+    //
+    // Settling the model first costs only the remainder of a wait that exists for
+    // an animation the user has just overtaken, and leaves the highlight one
+    // stable target. Deliberately BEFORE the step: reinsert() reads currentIndex
+    // to carry the delta, so it has to see the pre-step value.
+    function listStep(step: int): void {
+        if (readerExiting && partTimer.running) {
+            partTimer.stop();
+            reinsert();
+        }
+        const l = currentList;
+        if (!l)
+            return;
+        if (step > 0)
+            l.incrementCurrentIndex();
+        else
+            l.decrementCurrentIndex();
+    }
+
     Timer {
         id: partTimer
 
         property int index: 0
+        // currentIndex when the exit started, so navigation during the slide can
+        // be told apart from the index sitting still.
+        property int fromIndex: 0
 
         interval: 140
-        onTriggered: {
-            if (root.readerExiting)
-                appList.item?.clearLift(index);
-        }
+        onTriggered: root.reinsert()
     }
 
     // Dropping the reader, the lift/mask and the filter freeze has to happen on
@@ -389,6 +437,7 @@ Item {
             entry: root.readerEntry
             browseStep: root.readerStep
             startY: root.readerStartY
+            exitScroll: root.readerExiting ? (appList.item?.contentY ?? 0) - root.exitContentY : 0
             // Search text minus the `;` prefix: seeded with the list filter on
             // entry, live as the user keeps typing (the list itself is frozen).
             findTerm: {
