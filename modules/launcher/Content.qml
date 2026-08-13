@@ -106,8 +106,8 @@ Item {
                 list.exitReader();
         }
 
-        Keys.onUpPressed: list.readerActive ? list.browseReader(-1) : list.currentList?.decrementCurrentIndex()
-        Keys.onDownPressed: list.readerActive ? list.browseReader(1) : list.currentList?.incrementCurrentIndex()
+        Keys.onUpPressed: list.readerActive ? list.browseReader(-1) : list.listStep(-1)
+        Keys.onDownPressed: list.readerActive ? list.browseReader(1) : list.listStep(1)
 
         // → morphs into the clipboard reader, ← morphs back. Both give up in-field
         // cursor movement while in clipboard/reader mode (short filter text).

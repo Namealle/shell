@@ -22,13 +22,6 @@ StyledListView {
     // filtering: hold displayText (and therefore results + currentEntry) still.
     property bool frozen: false
 
-    // While the reader's header slides back onto its row, the landing target was
-    // computed from the contentY at exit time. ApplyRange re-evaluates against
-    // the still-animating height on the state flip and yanks contentY mid-slide
-    // when the current row sits at the viewport bottom, so the header lands tens
-    // of px off its row. Freeze auto-scrolling for the exit window only.
-    property bool exiting: false
-
     readonly property string requestedState: stateForText(search.text)
     readonly property string displayState: stateForText(displayText)
 
@@ -121,8 +114,35 @@ StyledListView {
     implicitHeight: (Tokens.sizes.launcher.itemHeight + spacing) * Math.min(Config.launcher.maxShown, count) - spacing
 
     preferredHighlightBegin: 0
-    preferredHighlightEnd: height
-    highlightRangeMode: exiting ? ListView.NoHighlightRange : ListView.ApplyRange
+    // implicitHeight, NOT height: this list is anchors.fill on a parent the
+    // reader inflates to 640px+, so `height` asks whether the row fits a
+    // viewport that is about to stop existing. implicitHeight is the resting
+    // height -- count-based and never animated -- so the range describes where
+    // the rows actually land. Outside the reader the two are equal.
+    //
+    // That also retires the exit-window freeze this used to need: the freeze
+    // existed because the range re-evaluated against the ANIMATING height and
+    // yanked contentY mid-slide, and implicitHeight does not animate.
+    preferredHighlightEnd: implicitHeight
+    highlightRangeMode: ListView.ApplyRange
+
+    // Only while the reader's header is sliding home.
+    //
+    // ApplyRange repositions the view in one frame, which is right everywhere
+    // else -- the highlight's own glide carries the motion. During the exit it
+    // is the one thing NOT animating: the header is sliding, the list is fading
+    // in, the neighbours are parting, and the rows teleporting a row upward
+    // through the middle of that reads as the whole animation ending early.
+    //
+    // Gated rather than always on: an unconditional Behavior intercepts the
+    // Flickable's own writes during a drag or wheel flick and turns ordinary
+    // scrolling to treacle.
+    property bool exiting: false
+
+    Behavior on contentY {
+        enabled: root.exiting
+        Anim {}
+    }
 
     highlightFollowsCurrentItem: false
     highlight: StyledRect {
@@ -130,7 +150,19 @@ StyledListView {
         color: Colours.palette.m3onSurface
         opacity: 0.08
 
-        y: root.currentItem?.y ?? 0
+        // From the LAYOUT, not the animated item -- the same reason exitReader
+        // computes its landing spot this way.
+        //
+        // currentItem.y is a live value mid-transition. Re-inserting the lifted
+        // entry displaces every row BELOW the gap, so stepping down onto one
+        // aimed the highlight at a row still animating into place and it chased
+        // it the whole way; stepping up onto an undisplaced row was instant. The
+        // asymmetry was the tell.
+        //
+        // Rows are fixed-height in every mode this list serves (see
+        // implicitHeight above), so index math gives the settled position
+        // directly -- and outside a transition the two agree exactly.
+        y: root.originY + root.currentIndex * (Tokens.sizes.launcher.itemHeight + root.spacing)
         implicitWidth: root.width
         implicitHeight: root.currentItem?.implicitHeight ?? 0
 
