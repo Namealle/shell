@@ -45,8 +45,9 @@ Item {
     // Owned, not derived from currentIndex: the entry being read is lifted OUT
     // of the list model, so list indices can't describe it.
     property var readerEntry: null
-    // Which way the last ↑/↓ went, for the reader's body slide. 0 means "not a
-    // browse" -- an open has no direction, and its morph must not get one.
+    // Which way the last ↑/↓ went. The reader no longer needs telling -- the
+    // rail derives its direction from the index change -- but prefetchAround
+    // still aims its window with it.
     property int readerStep: 0
     // Not while exiting: erasing the `;` unfreezes the list, which flips
     // displayState off "clipboard" and would fire this hard reset straight
@@ -139,9 +140,10 @@ Item {
         const j = i + step;
         if (i < 0 || j < 0 || j >= full.length)
             return;
-        // BEFORE readerEntry: changing that runs the reader's staging
-        // synchronously, and the slide it starts has to already know which way
-        // it is going.
+        // Still before readerEntry, though the reason has shrunk: the reader
+        // used to stage synchronously off this write and the slide it started
+        // had to already know its direction. The rail derives direction from the
+        // index change instead, so this is now only prefetchAround's aim.
         readerStep = step;
         readerEntry = full[j];
         l.setLifted(readerEntry, Math.max(0, Math.min(j, full.length - 2)));
@@ -170,8 +172,21 @@ Item {
         // Asymmetric on purpose: the row you are heading towards is far likelier
         // to be read than the one you just left, but backing up one step is
         // common enough to be worth covering.
-        const ahead = 4;
-        const behind = 2;
+        //
+        // Widened for the rail, and this is a correctness requirement now rather
+        // than a nicety: the window has to cover every delegate the rail
+        // instantiates, or a LIVE neighbour slides past as a blank frame. It
+        // used to be enough to have the next entry ready by the time a key was
+        // pressed, because only one entry was ever on screen.
+        //
+        // No fast-scroll detection to go with it. A held arrow repeats ~25-30x/s
+        // and outruns any window worth building, because `cliphist decode` runs
+        // one subprocess at a time -- a bigger queue is stale before it drains.
+        // What matters is that the entry you STOP on resolves instantly, and
+        // that already holds: the queue is replaced on every move with the
+        // current entry first, so the last keypress wins.
+        const ahead = 5;
+        const behind = 3;
         for (let d = 1; d <= ahead; d++) {
             const f = full[i + dir * d];
             if (f)
@@ -183,6 +198,13 @@ Item {
             }
         }
         Clipboard.prefetch(out);
+        // Image entries never enter the decode queue above (their thumbnails are
+        // precached per row), so retaining is the only thing that keeps them
+        // warm -- and on the rail every entry in this window is instantiated,
+        // not just the one being read. Retained newest-first, so the current
+        // entry survives longest.
+        for (let k = out.length - 1; k >= 0; k--)
+            Clipboard.retain(out[k]);
     }
 
     // Mirror of enter, staged so the reorder is actually SEEN: the header
@@ -434,8 +456,15 @@ Item {
         anchors.fill: parent
 
         sourceComponent: ClipReader {
-            entry: root.readerEntry
-            browseStep: root.readerStep
+            // The rail's model. The list's filter is frozen while the reader is
+            // open, so fullResults is stable for the reader's whole lifetime --
+            // which is what lets the rail keep seven live delegates without
+            // anything reshuffling underneath them.
+            entries: appList.item?.fullResults ?? []
+            // readerEntry stays the thing that is owned (the lift is keyed on
+            // it); this is just where it sits. -1 while the entry has been
+            // cleared but the exit slide is still running.
+            index: Math.max(0, (appList.item?.fullResults ?? []).indexOf(root.readerEntry))
             startY: root.readerStartY
             exitScroll: root.readerExiting ? (appList.item?.contentY ?? 0) - root.exitContentY : 0
             // Search text minus the `;` prefix: seeded with the list filter on
