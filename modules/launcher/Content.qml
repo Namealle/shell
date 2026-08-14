@@ -137,7 +137,7 @@ Item {
 
         Keys.onPressed: event => {
             // Reader: PgUp/PgDn page through the text, Home/End jump to the
-            // edges (both animated in ClipReader). Home/End give up find-field
+            // edges (both animated in ClipBody). Home/End give up find-field
             // cursor jumps while reading; in list mode they stay with the field.
             if (list.readerActive) {
                 if (event.key === Qt.Key_PageDown || event.key === Qt.Key_PageUp) {

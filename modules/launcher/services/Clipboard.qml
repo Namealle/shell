@@ -320,6 +320,26 @@ Singleton {
     // for as long as the id exists, and the only reason to drop one is memory.
     property var decodedText: ({})
 
+    // Bumped whenever decodedText gains an entry. The map is MUTATED in place
+    // (see cacheDecoded), which emits no change signal at all -- fine for the
+    // old reader, which only ever read the cache at the moment it staged an
+    // entry, but not for the rail: a preloaded neighbour is already on screen
+    // when its prefetch lands, so it has to be told. Every ClipBody watches this
+    // and re-reads its own key.
+    //
+    // A counter rather than reassigning decodedText: that map holds up to
+    // cacheBudget of strings, and copying it on every decode would make the
+    // prefetch quadratic in the size of the window it is filling.
+    property int decodeGeneration: 0
+
+    // Warm the FULL-RESOLUTION copy for every entry on the rail, not just the
+    // one that gets zoomed. Off by default and deliberately not in shell.json:
+    // the box-sized decode is ~1.6MB against ~33MB at 4K, on the single Qt
+    // decode thread the row thumbnails also queue on, so seven of them would
+    // make the list paint slower -- the opposite of what the rail is for. Here
+    // to be flipped and felt, not to be shipped on.
+    readonly property bool eagerHiRes: false
+
     // Insertion order of decodedText, oldest first. Only reason this exists is
     // the budget below -- JS objects do not keep insertion order for the
     // numeric-looking keys cliphist hands out, so it cannot be recovered from
@@ -344,6 +364,7 @@ Singleton {
                 root.cacheChars -= root.decodedText[old]?.length ?? 0;
                 delete root.decodedText[old];
             }
+            root.decodeGeneration++;
         }
         const counts = Object.assign({}, root.lineCounts);
         // Counted by scanning for newlines rather than split().length: the
