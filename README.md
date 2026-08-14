@@ -1,5 +1,11 @@
 <h1 align=center>caelestia-shell</h1>
 
+> [!NOTE]
+> This is a personal fork of [`caelestia-dots/shell`](https://github.com/caelestia-dots/shell),
+> adding a clipboard reader and emoji picker to the launcher, native fuzzy search, and a
+> handful of multi-monitor fixes. See **[FORK.md](FORK.md)** for the full list.
+> The rest of this README is upstream's, unmodified.
+
 <div align=center>
 
 ![GitHub last commit](https://img.shields.io/github/last-commit/caelestia-dots/shell?style=for-the-badge&labelColor=101418&color=9ccbfb)
