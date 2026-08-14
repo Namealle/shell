@@ -41,7 +41,6 @@ PageBase {
         TextFieldRow {
             id: prefixRow
 
-            last: true
             label: Tr.tr("Action prefix")
             subtext: Tr.tr("Prefix used to run actions in the launcher")
             errorText: Tr.tr("Prefix must not be alphanumeric")
@@ -56,6 +55,43 @@ PageBase {
                 /// TODO: replace with GlobalConfig.launcher.resetOption("actionPrefix") on empty commit when reset is fixed
                 GlobalConfig.launcher.actionPrefix = value || ">";
                 if (GlobalConfig.launcher.actionPrefix === ">")
+                    clear();
+            }
+        }
+
+        TextFieldRow {
+            label: Tr.tr("Clipboard prefix")
+            subtext: Tr.tr("Prefix used to browse clipboard history in the launcher")
+            errorText: Tr.tr("Prefix must not be alphanumeric")
+            value: GlobalConfig.launcher.clipboardPrefix === ";" ? "" : GlobalConfig.launcher.clipboardPrefix
+            placeholderText: ";"
+            maximumLength: 1
+            smallField: true
+            validate: /^[^a-zA-Z0-9\s]$/
+            onEditingFinished: value => {
+                if (!field.valid)
+                    return;
+                GlobalConfig.launcher.clipboardPrefix = value || ";";
+                if (GlobalConfig.launcher.clipboardPrefix === ";")
+                    clear();
+            }
+        }
+
+        TextFieldRow {
+            last: true
+            label: Tr.tr("Emoji prefix")
+            subtext: Tr.tr("Prefix used to search emoji in the launcher")
+            errorText: Tr.tr("Prefix must not be alphanumeric")
+            value: GlobalConfig.launcher.emojiPrefix === ":" ? "" : GlobalConfig.launcher.emojiPrefix
+            placeholderText: ":"
+            maximumLength: 1
+            smallField: true
+            validate: /^[^a-zA-Z0-9\s]$/
+            onEditingFinished: value => {
+                if (!field.valid)
+                    return;
+                GlobalConfig.launcher.emojiPrefix = value || ":";
+                if (GlobalConfig.launcher.emojiPrefix === ":")
                     clear();
             }
         }
