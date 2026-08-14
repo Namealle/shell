@@ -139,6 +139,24 @@ Item {
     readonly property real gutterWidth: fm.advanceWidth(String(Math.max(1, root.lineCount)))
     readonly property real contentW: root.implicitWidth - Tokens.padding.large * 2
     readonly property real textW: root.contentW - root.gutterWidth - Tokens.spacing.medium
+
+    // Where that content box sits inside the box this body was actually GIVEN.
+    //
+    // The two are equal at rest -- the frame is cut to the entry being read --
+    // but the frame animates between two entries' widths, so for the whole of a
+    // move every body on the rail is in a box that is not its own. Left-aligning
+    // put all of that difference on one side, which is what a wide entry
+    // followed by a tall one shows as a slab of dead space down the right. The
+    // difference is real either way; centring is what makes it read as the frame
+    // closing in on the picture rather than the picture sliding off-centre.
+    //
+    // Block content only -- image and swatch. Text stays hard left, because a
+    // paragraph that slides sideways on every browse is worse than slack on one
+    // side. See bodyRow.
+    //
+    // x only -- the widths above still come from CONTENT, so nothing relayouts
+    // on a frame that is merely moving.
+    readonly property real contentX: Math.round((root.width - root.contentW) / 2)
     // One lowercased copy per entry rather than one per keystroke: at 1M chars
     // toLowerCase() costs ~9ms, which a held key turns into a stutter.
     readonly property string decodedLower: root.decoded.toLowerCase()
@@ -812,6 +830,21 @@ Item {
 
         anchors.fill: parent
 
+        // Flickable does NOT clip by default, and on a rail of live bodies that
+        // is not cosmetic: a text entry's height is capped at maxHeight while its
+        // contentHeight is the whole loaded document, so everything past the cap
+        // was being painted straight over the neighbours below it. Measured on a
+        // 640px-capped entry at rail y=0: contentHeight 3249, i.e. it drew across
+        // the next eleven entries, which is the ghost text seen sitting on top of
+        // a short entry for the length of a move.
+        //
+        // It also bounds the zoomed image, which grows past its own box by
+        // construction (the transform scales about the centre and the box stays
+        // imgFitH tall) and had the same freedom to spill.
+        //
+        // Cheap: the rect is axis-aligned, so this is a scissor, not a texture.
+        clip: true
+
         // Pinned for everything but the entry being read. A neighbour cannot be
         // scrolled by anything -- the rail is programmatic and the wheel only
         // reaches the active body -- but this makes it structural rather than
@@ -838,6 +871,11 @@ Item {
             id: bodyRow
 
             visible: root.isText
+            // Left, NOT contentX. Reading starts at a fixed left edge and a
+            // paragraph that slid sideways on every browse would be worse than a
+            // little slack on the right -- which for text is only ever the
+            // gutter's column moving anyway. Centring is for the block content
+            // (image, swatch), where the shape IS the thing being framed.
             width: root.contentW
             spacing: Tokens.spacing.medium
 
@@ -886,6 +924,7 @@ Item {
             id: colourBody
 
             visible: root.isColour
+            x: root.contentX
             width: root.contentW
 
             // The swatch's space is reserved by this Item, not by the rect
@@ -1051,7 +1090,11 @@ Item {
             // narrow enough to hit minImageWidth, where the bars are the floor's
             // doing and cannot be closed.
             width: root.imgBoxW
-            x: (root.contentW - width) / 2
+            // Centred in the box this body was GIVEN, not in its own content box
+            // -- see contentX. Those coincide at rest; they do not for the whole
+            // of a move between two differently-shaped pictures, which is where
+            // the off-centre bars were.
+            x: root.contentX + (root.contentW - width) / 2
             // Shared ratio, NOT this Image's own status -- this height is what
             // the launcher sizes itself from, and it has to be right before the
             // full-res decode lands. See imgFitH.
@@ -1095,6 +1138,7 @@ Item {
     Item {
         id: gutter
 
+        // Left, with the text it numbers -- see bodyRow.
         x: viewport.x
         y: viewport.y
         width: root.gutterWidth
