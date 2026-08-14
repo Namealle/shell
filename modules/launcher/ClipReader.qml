@@ -63,7 +63,23 @@ Item {
     // The live ClipBody for that entry. The reader reads geometry off it --
     // widths, heights, the morph's landing box -- rather than computing any of
     // it a second time.
-    readonly property var body: rail.currentItem
+    //
+    // Registered BY the delegates rather than read from ListView.currentItem,
+    // because the rail deliberately has no currentIndex at all. See the rail.
+    property var body: null
+
+    onIndexChanged: {
+        // The delegate for the new index is normally already alive -- cacheBuffer
+        // keeps three max-height entries either side, and a browse only ever
+        // moves by one. Without a currentIndex nothing else would force it into
+        // existence, so if a jump ever outruns the buffer, do it here rather than
+        // leave the reader with no body to size itself from.
+        if (!rail.itemAtIndex(root.index))
+            rail.positionViewAtIndex(root.index, ListView.Beginning);
+    }
+
+    // A new entry is under the header: take the rail to it.
+    onBodyChanged: rail.pin()
 
     readonly property int maxHeight: Clipboard.readerMaxHeight
     readonly property int minWidth: Tokens.sizes.launcher.itemWidth
@@ -314,7 +330,30 @@ Item {
         clip: true
 
         model: root.entries
-        currentIndex: root.index
+        // NO currentIndex, deliberately, and this is the single most load-bearing
+        // line in the file.
+        //
+        // QQuickItemView tracks its current item and, whenever currentIndex is
+        // set programmatically (moveReason == SetIndex), scrolls contentY the
+        // minimum needed to bring that item into view. It writes contentY from
+        // C++, which BYPASSES the Behavior below -- so the rail teleports.
+        //
+        // It bites exactly where the bug was reported: reverse direction before a
+        // move finishes and the current item is only half in view, so the view
+        // "corrects" it in one frame. Traced at contentY 407 -> 244 in the same
+        // event that currentIndex changed, arriving before pin() had run at all;
+        // pin then animated the last 25px, which is why it read as the entry
+        // appearing with no transition rather than as a jump. A move that starts
+        // from rest never triggers it, which is why only reversals looked broken.
+        //
+        // Setting the range to agree with us does not help: any correction it
+        // makes is unanimated and lands on (or next to) the target, which is the
+        // same thing as having no transition. The only fix is to leave it without
+        // a tracked item -- currentItem null means trackedItem null means
+        // trackedPositionChanged returns immediately. The delegates announce
+        // themselves to root.body instead, and `active` keys off root.index, so
+        // nothing needed currentIndex in the first place.
+        //
         // Programmatic only. That also settles the nesting: the wheel and the
         // keys reach each body's own inner Flickable without contest.
         interactive: false
@@ -327,68 +366,72 @@ Item {
 
         // NOT padding -- nothing is drawn here, the rail never rests in it, and
         // `interactive: false` means it cannot be flicked into. It exists to put
-        // Flickable's own bounds out of reach of the binding below.
+        // Flickable's own bounds out of reach of the rail's own travel, at both
+        // ends.
         //
-        // contentY == lastItem.y sits exactly on maxYExtent, and the frame is
-        // ANIMATING towards the last entry's height for the whole move -- so for
-        // most of it maxYExtent is short and returnToBounds() clamps. Measured:
-        // contentY parked at 1672 against a target of 2222, which is
-        // contentHeight minus the height of the entry being LEFT. The clamp is
-        // an imperative write, so the binding is not restored; it only
-        // re-evaluates when currentItem.y next changes, and it does not change
-        // again. Top margin for the mirror image: the spatial curve overshoots
-        // ~21% of its travel, which drives contentY negative on the way to entry
-        // 0, past minYExtent.
+        // Bottom: contentY == lastItem.y sits exactly on maxYExtent, and the
+        // frame is ANIMATING towards the last entry's height for the whole move,
+        // so for most of it maxYExtent is short and returnToBounds() clamps.
+        // Measured, with the margin removed: contentY parked at 1672 against a
+        // target of 2222 -- contentHeight minus the height of the entry being
+        // LEFT.
         //
-        // The Behavior happens to mask both -- it rewrites contentY every frame,
-        // so a clamped frame is simply overwritten by the next one. That holds
-        // only while the animation outlasts the frame's resize, which is not a
-        // thing to depend on. The margins also PRESERVE the overshoot rather
-        // than flattening it against the bounds.
+        // Top: the spatial curve overshoots ~21% of its travel, which drives
+        // contentY negative on the way to entry 0, past minYExtent.
+        //
+        // Every clamp is a C++ write, so it is silent and it does not animate --
+        // the same class of interference as the tracked-item reposition above,
+        // and the reason both are designed out rather than worked around. The
+        // margins also PRESERVE the overshoot instead of flattening it against
+        // the bounds.
         topMargin: root.maxHeight
         bottomMargin: root.maxHeight
 
-        // The rail's position, and the whole mechanism: pin the current entry to
-        // the top of the frame and let the Behavior carry the travel.
+        // The rail's position, and the whole mechanism: pin the entry being read
+        // to the top of the frame and let the Behavior carry the travel.
         //
-        // StrictlyEnforceRange was the obvious alternative and is strictly
+        // Written, NOT bound. `contentY: body.y` is the obvious form and it
+        // closes a loop with ListView's own layout: contentY decides which
+        // delegates exist, instantiating one changes contentHeight and the y of
+        // everything after it, and body.y is exactly what the binding reads. Qt
+        // catches it -- "Binding loop detected for property contentY" -- and
+        // BREAKS the binding, which leaves the rail parked and the reader showing
+        // the wrong entry. (The standalone probes missed this: their delegates
+        // were fixed-height and all within cacheBuffer from the first frame, so
+        // nothing was ever created mid-move.)
+        //
+        // Driving it from the two signals that actually mean "the entry being
+        // read moved" is the same value with no cycle, and the Behavior still
+        // animates the result.
+        //
+        // StrictlyEnforceRange was the other obvious alternative and is strictly
         // worse: it hands the motion to ListView's velocity-based move, which
         // loses a race it cannot win, because the frame height is animating
         // underneath and the target keeps moving. Measured 236 against 784 and
         // 523 against 886 -- sampled well after both animations should have
         // finished, so that is not lag -- and it overshoots the wrong way on a
         // reversal.
-        // Written, NOT bound.
-        //
-        // `contentY: currentItem.y` is the obvious form and it closes a loop
-        // with ListView's own layout: contentY decides which delegates exist,
-        // instantiating one changes contentHeight and the y of everything after
-        // it, and currentItem.y is exactly what the binding reads. Qt catches it
-        // -- "Binding loop detected for property contentY" -- and BREAKS the
-        // binding, which leaves the rail parked wherever it was and the reader
-        // showing the wrong entry. (The probes missed this: their delegates were
-        // fixed-height and all within cacheBuffer from the first frame, so
-        // nothing was ever created mid-move.)
-        //
-        // Driving it from the two signals that actually mean "the current entry
-        // moved" is the same value with no cycle, and the Behavior still
-        // animates the result.
         function pin(): void {
-            const it = rail.currentItem;
+            const it = root.body;
             if (it)
                 rail.contentY = it.y;
         }
 
-        // The index changed, so a different delegate is current.
-        onCurrentItemChanged: rail.pin()
-        Component.onCompleted: rail.pin()
+        Component.onCompleted: {
+            // Nothing else would bring the first entry into existence: with no
+            // currentIndex the view only builds what is around contentY, which
+            // starts at 0. Instant on purpose -- the open is the header's morph,
+            // not a rail move.
+            rail.positionViewAtIndex(root.index, ListView.Beginning);
+            rail.pin();
+        }
 
-        // The current entry itself moved without the index changing -- which is
-        // what happens when a neighbour ABOVE it finishes decoding and grows.
-        // Without this, a prefetch landing would slide the entry you are reading
-        // out from under you.
+        // The entry being read moved without the index changing -- which is what
+        // happens when a neighbour ABOVE it finishes decoding and grows. Without
+        // this, a prefetch landing would slide the entry you are reading out from
+        // under you.
         Connections {
-            target: rail.currentItem
+            target: root.body
             ignoreUnknownSignals: true
 
             function onYChanged(): void {
@@ -422,6 +465,31 @@ Item {
             // nothing else, so every neighbour draws its own image/swatch
             // immediately.
             handedOff: bodyDelegate.active ? (root.morphT >= 1 && !root.morphing) : true
+
+            // Stands in for ListView.currentItem, which the rail deliberately
+            // does not have. Whichever delegate is active announces itself, and
+            // hands the slot back if it is recycled while still active (which
+            // would otherwise leave the reader sizing itself off a dead object).
+            //
+            // Order-independent: on a step the outgoing delegate may clear the
+            // slot before or after the incoming one claims it, and the guard on
+            // identity makes both orders land the same way.
+            onActiveChanged: {
+                if (bodyDelegate.active)
+                    root.body = bodyDelegate;
+                else if (root.body === bodyDelegate)
+                    root.body = null;
+            }
+
+            Component.onCompleted: {
+                if (bodyDelegate.active)
+                    root.body = bodyDelegate;
+            }
+
+            Component.onDestruction: {
+                if (root.body === bodyDelegate)
+                    root.body = null;
+            }
         }
     }
 
