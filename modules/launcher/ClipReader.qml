@@ -84,11 +84,6 @@ Item {
     readonly property int maxHeight: Clipboard.readerMaxHeight
     readonly property int minWidth: Tokens.sizes.launcher.itemWidth
 
-    readonly property bool isImage: root.entry?.isImage ?? false
-    readonly property string colour: root.entry?.colour ?? ""
-    readonly property bool isColour: root.colour.length > 0
-    readonly property color colourValue: root.isColour ? root.colour : "transparent"
-
     // Forwarded to whichever body is being read. PgUp/PgDn/Home/End reach the
     // reader from Content.qml and belong to the entry, not to the rail -- the
     // rail is stepped by the list's own browse.
@@ -144,6 +139,10 @@ Item {
         root.resetZoom();
         root.exitCb = cb;
         root.exiting = true;
+        // The exit morph is aimed at the entry you are LEAVING FROM, which is
+        // the one being read now. Re-latch, since a browse has almost certainly
+        // moved off whatever the enter morph was aimed at.
+        root.beginMorph();
         slideAnim.from = root.slideY;
         slideAnim.to = targetY + root.rowAlignY;
         slideXAnim.from = root.slideX;
@@ -162,6 +161,7 @@ Item {
         slideAnim.stop();
         slideXAnim.stop();
         root.exiting = false;
+        root.beginMorph();
         slideAnim.from = root.slideY;
         slideAnim.to = 0;
         slideXAnim.from = root.slideX;
@@ -217,6 +217,7 @@ Item {
         slideXAnim.to = 0;
         slideAnim.start();
         slideXAnim.start();
+        beginMorph();
         morphT = 1;
     }
 
@@ -362,7 +363,30 @@ Item {
         // The preload, expressed as a pixel budget rather than a count, so it
         // self-scales: three max-height entries either side, and many more when
         // they are short.
-        cacheBuffer: 3 * root.maxHeight
+        //
+        // displayMargin, NOT cacheBuffer, and that is the difference between a
+        // delegate existing when you step onto it and not. cacheBuffer's items
+        // are created LAZILY, by a pass that runs once the view has gone idle --
+        // so for the first moment after opening, and for the whole of a fast
+        // browse, they are simply not there. Stepping onto one that is missing
+        // falls through to positionViewAtIndex below, which writes contentY from
+        // C++ and therefore does not animate: that is the one-frame teleport,
+        // both on the first step after opening (nothing above the entry the
+        // reader opened on had been built yet) and again in a burst.
+        // displayMargin extends the region the view treats as visible, so those
+        // delegates are built in the same pass as the visible ones.
+        //
+        // Plus whatever travel is still in flight, in the direction of travel. A
+        // browse retargets the rail before it has arrived, so during a burst the
+        // index runs ahead of contentY and the entry being stepped onto is
+        // further off than any fixed budget can cover -- the margin has to reach
+        // where the rail is GOING, not where it is. It costs nothing that was not
+        // about to be needed anyway: those are exactly the entries the rail is
+        // about to scroll past, and it collapses back to the base the moment the
+        // rail settles.
+        readonly property real lead: rail.target - rail.contentY
+        displayMarginBeginning: 3 * root.maxHeight + Math.max(0, -rail.lead)
+        displayMarginEnd: 3 * root.maxHeight + Math.max(0, rail.lead)
 
         // NOT padding -- nothing is drawn here, the rail never rests in it, and
         // `interactive: false` means it cannot be flicked into. It exists to put
@@ -411,10 +435,18 @@ Item {
         // 523 against 886 -- sampled well after both animations should have
         // finished, so that is not lag -- and it overshoots the wrong way on a
         // reversal.
+        //
+        // `target` is the same number kept separately, because contentY itself is
+        // the ANIMATED value and says nothing about where it is heading. The
+        // display margins above need the destination; see lead.
+        property real target: 0
+
         function pin(): void {
             const it = root.body;
-            if (it)
+            if (it) {
+                rail.target = it.y;
                 rail.contentY = it.y;
+            }
         }
 
         Component.onCompleted: {
@@ -423,6 +455,7 @@ Item {
             // starts at 0. Instant on purpose -- the open is the header's morph,
             // not a rail move.
             rail.positionViewAtIndex(root.index, ListView.Beginning);
+            rail.target = rail.contentY;
             rail.pin();
         }
 
@@ -457,14 +490,34 @@ Item {
 
             entry: modelData
             active: bodyDelegate.index === root.index
+            // Is the enter/exit morph aimed at THIS entry -- see root.morphIndex.
+            readonly property bool morphTarget: bodyDelegate.index === root.morphIndex
+
+            // Neighbours are the browse transition and nothing else. During the
+            // enter morph the frame is still animating down from the LIST's size,
+            // so everything below the entry being read is visible purely because
+            // the frame has not finished closing on it: opening on a one-line clip
+            // put the next two entries on screen for the length of the morph
+            // (measured: rail 181px tall around a 19px entry, with neighbours at
+            // y=31 and y=62). They are not sliding anywhere, so they read as
+            // stowaways rather than as motion.
+            //
+            // Gated on the INDEX still being the morph's own, not on the morph
+            // being in flight -- step before it lands and the rail really is
+            // browsing, so the neighbour arriving has to be visible. That is the
+            // same interruption morphIndex exists for.
+            visible: bodyDelegate.active || root.index !== root.morphIndex || !root.morphInFlight
             // Only the entry being read. Finding inside a neighbour has nothing
             // to scroll to, and it would cost a lowercased copy of every entry
             // on the rail per keystroke.
             findTerm: bodyDelegate.active ? root.findTerm : ""
-            // The leading-slot morph is aimed at the entry being entered and at
-            // nothing else, so every neighbour draws its own image/swatch
-            // immediately.
-            handedOff: bodyDelegate.active ? (root.morphT >= 1 && !root.morphing) : true
+            // The leading-slot morph is aimed at one entry and at nothing else,
+            // so every other body on the rail draws its own image/swatch
+            // immediately. Keyed on the morph's target rather than on `active`:
+            // step mid-morph and those stop being the same entry, and keying on
+            // active would then hide the arriving picture (which no morph is
+            // covering) while showing the departing one twice.
+            handedOff: !bodyDelegate.morphTarget || (root.morphT >= 1 && !root.morphing)
 
             // Stands in for ListView.currentItem, which the rail deliberately
             // does not have. Whichever delegate is active announces itself, and
@@ -481,14 +534,27 @@ Item {
                     root.body = null;
             }
 
+            // Same registration, same reasons, for the morph's target -- which is
+            // the same delegate as `body` right up until you step mid-morph.
+            onMorphTargetChanged: {
+                if (bodyDelegate.morphTarget)
+                    root.morphBody = bodyDelegate;
+                else if (root.morphBody === bodyDelegate)
+                    root.morphBody = null;
+            }
+
             Component.onCompleted: {
                 if (bodyDelegate.active)
                     root.body = bodyDelegate;
+                if (bodyDelegate.morphTarget)
+                    root.morphBody = bodyDelegate;
             }
 
             Component.onDestruction: {
                 if (root.body === bodyDelegate)
                     root.body = null;
+                if (root.morphBody === bodyDelegate)
+                    root.morphBody = null;
             }
         }
     }
@@ -508,6 +574,36 @@ Item {
             id: morphAnim
         }
     }
+
+    // The entry the morph is aimed at, LATCHED when it starts -- not read live
+    // off root.index, which is a different entry the moment you step before the
+    // morph has landed.
+    //
+    // Following the index instead is what made a quick step after opening on an
+    // image look like the next picture teleporting in: the overlay simply
+    // re-pointed at the arriving entry, so its image appeared at whatever size
+    // the curve happened to be at, parked near the header for the rest of the
+    // morph, and then popped into the body. Traced with the overlay drawing
+    // entry 7 at 488px wide and, on the very next sample, entry 8 at 585px --
+    // with entry 8's real image held hidden underneath the whole time, so the
+    // rail scrolled an empty box into place.
+    //
+    // Latched, the two motions are independent and both stay correct: the morph
+    // finishes onto the entry it lifted from (following it up as the rail
+    // carries it away, see morphBodyTop), and the entry you stepped to is just
+    // an ordinary neighbour sliding in with its picture already drawn.
+    property int morphIndex: root.index
+    // Its live body, registered by the delegate exactly as `body` is, and for
+    // the same reason -- the rail has no currentItem to ask.
+    property var morphBody: null
+
+    function beginMorph(): void {
+        root.morphIndex = root.index;
+    }
+
+    // The whole enter/exit morph, including the tail of the overshoot. See the
+    // note on `morphing` for why the value alone is not enough.
+    readonly property bool morphInFlight: root.morphing || root.morphT < 1
 
     // The handoff between a morph and the body item it lands on is keyed on the
     // ANIMATION, not on morphT reaching 1 -- the expressive spatial curve
@@ -532,144 +628,192 @@ Item {
     readonly property real slotS: headerIcon.implicitWidth
     readonly property real slotX: Tokens.padding.large + root.slideX
     readonly property real slotY: Tokens.padding.large + root.slidePos + (header.implicitHeight - root.slotS) / 2
-    // Top of the body's content in root coordinates -- where both morphs land.
-    // The rail's own scroll is not in this: the entry being morphed to is pinned
-    // to the top of the frame, so the only offset that matters is how far that
-    // entry is scrolled WITHIN itself.
-    readonly property real bodyTop: Tokens.padding.large + root.slidePos + header.implicitHeight + Tokens.spacing.small - (root.body?.scrollY ?? 0)
+    // Top of the morph target's content in root coordinates -- where both morphs
+    // land. Two offsets come off it: how far that entry is scrolled WITHIN
+    // itself, and how far the rail has carried it since.
+    //
+    // The second is zero for an uninterrupted morph -- the entry being morphed
+    // to is the one pinned to the top of the frame, so contentY IS its y. It
+    // stops being zero the moment you step mid-morph, and then it is exactly
+    // what keeps the overlay glued to the entry it is landing on while the rail
+    // slides that entry out of the frame. Without it the morph would finish onto
+    // empty space and hand off to a body that had already moved.
+    readonly property real morphBodyTop: Tokens.padding.large + root.slidePos + header.implicitHeight + Tokens.spacing.small - (root.morphBody?.scrollY ?? 0) - (root.morphBody ? rail.contentY - root.morphBody.y : 0)
 
     // Geometry of the body being morphed to, read off the live ClipBody rather
     // than recomputed here -- so the handoff at t=1 is exact by construction
     // instead of by two expressions agreeing.
-    readonly property real bodyContentW: root.body?.contentW ?? (root.minWidth - Tokens.padding.large * 2)
-    readonly property real bodyImgBoxW: root.body?.imgBoxW ?? 0
-    readonly property real bodyImgFitH: root.body?.imgFitH ?? 0
-    readonly property string bodyImgSrc: root.body?.imgSrc ?? ""
-    readonly property int bodyImgDecodeW: root.body?.imgDecodeW ?? Clipboard.readerMaxWidth
-    readonly property bool bodyImgReady: root.body?.imgReady ?? false
-    readonly property real bodySwatchHeight: root.body?.swatchHeight ?? 0
+    readonly property bool morphIsImage: root.morphBody?.isImage ?? false
+    readonly property bool morphIsColour: root.morphBody?.isColour ?? false
+    readonly property color morphColour: root.morphBody?.colourValue ?? "transparent"
+    readonly property real bodyContentW: root.morphBody?.contentW ?? (root.minWidth - Tokens.padding.large * 2)
+    // Where that content box sits inside the frame -- non-zero exactly while the
+    // frame is a different width from the entry, which is the whole of a move.
+    // See ClipBody.contentX; reading it rather than restating it is what keeps
+    // the landing exact.
+    readonly property real bodyContentX: root.morphBody?.contentX ?? 0
+    readonly property real bodyImgBoxW: root.morphBody?.imgBoxW ?? 0
+    readonly property real bodyImgFitH: root.morphBody?.imgFitH ?? 0
+    readonly property string bodyImgSrc: root.morphBody?.imgSrc ?? ""
+    readonly property int bodyImgDecodeW: root.morphBody?.imgDecodeW ?? Clipboard.readerMaxWidth
+    readonly property bool bodyImgReady: root.morphBody?.imgReady ?? false
+    readonly property real bodySwatchHeight: root.morphBody?.swatchHeight ?? 0
 
+    // Both overlays live in here, and it exists for one edge: the top.
+    //
+    // A morph is allowed over the header -- it is LIFTING OFF the header's icon
+    // slot, so at t=0 it is entirely inside the header's band and it grows out of
+    // it. What is not allowed is the tail of an interrupted morph, which rides its
+    // entry out of the frame (see morphBodyTop) and, unclipped, swept a
+    // full-size picture straight across the title on its way up.
+    //
+    // So the cut travels with the morph: at t=0 the top edge is on the slot, which
+    // is exactly where the overlay starts, so nothing is cut and the lift is
+    // untouched. At t=1 it is exactly the rail's own top edge, so the ride-out
+    // passes UNDER the header like any other rail content. In between the two
+    // interpolate together -- the clip edge and the overlay's own top are the same
+    // expression, one pixel apart -- so there is no moment where the cut is ahead
+    // of the picture.
+    //
+    // Only the top, and the bottom is deliberately whatever the overlays need.
+    // Pulling it in to the rail's would clip the growing picture's lower edge
+    // while the frame is still opening, and the EXIT morph leaves the frame
+    // entirely -- it folds back down onto a row that can be most of a list-height
+    // below, long after the frame has started shrinking away from it.
     Item {
-        id: morphImg
+        id: morphClip
 
-        // A plain scissor clip, NOT a StyledClippingRect. That type does its
-        // rounded clipping by rendering the content into a ShaderEffectSource
-        // and sampling the result, and a whole extra texture round-trip costs
-        // real detail: measured against the body Image at identical geometry,
-        // the picture carried 7% less high-frequency energy inside the
-        // ClippingRectangle than outside it, so the handoff at t=1 read as the
-        // image suddenly sharpening. Scissor clipping is exact -- with it the
-        // two paths measure 0.992 of each other, i.e. the same picture.
-        //
-        // The cost is that the corners no longer round during the morph (the
-        // backing rect below still does, for entries whose thumbnail has not
-        // decoded). An 8px radius on a 41px box for the first frames is a
-        // cheaper thing to lose than a visible snap on a 968px one.
         clip: true
+        width: root.width
+        y: Math.min(rail.y, root.slotY + (rail.y - root.slotY) * Math.min(1, root.morphT)) - 1
+        height: Math.max(root.height - y, morphImg.y + morphImg.height, morphSwatch.y + morphSwatch.height)
 
-        // The rect the body's image actually paints -- the same imgBoxW the body
-        // Image is sized to, so the handoff at t=1 is exact. Only horizontal
-        // centring can occur: the box is the image's own shape, so there is no
-        // letterbox.
-        readonly property real fitW: root.bodyImgBoxW > 0 ? root.bodyImgBoxW : root.bodyContentW
-        readonly property real fitH: root.bodyImgBoxW > 0 ? root.bodyImgFitH : root.bodyContentW
-        readonly property real dstX: Tokens.padding.large + (root.bodyContentW - fitW) / 2
+        Item {
+            id: morphImg
 
-        // POSITION rides the raw curve, including its 1.39% overshoot -- that is
-        // the bounce, and it is shared with the header, the window and every
-        // other spatial move in the shell.
-        //
-        // SIZE deliberately does not. The texture is decoded at exactly fitW, so
-        // any overshoot past 1 asks the image to be drawn larger than it has
-        // pixels for: a magnification, soft for the whole tail of the animation,
-        // resolving in one frame the instant the curve settles. Sizing the
-        // texture for the peak instead only moves that softness onto the resting
-        // image, which is worse. Clamping here means the morph only ever
-        // minifies -- the direction with real pixels behind it -- and the last
-        // frame of the morph is pixel-identical to the body image it hands off
-        // to. The 13px of size bounce this gives up is the cheapest part of the
-        // overshoot; the travel still carries it.
-        readonly property real sizeT: Math.min(1, root.morphT)
+            // A plain scissor clip, NOT a StyledClippingRect. That type does its
+            // rounded clipping by rendering the content into a ShaderEffectSource
+            // and sampling the result, and a whole extra texture round-trip costs
+            // real detail: measured against the body Image at identical geometry,
+            // the picture carried 7% less high-frequency energy inside the
+            // ClippingRectangle than outside it, so the handoff at t=1 read as the
+            // image suddenly sharpening. Scissor clipping is exact -- with it the
+            // two paths measure 0.992 of each other, i.e. the same picture.
+            //
+            // The cost is that the corners no longer round during the morph (the
+            // backing rect below still does, for entries whose thumbnail has not
+            // decoded). An 8px radius on a 41px box for the first frames is a
+            // cheaper thing to lose than a visible snap on a 968px one.
+            clip: true
 
-        visible: root.isImage && (root.morphing || root.morphT < 1)
-        x: root.slotX + (dstX - root.slotX) * root.morphT
-        y: root.slotY + (root.bodyTop - root.slotY) * root.morphT
-        width: root.slotS + (fitW - root.slotS) * sizeT
-        height: root.slotS + (fitH - root.slotS) * sizeT
+            // The rect the body's image actually paints -- the same imgBoxW the body
+            // Image is sized to, so the handoff at t=1 is exact. Only horizontal
+            // centring can occur: the box is the image's own shape, so there is no
+            // letterbox.
+            readonly property real fitW: root.bodyImgBoxW > 0 ? root.bodyImgBoxW : root.bodyContentW
+            readonly property real fitH: root.bodyImgBoxW > 0 ? root.bodyImgFitH : root.bodyContentW
+            readonly property real dstX: Tokens.padding.large + root.bodyContentX + (root.bodyContentW - fitW) / 2
 
-        StyledRect {
-            anchors.fill: parent
-            // Clamped: morphT passes 1 on the overshoot, which would otherwise
-            // ask for a negative radius.
-            radius: Tokens.rounding.small * Math.max(0, 1 - root.morphT)
-            color: Colours.palette.m3surfaceContainerHigh
-        }
+            // POSITION rides the raw curve, including its 1.39% overshoot -- that is
+            // the bounce, and it is shared with the header, the window and every
+            // other spatial move in the shell.
+            //
+            // SIZE deliberately does not. The texture is decoded at exactly fitW, so
+            // any overshoot past 1 asks the image to be drawn larger than it has
+            // pixels for: a magnification, soft for the whole tail of the animation,
+            // resolving in one frame the instant the curve settles. Sizing the
+            // texture for the peak instead only moves that softness onto the resting
+            // image, which is worse. Clamping here means the morph only ever
+            // minifies -- the direction with real pixels behind it -- and the last
+            // frame of the morph is pixel-identical to the body image it hands off
+            // to. The 13px of size bounce this gives up is the cheapest part of the
+            // overshoot; the travel still carries it.
+            readonly property real sizeT: Math.min(1, root.morphT)
 
-        // The picture the row was already showing, scaled up. Same url and same
-        // sourceSize as ClipItem's `thumb` with caching on at both ends, so
-        // this is a synchronous QQuickPixmapCache hit and the morph has real
-        // content from its first frame. Blurry at full size, but it is the
-        // right image at the right aspect, and mImg fades over it. Underneath
-        // sits the rect's surface colour, which now only shows for entries
-        // whose row thumbnail has not decoded yet either.
-        Image {
-            id: mThumb
+            visible: root.morphIsImage && root.morphInFlight
+            x: root.slotX + (dstX - root.slotX) * root.morphT
+            // Relative to morphClip, which is what carries the cut. The absolute
+            // expression is unchanged.
+            y: root.slotY + (root.morphBodyTop - root.slotY) * root.morphT - morphClip.y
+            width: root.slotS + (fitW - root.slotS) * sizeT
+            height: root.slotS + (fitH - root.slotS) * sizeT
 
-            anchors.fill: parent
-            source: root.bodyImgSrc
-            fillMode: Image.PreserveAspectCrop
-            cache: !Clipboard.noCache
-            asynchronous: true
-            sourceSize.width: root.slotS * 2
-            sourceSize.height: root.slotS * 2
-        }
+            StyledRect {
+                anchors.fill: parent
+                // Clamped: morphT passes 1 on the overshoot, which would otherwise
+                // ask for a negative radius.
+                radius: Tokens.rounding.small * Math.max(0, 1 - root.morphT)
+                color: Colours.palette.m3surfaceContainerHigh
+            }
 
-        Image {
-            id: mImg
+            // The picture the row was already showing, scaled up. Same url and same
+            // sourceSize as ClipItem's `thumb` with caching on at both ends, so
+            // this is a synchronous QQuickPixmapCache hit and the morph has real
+            // content from its first frame. Blurry at full size, but it is the
+            // right image at the right aspect, and mImg fades over it. Underneath
+            // sits the rect's surface colour, which now only shows for entries
+            // whose row thumbnail has not decoded yet either.
+            Image {
+                id: mThumb
 
-            anchors.fill: parent
-            source: root.bodyImgSrc
-            fillMode: Image.PreserveAspectCrop
-            // Shares its decode with the body's own image -- see the note there.
-            cache: !Clipboard.noCache
-            asynchronous: true
-            // This is the one that actually needs the mipmaps. The morph draws
-            // this texture into a box that starts at slotS (~41px) and grows to
-            // imgBoxW, so early frames are a 20x-plus reduction. Four bilinear
-            // taps cannot represent that and shimmer instead; a mip chain
-            // pre-averages it. The extra softness only exists while the box is
-            // tiny, which is exactly when there is no detail to lose.
-            mipmap: true
-            sourceSize.width: root.bodyImgDecodeW
-            // Cross-fade over the thumbnail rather than popping. Effects-fast,
-            // not spatial: the geometry is already animating underneath and a
-            // slow fade would just read as the picture arriving late.
-            opacity: root.bodyImgReady ? 1 : 0
+                anchors.fill: parent
+                source: root.bodyImgSrc
+                fillMode: Image.PreserveAspectCrop
+                cache: !Clipboard.noCache
+                asynchronous: true
+                sourceSize.width: root.slotS * 2
+                sourceSize.height: root.slotS * 2
+            }
 
-            Behavior on opacity {
-                Anim {
-                    type: Anim.FastEffects
+            Image {
+                id: mImg
+
+                anchors.fill: parent
+                source: root.bodyImgSrc
+                fillMode: Image.PreserveAspectCrop
+                // Shares its decode with the body's own image -- see the note there.
+                cache: !Clipboard.noCache
+                asynchronous: true
+                // This is the one that actually needs the mipmaps. The morph draws
+                // this texture into a box that starts at slotS (~41px) and grows to
+                // imgBoxW, so early frames are a 20x-plus reduction. Four bilinear
+                // taps cannot represent that and shimmer instead; a mip chain
+                // pre-averages it. The extra softness only exists while the box is
+                // tiny, which is exactly when there is no detail to lose.
+                mipmap: true
+                sourceSize.width: root.bodyImgDecodeW
+                // Cross-fade over the thumbnail rather than popping. Effects-fast,
+                // not spatial: the geometry is already animating underneath and a
+                // slow fade would just read as the picture arriving late.
+                opacity: root.bodyImgReady ? 1 : 0
+
+                Behavior on opacity {
+                    Anim {
+                        type: Anim.FastEffects
+                    }
                 }
             }
         }
-    }
 
-    // The colour swatch's morph. Full body width at t=1, so the only endpoint
-    // that differs from the slot is the size -- and the radius stays put, since
-    // both the row's swatch and the body's use rounding.small. A plain rect,
-    // not a clipping one: there is no child to clip, and a Rectangle composites
-    // a semi-transparent colour without going through a shader.
-    StyledRect {
-        id: morphSwatch
+        // The colour swatch's morph. Full body width at t=1, so the only endpoint
+        // that differs from the slot is the size -- and the radius stays put, since
+        // both the row's swatch and the body's use rounding.small. A plain rect,
+        // not a clipping one: there is no child to clip, and a Rectangle composites
+        // a semi-transparent colour without going through a shader.
+        StyledRect {
+            id: morphSwatch
 
-        visible: root.isColour && (root.morphing || root.morphT < 1)
-        x: root.slotX + (Tokens.padding.large - root.slotX) * root.morphT
-        y: root.slotY + (root.bodyTop - root.slotY) * root.morphT
-        width: root.slotS + (root.bodyContentW - root.slotS) * root.morphT
-        height: root.slotS + (root.bodySwatchHeight - root.slotS) * root.morphT
-        radius: Tokens.rounding.small
-        color: root.colourValue
-        border.width: 1
-        border.color: Colours.palette.m3outlineVariant
+            visible: root.morphIsColour && root.morphInFlight
+            x: root.slotX + (Tokens.padding.large + root.bodyContentX - root.slotX) * root.morphT
+            // Relative to morphClip, which is what carries the cut. The absolute
+            // expression is unchanged.
+            y: root.slotY + (root.morphBodyTop - root.slotY) * root.morphT - morphClip.y
+            width: root.slotS + (root.bodyContentW - root.slotS) * root.morphT
+            height: root.slotS + (root.bodySwatchHeight - root.slotS) * root.morphT
+            radius: Tokens.rounding.small
+            color: root.morphColour
+            border.width: 1
+            border.color: Colours.palette.m3outlineVariant
+        }
     }
 }
