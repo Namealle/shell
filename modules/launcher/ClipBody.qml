@@ -7,6 +7,7 @@ import Caelestia.Config
 import qs.components
 import qs.components.containers
 import qs.components.controls
+import qs.components.effects
 import qs.services
 import qs.modules.launcher.services
 
@@ -502,11 +503,128 @@ Item {
     // once the text lands, instead of pinching shut and springing back.
     readonly property real minBodyHeight: 96
 
+    // How far the edge fades run. A RAMP LENGTH and nothing else -- it reserves
+    // no space, adds nothing to this body's height, and does not widen the
+    // scroll extent. The mask simply fades the content that is already drawn in
+    // the last (or first) 16px, which is what the fade is for: an edge with more
+    // past it should go soft, and there is by definition content there to soften.
+    //
+    // It did reserve space, briefly, on the theory that it was replacing the
+    // reader's bottom padding and the sum should hold. That padding was itself
+    // the bug. The reader has no visible bottom edge to pad against -- the
+    // launcher is one continuous surface and the only boundary below the body is
+    // the search bar, which Content.qml already holds off by its own padding.
+    // So the two stacked: 16px of reader padding, then 16px of launcher gap,
+    // measured 37px from the last row's ink to the search pill against 13px from
+    // the header's. Charging the ramp for space that was double-counted anyway
+    // is what put it there; not charging it is the whole fix.
+    readonly property real fadeRamp: Tokens.padding.large
+
+    // The height the content actually occupies. Named separately from the
+    // Flickable's contentHeight because they were briefly different (see
+    // fadeRamp) and the distinction is worth keeping legible: the body sizes to
+    // its CONTENT, and nothing about the fade may enter that number.
+    readonly property real contentH: root.isText ? bodyRow.implicitHeight : (root.isColour ? colourBody.implicitHeight : image.height)
+
     // Never below the floor, and never SHRINKING below it either: a body whose
     // content is genuinely shorter than the floor (a two-word clip) reports its
     // real height, so the frame still cuts to its content.
-    readonly property real liveHeight: root.isText ? Math.min(root.maxHeight, viewport.contentHeight) : (root.isColour ? root.swatchHeight : (root.isImage ? root.imgFitH : viewport.contentHeight))
+    readonly property real liveHeight: root.isText ? Math.min(root.maxHeight, root.contentH) : (root.isColour ? root.swatchHeight : (root.isImage ? root.imgFitH : root.contentH))
     implicitHeight: root.contentKnown ? Math.min(root.maxHeight, root.liveHeight) : root.minBodyHeight
+
+    // -- edge fades --
+    //
+    // The same effect the settings pages use, and deliberately the same code
+    // shape: VerticalFadeFlickable's gradient mask, its visibleArea tests, and
+    // its SlowEffects timing. Not that component itself, because the fade has to
+    // cover the GUTTER as well as the text -- the line numbers are drawn outside
+    // the Flickable (see the overlay at the bottom of this file), so fading only
+    // the Flickable would leave numbers sitting at full strength beside text
+    // that had already faded out. The mask goes on the whole body instead.
+    //
+    // Both ends are pure ramp, and neither costs a pixel of layout. An edge with
+    // content past it always HAS something drawn in its last 16px -- a row
+    // scrolled up under the header, a row about to be scrolled to -- so there is
+    // never anything to reserve, only something to soften. An edge with nothing
+    // past it keeps its hard cut, which is correct: that is the end of the text,
+    // not a boundary you are looking through.
+    readonly property bool topOverflow: viewport.visibleArea.yPosition > 0
+    readonly property bool bottomOverflow: viewport.visibleArea.yPosition + viewport.visibleArea.heightRatio < 1
+    // 1 is opaque, i.e. no fade at all -- so an unscrolled body, a body whose
+    // content fits, and one scrolled to its true end all draw with a hard edge
+    // and nothing else. Only an edge with content actually past it is softened.
+    property real topFade: root.topOverflow ? 0 : 1
+    property real bottomFade: root.bottomOverflow ? 0 : 1
+
+    Behavior on topFade {
+        Anim {
+            type: Anim.SlowEffects
+        }
+    }
+
+    Behavior on bottomFade {
+        Anim {
+            type: Anim.SlowEffects
+        }
+    }
+
+    // The ramp as a fraction of this body's height, since gradient stops are
+    // positions and fadeRamp is pixels -- so the ramp is 16px on a short entry
+    // and 16px on a capped one, not 16% of either.
+    //
+    // Capped at half, which is not a formality: a body can be shorter than two
+    // ramps (a two-word clip is ~20px of content), and uncapped the top stop
+    // would sort BELOW the bottom one. Gradient stops out of order do not
+    // render the obvious thing. Neither fade can be lit on a body that small --
+    // nothing overflows -- so the clamp only ever governs a mask that is
+    // uniformly opaque anyway.
+    readonly property real fadeFrac: root.height > 0 ? Math.min(0.5, root.fadeRamp / root.height) : 0
+
+    // Constant while this is the entry being read, rather than gated on the fade
+    // being visible. Toggling it would re-render the text through an FBO and
+    // back every time a fade lit or cleared, and NativeRendering glyphs do not
+    // necessarily rasterise identically on both paths -- a weight shift in the
+    // body at the exact moment you reach either end of it, and now twice as many
+    // moments to catch it at. One layer for the one body being read is the
+    // cheaper end of that trade.
+    //
+    // Text only. An image body would have to make the same round trip, which is
+    // the resample the morph overlay's scissor clip exists to avoid; and neither
+    // an image nor a swatch can overflow its viewport, so there is nothing here
+    // for them to fade.
+    layer.enabled: root.isText && root.active
+    layer.effect: Mask {
+        maskSource: fadeMask
+
+        Rectangle {
+            id: fadeMask
+
+            anchors.fill: parent
+            visible: false
+            layer.enabled: true
+
+            gradient: Gradient {
+                orientation: Gradient.Vertical
+
+                GradientStop {
+                    position: 0
+                    color: Qt.rgba(0, 0, 0, root.topFade)
+                }
+                GradientStop {
+                    position: root.fadeFrac
+                    color: Qt.rgba(0, 0, 0, 1)
+                }
+                GradientStop {
+                    position: 1 - root.fadeFrac
+                    color: Qt.rgba(0, 0, 0, 1)
+                }
+                GradientStop {
+                    position: 1
+                    color: Qt.rgba(0, 0, 0, root.bottomFade)
+                }
+            }
+        }
+    }
 
     // Whether this body has anything real to report a height from. False is the
     // cold case above: no decode, no ratio, nothing on disk yet.
@@ -613,8 +731,13 @@ Item {
     // synchronously by insert(), so every scroll target measures against this.
     readonly property real bodyHeight: root.isText ? bodyText.contentHeight : (root.isColour ? colourBody.implicitHeight : image.height)
 
+    // The furthest contentY can go. The fade adds nothing here -- it reserves no
+    // scroll range (see fadeRamp), so the end of the document is the end of the
+    // document, and the bottom fade clears itself the moment you reach it.
+    readonly property real maxScroll: Math.max(0, root.bodyHeight - viewport.height)
+
     function smoothScrollTo(y: real): void {
-        const to = Math.max(0, Math.min(y, Math.max(0, root.bodyHeight - viewport.height)));
+        const to = Math.max(0, Math.min(y, root.maxScroll));
         // Retarget in flight -- deliberately no stop() here. Killing the spring
         // would zero its velocity, which is the whole reason a held PgDn used to
         // re-accelerate from a standstill on every repeat.
@@ -852,7 +975,7 @@ Item {
         interactive: root.active
 
         contentWidth: width
-        contentHeight: root.isText ? bodyRow.implicitHeight : (root.isColour ? colourBody.implicitHeight : image.height)
+        contentHeight: root.contentH
 
         onContentYChanged: settle.restart()
         // Deliberately NOT hooked to onHeightChanged: the height animates through
