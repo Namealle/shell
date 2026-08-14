@@ -84,6 +84,24 @@ Item {
     readonly property int maxHeight: Clipboard.readerMaxHeight
     readonly property int minWidth: Tokens.sizes.launcher.itemWidth
 
+    // How far down the header sits, and NOT padding.large, for the same reason
+    // there is no padding below the body: the reader has no edge of its own to
+    // pad against. Content.qml already holds the whole content region a
+    // padding.large off the launcher's top, so an inset here was a second
+    // helping of it -- measured, the reader's title ink sat 13px lower than the
+    // list's for the same window edge.
+    //
+    // The row is the thing to match, not the window, and a row does not pad its
+    // content either -- it CENTRES it in itemHeight. So this is that centring,
+    // which puts the header exactly where the row it was lifted from would have
+    // drawn its own icon and title. See rowAlignY, which is the correction this
+    // makes unnecessary.
+    //
+    // Floored at 0 for the degenerate case of a header taller than a row; the
+    // morph's alignment stays correct there because rowAlignY re-derives from
+    // this rather than assuming it won.
+    readonly property real topInset: Math.max(0, (Tokens.sizes.launcher.itemHeight - header.implicitHeight) / 2)
+
     // Forwarded to whichever body is being read. PgUp/PgDn/Home/End reach the
     // reader from Content.qml and belong to the entry, not to the rail -- the
     // rail is stepped by the list's own browse.
@@ -121,10 +139,16 @@ Item {
     readonly property real slidePos: root.slideY - root.exitScroll
 
     // The header's resting insets differ from the row content's insets in the
-    // list (padding.large vs padding.medium horizontally; top padding vs row
-    // centring vertically). The slide targets the row CONTENT's exact position
-    // so the landing handoff is pixel-true, not "close then snap".
-    readonly property real rowAlignY: (Tokens.sizes.launcher.itemHeight - header.implicitHeight) / 2 - Tokens.padding.large
+    // list (padding.large vs padding.medium horizontally). The slide targets the
+    // row CONTENT's exact position so the landing handoff is pixel-true, not
+    // "close then snap".
+    //
+    // Vertically there is nothing left to correct, and that is topInset's doing
+    // rather than a coincidence: the header now RESTS at the offset a row centres
+    // its content to, so the enter slide is a pure translation from the row's y
+    // to zero. Left derived rather than written as 0 so it stays true if either
+    // end of that ever moves.
+    readonly property real rowAlignY: (Tokens.sizes.launcher.itemHeight - header.implicitHeight) / 2 - root.topInset
     readonly property real rowAlignX: Tokens.padding.medium - Tokens.padding.large
 
     function exitTo(targetY: real, cb: var): void {
@@ -204,8 +228,23 @@ Item {
     // neighbour already knows its height before you arrive at it. What replaces
     // it is ClipBody's own implicitHeight floor, for the cold entry beyond the
     // prefetch window.
-    readonly property real minHeight: header.implicitHeight + Tokens.padding.large * 2
-    implicitHeight: Math.max(root.minHeight, header.implicitHeight + (root.body?.implicitHeight ?? 0) + Tokens.padding.large * 2 + Tokens.spacing.small)
+
+    // No bottom padding, and note that this is padding.large ONCE where the
+    // other three sides get it -- deliberately, because the fourth side is not
+    // an edge. The reader has no border of its own: the launcher is a single
+    // surface, and below the body is Content.qml's own padding.large holding the
+    // search bar off. So a bottom inset here was never padding against
+    // anything, it was a second helping of the same gap, and it measured: 37px
+    // from the last row's ink down to the search pill against 13px from the
+    // header's ink down to that row. The soft edge that replaced it costs no
+    // space at all -- see ClipBody.fadeRamp.
+    //
+    // The rail's bottomMargin goes with it, and not for tidiness: rail height
+    // and body height are equal by construction (this implicitHeight is computed
+    // FROM the body's), and a rail left taller than the entry pinned to its top
+    // would show the gap to the NEXT entry in the difference.
+    readonly property real minHeight: header.implicitHeight + root.topInset * 2
+    implicitHeight: Math.max(root.minHeight, header.implicitHeight + (root.body?.implicitHeight ?? 0) + root.topInset + Tokens.spacing.small)
 
     Component.onCompleted: {
         // Start exactly on the row's content, become the header.
@@ -244,7 +283,7 @@ Item {
         // slideY/slideX carry the shared-element motion; the rail is anchored
         // below, so it compresses/unfolds with the header rather than being
         // overlapped.
-        anchors.topMargin: Tokens.padding.large + root.slidePos
+        anchors.topMargin: root.topInset + root.slidePos
         anchors.leftMargin: Tokens.padding.large + root.slideX
         anchors.bottomMargin: 0
 
@@ -323,7 +362,7 @@ Item {
         anchors.bottom: parent.bottom
         anchors.leftMargin: Tokens.padding.large
         anchors.rightMargin: Tokens.padding.large
-        anchors.bottomMargin: Tokens.padding.large
+        anchors.bottomMargin: 0
 
         // The frame. Both entries in flight have their own size and the frame is
         // a third size on its way between them, so whatever hangs outside is cut
@@ -627,7 +666,7 @@ Item {
     // an empty rect. They have to move together or that silently stops working.
     readonly property real slotS: headerIcon.implicitWidth
     readonly property real slotX: Tokens.padding.large + root.slideX
-    readonly property real slotY: Tokens.padding.large + root.slidePos + (header.implicitHeight - root.slotS) / 2
+    readonly property real slotY: root.topInset + root.slidePos + (header.implicitHeight - root.slotS) / 2
     // Top of the morph target's content in root coordinates -- where both morphs
     // land. Two offsets come off it: how far that entry is scrolled WITHIN
     // itself, and how far the rail has carried it since.
@@ -638,7 +677,7 @@ Item {
     // what keeps the overlay glued to the entry it is landing on while the rail
     // slides that entry out of the frame. Without it the morph would finish onto
     // empty space and hand off to a body that had already moved.
-    readonly property real morphBodyTop: Tokens.padding.large + root.slidePos + header.implicitHeight + Tokens.spacing.small - (root.morphBody?.scrollY ?? 0) - (root.morphBody ? rail.contentY - root.morphBody.y : 0)
+    readonly property real morphBodyTop: root.topInset + root.slidePos + header.implicitHeight + Tokens.spacing.small - (root.morphBody?.scrollY ?? 0) - (root.morphBody ? rail.contentY - root.morphBody.y : 0)
 
     // Geometry of the body being morphed to, read off the live ClipBody rather
     // than recomputed here -- so the handoff at t=1 is exact by construction
