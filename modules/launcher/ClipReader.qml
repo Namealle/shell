@@ -698,6 +698,102 @@ Item {
     readonly property bool bodyImgReady: root.morphBody?.imgReady ?? false
     readonly property real bodySwatchHeight: root.morphBody?.swatchHeight ?? 0
 
+    // -- corner rounding --
+    //
+    // The row's thumbnail is a rounded square (ClipItem's thumbWrapper, a
+    // StyledClippingRect at rounding.small) and the reader's image is square, so
+    // the morph travels between the two. It did not: the scissor clip below is
+    // exact but cannot round, so the corners changed in one frame at whichever
+    // end the overlay handed off -- most visibly on the exit, where a square
+    // picture became a rounded thumbnail the instant the overlay went away.
+    //
+    // Rounding costs a texture round trip however it is done. Quickshell's
+    // ClippingRectangle renders its content through a ShaderEffectSource and
+    // samples it in a shader, at every radius including 0 -- there is no
+    // rectangular fast path -- and a layer + Mask is the same trip by another
+    // name.
+    //
+    // How much that trip actually costs is worth stating precisely, because the
+    // number this file used to carry (7% less high-frequency energy, which read
+    // as the picture snapping into focus at the t=1 landing) does not reproduce.
+    // Measured on a round trip at the seam's box size, against the same texture
+    // drawn straight: pixel-IDENTICAL at integer positions (max channel
+    // difference 0/255), and 0.99 of the detail at fractional ones, i.e. the cost
+    // is a second bilinear sample and nothing more. That was measured on
+    // layer.enabled rather than on ClippingRectangle itself, which cannot be
+    // loaded outside the quickshell binary -- so it is the mechanism that was
+    // tested, not the component. Treat 7% as unexplained rather than as refuted.
+    //
+    // Either way the conservative arrangement is the same, and it is cheap: carry
+    // the rounding only for the end of the morph that is actually round. The
+    // radius reaches 0 exactly at roundEnd and the path switches there too, so
+    // the seam is the same box, the same texture and square corners on both
+    // sides -- geometrically identical, whatever the sampling does. And the t=1
+    // landing, the one that sits still at full size and was the original
+    // complaint, never enters the rounded path at all.
+    //
+    // Deliberately StyledClippingRect and not a Mask effect: the exit lands on
+    // ClipItem's thumbWrapper, which IS a StyledClippingRect at this radius, so
+    // matching the component matches its antialiasing and its shader. A mask that
+    // merely looked similar would leave the pop where it is, just smaller.
+    readonly property real roundEnd: 0.25
+    readonly property bool morphRounded: root.morphT < root.roundEnd
+    // Clamped at both ends: morphT overshoots past 1, and the exit can drive it
+    // to exactly 0 where the row's own radius takes over.
+    readonly property real morphRadius: Tokens.rounding.small * Math.max(0, Math.min(1, 1 - root.morphT / root.roundEnd))
+
+    // The two copies of the picture the overlay draws, defined once and
+    // instantiated in both clip paths. Same url, same sourceSize, same fillMode,
+    // caching on at both ends, so the two instantiations resolve to ONE texture
+    // and cost no second decode -- the same sharing that makes the row's
+    // thumbnail a synchronous cache hit here in the first place.
+    component MorphPicture: Item {
+        // The picture the row was already showing, scaled up. Blurry at full
+        // size, but it is the right image at the right aspect, and mImg fades
+        // over it. Underneath sits the container's surface colour, which only
+        // shows for entries whose row thumbnail has not decoded either.
+        Image {
+            id: mThumb
+
+            anchors.fill: parent
+            source: root.bodyImgSrc
+            fillMode: Image.PreserveAspectCrop
+            cache: !Clipboard.noCache
+            asynchronous: true
+            sourceSize.width: root.slotS * 2
+            sourceSize.height: root.slotS * 2
+        }
+
+        Image {
+            id: mImg
+
+            anchors.fill: parent
+            source: root.bodyImgSrc
+            fillMode: Image.PreserveAspectCrop
+            // Shares its decode with the body's own image -- see the note there.
+            cache: !Clipboard.noCache
+            asynchronous: true
+            // This is the one that actually needs the mipmaps. The morph draws
+            // this texture into a box that starts at slotS (~41px) and grows to
+            // imgBoxW, so early frames are a 20x-plus reduction. Four bilinear
+            // taps cannot represent that and shimmer instead; a mip chain
+            // pre-averages it. The extra softness only exists while the box is
+            // tiny, which is exactly when there is no detail to lose.
+            mipmap: true
+            sourceSize.width: root.bodyImgDecodeW
+            // Cross-fade over the thumbnail rather than popping. Effects-fast,
+            // not spatial: the geometry is already animating underneath and a
+            // slow fade would just read as the picture arriving late.
+            opacity: root.bodyImgReady ? 1 : 0
+
+            Behavior on opacity {
+                Anim {
+                    type: Anim.FastEffects
+                }
+            }
+        }
+    }
+
     // Both overlays live in here, and it exists for one edge: the top.
     //
     // A morph is allowed over the header -- it is LIFTING OFF the header's icon
@@ -730,20 +826,9 @@ Item {
         Item {
             id: morphImg
 
-            // A plain scissor clip, NOT a StyledClippingRect. That type does its
-            // rounded clipping by rendering the content into a ShaderEffectSource
-            // and sampling the result, and a whole extra texture round-trip costs
-            // real detail: measured against the body Image at identical geometry,
-            // the picture carried 7% less high-frequency energy inside the
-            // ClippingRectangle than outside it, so the handoff at t=1 read as the
-            // image suddenly sharpening. Scissor clipping is exact -- with it the
-            // two paths measure 0.992 of each other, i.e. the same picture.
-            //
-            // The cost is that the corners no longer round during the morph (the
-            // backing rect below still does, for entries whose thumbnail has not
-            // decoded). An 8px radius on a 41px box for the first frames is a
-            // cheaper thing to lose than a visible snap on a 968px one.
-            clip: true
+            // Geometry only -- the clipping lives in the two children, which is
+            // what lets the morph be rounded at the row end and scissor-exact at
+            // the body end. See root.roundEnd.
 
             // The rect the body's image actually paints -- the same imgBoxW the body
             // Image is sized to, so the handoff at t=1 is exact. Only horizontal
@@ -788,59 +873,39 @@ Item {
             width: root.slotS + (fitW - root.slotS) * sizeT
             height: root.slotS + (fitH - root.slotS) * sizeT
 
-            StyledRect {
+            // The rounded end of the morph -- the row's own component, at the
+            // row's own radius, so the exit landing is a handoff between two
+            // identical things rather than a resemblance. Carries the surface
+            // colour itself; no backing rect needed, since a ClippingRectangle
+            // paints one under its content.
+            StyledClippingRect {
                 anchors.fill: parent
-                // Clamped: morphT passes 1 on the overshoot, which would otherwise
-                // ask for a negative radius.
-                radius: Tokens.rounding.small * Math.max(0, 1 - root.morphT)
+                visible: root.morphRounded
+                radius: root.morphRadius
                 color: Colours.palette.m3surfaceContainerHigh
+
+                MorphPicture {
+                    anchors.fill: parent
+                }
             }
 
-            // The picture the row was already showing, scaled up. Same url and same
-            // sourceSize as ClipItem's `thumb` with caching on at both ends, so
-            // this is a synchronous QQuickPixmapCache hit and the morph has real
-            // content from its first frame. Blurry at full size, but it is the
-            // right image at the right aspect, and mImg fades over it. Underneath
-            // sits the rect's surface colour, which now only shows for entries
-            // whose row thumbnail has not decoded yet either.
-            Image {
-                id: mThumb
-
+            // The square end. A plain scissor clip: exact, no texture round trip,
+            // and therefore the path the t=1 landing on the body image is made
+            // through -- the landing hands off between two items drawn the same
+            // way, which is the property worth keeping whatever the round trip
+            // costs.
+            Item {
                 anchors.fill: parent
-                source: root.bodyImgSrc
-                fillMode: Image.PreserveAspectCrop
-                cache: !Clipboard.noCache
-                asynchronous: true
-                sourceSize.width: root.slotS * 2
-                sourceSize.height: root.slotS * 2
-            }
+                visible: !root.morphRounded
+                clip: true
 
-            Image {
-                id: mImg
+                StyledRect {
+                    anchors.fill: parent
+                    color: Colours.palette.m3surfaceContainerHigh
+                }
 
-                anchors.fill: parent
-                source: root.bodyImgSrc
-                fillMode: Image.PreserveAspectCrop
-                // Shares its decode with the body's own image -- see the note there.
-                cache: !Clipboard.noCache
-                asynchronous: true
-                // This is the one that actually needs the mipmaps. The morph draws
-                // this texture into a box that starts at slotS (~41px) and grows to
-                // imgBoxW, so early frames are a 20x-plus reduction. Four bilinear
-                // taps cannot represent that and shimmer instead; a mip chain
-                // pre-averages it. The extra softness only exists while the box is
-                // tiny, which is exactly when there is no detail to lose.
-                mipmap: true
-                sourceSize.width: root.bodyImgDecodeW
-                // Cross-fade over the thumbnail rather than popping. Effects-fast,
-                // not spatial: the geometry is already animating underneath and a
-                // slow fade would just read as the picture arriving late.
-                opacity: root.bodyImgReady ? 1 : 0
-
-                Behavior on opacity {
-                    Anim {
-                        type: Anim.FastEffects
-                    }
+                MorphPicture {
+                    anchors.fill: parent
                 }
             }
         }
