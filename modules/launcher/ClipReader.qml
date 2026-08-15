@@ -753,21 +753,32 @@ Item {
             readonly property real fitH: root.bodyImgBoxW > 0 ? root.bodyImgFitH : root.bodyContentW
             readonly property real dstX: Tokens.padding.large + root.bodyContentX + (root.bodyContentW - fitW) / 2
 
-            // POSITION rides the raw curve, including its 1.39% overshoot -- that is
-            // the bounce, and it is shared with the header, the window and every
-            // other spatial move in the shell.
+            // Size AND position both ride the raw curve, overshoot included. They
+            // have to be the same t or the picture does not bounce -- it slides.
             //
-            // SIZE deliberately does not. The texture is decoded at exactly fitW, so
-            // any overshoot past 1 asks the image to be drawn larger than it has
-            // pixels for: a magnification, soft for the whole tail of the animation,
-            // resolving in one frame the instant the curve settles. Sizing the
-            // texture for the peak instead only moves that softness onto the resting
-            // image, which is worse. Clamping here means the morph only ever
-            // minifies -- the direction with real pixels behind it -- and the last
-            // frame of the morph is pixel-identical to the body image it hands off
-            // to. The 13px of size bounce this gives up is the cheapest part of the
-            // overshoot; the travel still carries it.
-            readonly property real sizeT: Math.min(1, root.morphT)
+            // Size used to be clamped here, Math.min(1, morphT), on the argument
+            // that the texture is decoded at exactly fitW so drawing it past 1 is
+            // a magnification with no pixels behind it. That much is true. What
+            // the argument missed is what the clamp leaves behind: position kept
+            // riding the raw curve, so at the peak the picture was its final SIZE
+            // at an overshot POSITION -- a pure translation. A translation moves
+            // both edges the same way, so against a frame growing symmetrically
+            // around it, one edge opened a gap and the other stayed pinned. Which
+            // is what it looked like: a picture sliding sideways, on a launcher
+            // that was visibly bouncing. Reported as "the launcher overshoots but
+            // the image does not", and that was exactly right.
+            //
+            // The magnification it was avoiding is 1.39% -- the curve's peak, and
+            // the whole of it. Confirmed by running the morph at a 25% overshoot
+            // curve and 3000ms, where the softness IS visible and the bounce is
+            // unmistakable; at 1/18th of that, only the bounce survives.
+            //
+            // Still worth knowing if the curve is ever made more expressive: past
+            // roughly 5% the softness starts to cost more than the bounce is
+            // worth, and the fix then is a clamp again, not a bigger sourceSize
+            // (that only moves the softness onto the RESTING image, which is
+            // worse -- it is there all the time instead of for 200ms).
+            readonly property real sizeT: root.morphT
 
             visible: root.morphIsImage && root.morphInFlight
             x: root.slotX + (dstX - root.slotX) * root.morphT
