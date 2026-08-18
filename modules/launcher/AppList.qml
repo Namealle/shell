@@ -79,15 +79,63 @@ StyledListView {
     property var maskedEntry: null
     property int pendingIndex: -1
 
+    // The model change is taken OUT of the keypress and onto the next event
+    // loop turn, and that is the whole of it.
+    //
+    // Applied synchronously from the key handler it lands in the middle of
+    // ContentList still flipping readerActive/readerExiting and starting the
+    // reader's own animations, and Qt's view bookkeeping does not survive it:
+    // every displaced row is handed a ViewTransition.destination of (0,0) and
+    // moved there. A one-shot timer fixes it for two reasons, and the delay is
+    // not really either of them -- the change now arrives after Qt has finished
+    // with the previous one, and a lift and an unlift issued in the SAME turn
+    // coalesce into nothing at all, since `wantLift` returns to what the model
+    // already is. Which is the truthful outcome: at that speed nothing had
+    // moved yet, so there is nothing to undo.
+    //
+    // Deliberately a single turn and NOT "wait until the rows are at rest".
+    // Waiting for the transitions makes an exit sit through the whole entry
+    // animation before turning around, and leaves the row missing from the list
+    // long after the reader has closed.
+    //
+    // The mask is NOT deferred. It has to be immediate or the row would draw
+    // underneath its own header while that header flies.
+    property var wantLift: null
+    property int wantIndex: -1
+
     function setLifted(entry: var, index: int): void {
-        root.pendingIndex = index;
         root.maskedEntry = entry;
-        root.liftedEntry = entry;
+        root.wantLift = entry;
+        root.wantIndex = index;
+        coalesce.restart();
     }
 
     function clearLift(restoreIndex: int): void {
-        root.pendingIndex = restoreIndex;
+        root.wantLift = null;
+        root.wantIndex = restoreIndex;
+        coalesce.restart();
+    }
+
+    // Teardown, where no animation is owed to anyone.
+    function resetLift(): void {
+        coalesce.stop();
+        root.wantLift = null;
+        root.wantIndex = -1;
         root.liftedEntry = null;
+        root.maskedEntry = null;
+        root.pendingIndex = -1;
+    }
+
+    Timer {
+        id: coalesce
+
+        interval: 1
+        onTriggered: {
+            if (root.wantLift === root.liftedEntry)
+                return;
+            root.pendingIndex = root.wantIndex;
+            root.liftedEntry = root.wantLift;
+        }
     }
 
     readonly property var fullResults: root.resultsForText(root.displayText)
@@ -346,16 +394,65 @@ StyledListView {
             item.y = destY - Math.sign(travel) * height;
     }
 
+    // Where row `index` rests, from the LAYOUT rather than from anything
+    // animated. Every mode this list serves has fixed-height rows (see
+    // implicitHeight), so index math gives the settled position directly.
+    function rowY(index: int): real {
+        return originY + index * (Tokens.sizes.launcher.itemHeight + spacing);
+    }
+
+    // Backstop for a ViewTransition.destination that arrives corrupt. When a
+    // model change lands while an earlier change's transitions are still in
+    // flight, QQuickItemView hands every displaced row a destination of (0,0)
+    // and has usually MOVED the row there before this script runs.
+    //
+    // Stating the animation's `to` is half the answer; the item's CURRENT
+    // position can be a lie too. Two cases, and they look nothing like each
+    // other:
+    //
+    //   - Clobbered: the row was moved to the bogus destination, so it sits a
+    //     whole list away from its slot. There is nothing to animate from, so
+    //     drop it on the slot and let the animation find zero travel.
+    //   - Mid-flight: an interrupted lift leaves rows exactly on their
+    //     trajectory, a row-height or less off their slot. That position is the
+    //     truthful place to turn around from -- snapping it is what makes a
+    //     reversal teleport instead of reverse.
+    //
+    // Two row-heights separates them comfortably. Detected rather than assumed,
+    // so the healthy path is untouched: on an uninterrupted transition Qt's
+    // destination IS rowY(index) to the pixel and this falls through to
+    // capTravel exactly as before.
+    //
+    // It repairs the POSITION only. The target stays a `to:` binding, and that
+    // split is load-bearing: a Transition's animation objects are shared by
+    // every item transitioning at once, while its `to:` binding and
+    // ViewTransition.index are evaluated per item. Writing `someAnim.to = ...`
+    // from here has each item's job pick up whichever value the last
+    // ScriptAction left behind, landing the whole list one slot out.
+    function settleTo(item: Item, index: int, destY: real): void {
+        if (!item)
+            return;
+        const want = root.rowY(index);
+        if (Math.abs(destY - want) > 0.5) {
+            const stride = Tokens.sizes.launcher.itemHeight + root.spacing;
+            if (Math.abs(item.y - want) > stride * 2)
+                item.y = want;
+            return;
+        }
+        root.capTravel(item, want);
+    }
+
     move: Transition {
         id: moveT
 
         SequentialAnimation {
             ScriptAction {
-                script: root.capTravel(moveT.ViewTransition.item, moveT.ViewTransition.destination.y)
+                script: root.settleTo(moveT.ViewTransition.item, moveT.ViewTransition.index, moveT.ViewTransition.destination.y)
             }
             ParallelAnimation {
                 Anim {
                     property: "y"
+                    to: root.rowY(moveT.ViewTransition.index)
                 }
                 Anim {
                     type: Anim.DefaultEffects
@@ -367,14 +464,28 @@ StyledListView {
     }
 
     addDisplaced: Transition {
-        Anim {
-            property: "y"
-            type: Anim.StandardSmall
-        }
-        Anim {
-            type: Anim.DefaultEffects
-            property: "opacity"
-            to: 1
+        id: addDispT
+
+        // Sequential, like move and displaced, and for the same reason: the
+        // repair in settleTo has to have run before anything animates. Children
+        // of a Transition run in parallel, so a bare ScriptAction here would
+        // race the very animation it exists to correct.
+        SequentialAnimation {
+            ScriptAction {
+                script: root.settleTo(addDispT.ViewTransition.item, addDispT.ViewTransition.index, addDispT.ViewTransition.destination.y)
+            }
+            ParallelAnimation {
+                Anim {
+                    property: "y"
+                    type: Anim.StandardSmall
+                    to: root.rowY(addDispT.ViewTransition.index)
+                }
+                Anim {
+                    type: Anim.DefaultEffects
+                    property: "opacity"
+                    to: 1
+                }
+            }
         }
     }
 
@@ -383,11 +494,12 @@ StyledListView {
 
         SequentialAnimation {
             ScriptAction {
-                script: root.capTravel(dispT.ViewTransition.item, dispT.ViewTransition.destination.y)
+                script: root.settleTo(dispT.ViewTransition.item, dispT.ViewTransition.index, dispT.ViewTransition.destination.y)
             }
             ParallelAnimation {
                 Anim {
                     property: "y"
+                    to: root.rowY(dispT.ViewTransition.index)
                 }
                 Anim {
                     type: Anim.DefaultEffects
