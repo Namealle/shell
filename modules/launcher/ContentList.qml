@@ -62,11 +62,8 @@ Item {
     function resetReader(): void {
         partTimer.stop();
         const l = appList.item;
-        if (l) {
-            l.liftedEntry = null;
-            l.maskedEntry = null;
-            l.pendingIndex = -1;
-        }
+        if (l)
+            l.resetLift();
         readerEntry = null;
         readerStep = 0;
         readerActive = false;
@@ -90,7 +87,7 @@ Item {
             if (!r || !readerEntry || !l)
                 return;
             partTimer.stop();
-            if (l.liftedEntry !== readerEntry) {
+            if (l.wantLift !== readerEntry) {
                 const i = l.fullResults.indexOf(readerEntry);
                 l.setLifted(readerEntry, Math.max(0, Math.min(i, l.fullResults.length - 2)));
             }
@@ -236,6 +233,16 @@ Item {
             partTimer.fromIndex = l.currentIndex;
             readerActive = false;
             r.exitTo(target, () => {
+                // In order, and never partly: the row goes back into the model
+                // first (normally partTimer did that mid-slide already, and
+                // this is then a no-op), then the mask comes off. So the entry
+                // is never drawn twice, and never missing from both.
+                //
+                // Safe to run early -- which a close from the top row does, its
+                // header having no distance to travel, so the slide can settle
+                // inside this very call.
+                partTimer.stop();
+                root.reinsert();
                 l.maskedEntry = null;
                 root.readerEntry = null;
                 root.readerExiting = false;
@@ -250,7 +257,22 @@ Item {
     // seen parting mid-slide; early if a keypress needs the model settled first.
     function reinsert(): void {
         const l = appList.item;
-        if (!root.readerExiting || !l)
+        // Guarded on the LIFT, not on readerExiting. The exit handoff can land
+        // before this timer does -- a slide with little or nothing left to
+        // travel settles in a frame or two -- and clearing readerExiting is the
+        // first thing it does. Asked about that flag, the timer then found the
+        // exit already over and returned WITHOUT putting the entry back, so the
+        // row stayed filtered out of the list until some later reader replaced
+        // the lift, and the highlight sat one row off ever after.
+        //
+        // The lift is the thing that has to be undone exactly once, so ask
+        // about the lift: idempotent, and correct from whichever of the two
+        // paths gets here first. wantLift as well as liftedEntry, because on a
+        // fast toggle the lift may still be inside the coalescing window, and
+        // an unlift that skipped itself because "nothing is lifted yet" would
+        // let that pending lift apply a frame later with nothing left to undo
+        // it -- stranding the entry outside the list.
+        if (!l || (!l.wantLift && !l.liftedEntry))
             return;
         // Carry over anything ↑/↓ did during the slide. Restoring the captured
         // index flat undid those keypresses ~140ms after they landed, which read
