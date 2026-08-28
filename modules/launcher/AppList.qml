@@ -162,53 +162,87 @@ StyledListView {
 
     // -- the filter change nothing can animate --
     //
-    // Narrowing a filter (";e" -> ";eg") keeps no visible row, and the rows
-    // that take their place were ALREADY in the model, below the fold. So there
-    // is no add to fade, no move or displacement to slide, and no removal worth
-    // watching -- the view simply builds the new rows where they land. Measured
-    // on real history, that change emits zero transitions of any kind, which is
-    // exactly the "swaps in a single frame" it looks like. (Widening back out
-    // does emit adds and displacements, which is why only one direction of the
-    // same pair looked broken.)
+    // Some filter changes have nothing for a per-row transition to attach to.
+    // Narrowing (";e" -> ";eg", ";fe" -> ";fec") drops the visible rows and the
+    // ones that take their place were ALREADY in the model, below the fold --
+    // so there is no add to fade and no move or displacement to slide, and the
+    // view simply builds them where they land. Removed rows go instantly by
+    // design. Instrumented on the real history, ";e" -> ";eg" emitted zero
+    // transitions of ANY kind, which is exactly the "swaps in a single frame"
+    // it looks like. Widening back out does emit them, which is why only one
+    // direction of the same pair ever looked broken.
     //
-    // Nothing per-row can be hooked, so the list answers as a whole: the new
-    // contents fade up into place. Only ever an entrance -- by the time this is
-    // detectable the swap has already happened -- and deliberately un-staggered,
-    // because at typing speed the next keystroke lands mid-animation.
-    property var lastTop: []
-    property var lastFull: []
+    // Nothing per-row can be hooked in that case, so the list answers as a
+    // whole: the new contents slide up a row into place. Only ever an entrance
+    // -- by the time this is detectable the swap has happened -- and not
+    // staggered by row, because at typing speed the next keystroke lands
+    // mid-flight.
+    //
+    // Measured, not predicted, and measured as TRAVEL rather than as
+    // transitions started. Two earlier versions of this got it wrong in the
+    // same direction:
+    //
+    //   - asking the query whether any visible row survived, and standing down
+    //     if one had. One row out of seven carries nothing: ";fe" -> ";fec"
+    //     keeps exactly one, so six rows swapped in place while the survivor
+    //     slid -- a teleport with a nudge in it.
+    //   - counting the transitions the view started. ";fe" -> ";fec" starts
+    //     SEVEN displaced transitions and still looks like a teleport, because
+    //     a row scrolled in from below the fold is instantiated at its final
+    //     position and its transition animates zero distance. It fires, it is
+    //     counted, and nothing on screen moves.
+    //
+    // So settleTo tallies the rows whose animation will actually cover ground,
+    // after its own repairs have had their say. That is the only question that
+    // matters here, and the view is the only thing that can answer it.
+    property int rowMoves: 0
     property string lastTopState: ""
+    property var lastLifted: null
 
     onResultsChanged: {
-        const top = root.results.slice(0, Config.launcher.maxShown);
-        const prevTop = root.lastTop;
-        const prevFull = root.lastFull;
         const sameMode = root.displayState === root.lastTopState;
+        const liftChanged = root.liftedEntry !== root.lastLifted;
 
-        root.lastTop = top;
-        root.lastFull = root.results;
         root.lastTopState = root.displayState;
+        root.lastLifted = root.liftedEntry;
 
-        // Not across a mode switch: that has its own fade-and-scale transition
-        // and does not want a second one inside it.
-        if (!sameMode || prevTop.length === 0 || top.length === 0)
-            return;
-        // Something visible survived -- it slides, and carries the change.
-        if (top.some(e => prevTop.includes(e)))
-            return;
-        // Every new row was already in the model, so nothing was added and
-        // nothing will animate. Asked exactly rather than guessed from the
-        // direction of the count, because a filter can narrow and still bring
-        // in rows the old one never had -- those DO get their add transition
-        // and must not be given a second animation on top of it.
-        if (!top.every(e => prevFull.includes(e)))
+        // Not across a mode switch -- that has its own fade-and-scale
+        // transition and does not want a second one inside it -- and not for
+        // the reader's lift or re-insert, which is a deliberate one-row change
+        // with its own choreography. Lifting the LAST row displaces nothing, so
+        // the count alone would mistake it for a wholly replaced list.
+        if (!sameMode || liftChanged)
             return;
 
-        replaceAnim.restart();
+        root.rowMoves = 0;
+        replaceCheck.restart();
+    }
+
+    // One turn later, which is enough: the view starts its transitions while
+    // the model change is still being processed, so by the time this fires the
+    // count is final.
+    Timer {
+        id: replaceCheck
+
+        interval: 0
+        onTriggered: {
+            const shown = Math.min(Config.launcher.maxShown, root.count);
+            if (shown === 0 || root.rowMoves * 2 >= shown)
+                return;
+            // Re-entrant on purpose. At typing speed the next filter change
+            // lands mid-flight, and restarting from the full offset each time
+            // pulls the list back down a whole row on every keystroke. The
+            // entrance already in the air says the same thing; let it finish.
+            if (replaceAnim.running)
+                return;
+            replaceAnim.restart();
+        }
     }
 
     // contentItem, NOT root: the mode-switch transition below animates the
-    // list's own opacity, and two animations on one property fight.
+    // list's own opacity, and two animations on one property fight. The
+    // scrollbar rides along with the translate, which costs nothing -- it sits
+    // at zero opacity unless it is being used.
     transform: Translate {
         id: replaceShift
     }
@@ -226,9 +260,13 @@ StyledListView {
         Anim {
             target: replaceShift
             property: "y"
-            from: 16
+            // One row stride, on the curve a displaced row uses: when the whole
+            // viewport is replaced it should travel the way a row travels. 16px
+            // on the short curve was measurably too little and read as a nudge
+            // rather than as movement.
+            from: Tokens.sizes.launcher.itemHeight + root.spacing
             to: 0
-            type: Anim.StandardSmall
+            type: Anim.DefaultSpatial
         }
     }
 
@@ -547,9 +585,13 @@ StyledListView {
             const stride = Tokens.sizes.launcher.itemHeight + root.spacing;
             if (Math.abs(item.y - want) > stride * 2)
                 item.y = want;
-            return;
+        } else {
+            root.capTravel(item, want);
         }
-        root.capTravel(item, want);
+        // Tally the rows that will actually TRAVEL, once every repair above has
+        // had its say -- see rowMoves.
+        if (Math.abs(want - item.y) > 2)
+            root.rowMoves++;
     }
 
     move: Transition {
