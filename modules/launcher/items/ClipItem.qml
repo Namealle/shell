@@ -78,6 +78,14 @@ Item {
         id: entrance
     }
 
+    function playEntrance(): void {
+        // Set before starting, so the row is already displaced through its
+        // stagger instead of popping down when the pause ends.
+        entrance.y = Tokens.sizes.launcher.itemHeight + Tokens.spacing.small;
+        content.opacity = 0;
+        entranceAnim.start();
+    }
+
     Component.onCompleted: {
         // Only rows built as part of a filter change, not rows built by
         // scrolling. The list stamps the time whenever its results change for a
@@ -85,11 +93,21 @@ Item {
         // excluded there).
         if (!root.list || Date.now() - root.list.filterChangedAt > 150)
             return;
-        // Set before starting, so the row is already displaced through its
-        // stagger instead of popping down when the pause ends.
-        entrance.y = Tokens.sizes.launcher.itemHeight + Tokens.spacing.small;
-        content.opacity = 0;
-        entranceAnim.start();
+        root.playEntrance();
+    }
+
+    // TEMPORARY (trial): the same cascade when the reader closes. These rows
+    // are not rebuilt -- they were behind the reader all along -- so they have
+    // to be told. The row being read is excluded: it is still masked, and the
+    // header morph is already carrying it back onto its slot.
+    Connections {
+        function onReaderClosedAtChanged(): void {
+            if (root.list?.maskedEntry === root.modelData)
+                return;
+            root.playEntrance();
+        }
+
+        target: root.list
     }
 
     SequentialAnimation {

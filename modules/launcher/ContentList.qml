@@ -231,6 +231,10 @@ Item {
             exitContentY = l.contentY;
             partTimer.index = i;
             partTimer.fromIndex = l.currentIndex;
+            // TEMPORARY (trial): cascade the rows back in. Stamped as the exit
+            // STARTS, so the cascade runs under the header's slide rather than
+            // after it.
+            l.readerClosedAt = Date.now();
             readerActive = false;
             r.exitTo(target, () => {
                 // In order, and never partly: the row goes back into the model

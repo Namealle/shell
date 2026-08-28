@@ -181,6 +181,12 @@ StyledListView {
     // so "was one just built?" is the exact question, and the row asks it by
     // looking at how recently the results changed.
     property double filterChangedAt: 0
+    // TEMPORARY (trial): when the reader last began closing, so the rows can
+    // come back in a cascade rather than as one block. Separate from
+    // filterChangedAt because nothing is rebuilt here -- the rows were behind
+    // the reader the whole time, so they have to be TOLD to play, where a
+    // filter's rows announce themselves by being built.
+    property double readerClosedAt: 0
     property string lastTopState: ""
     property var lastLifted: null
 
