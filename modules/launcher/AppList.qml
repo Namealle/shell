@@ -103,10 +103,28 @@ StyledListView {
     property var wantLift: null
     property int wantIndex: -1
 
+    // When the last lift was REQUESTED, so the exit path can tell "the
+    // neighbours are still closing the gap" from "the list settled long ago".
+    // Those want opposite things from the re-insert, and there is no way to ask
+    // a ListView whether its transitions are still running.
+    //
+    // Requested, not applied -- which is the whole of the both-keys-at-once
+    // case. A lift spends a turn in the coalescing window below before it
+    // reaches the model, so an exit landing inside THAT window would read a
+    // timestamp from some earlier lift, conclude the list had long since
+    // settled, and stage the re-insert. The lift then applies a turn later and
+    // starts a gap-close that nothing cancels for 140ms -- the same excursion,
+    // now only reachable by pressing both arrows together. Timed from the
+    // request, that exit re-inserts at once, the coalescing timer finds the
+    // lift already undone, and nothing moves at all: at that speed nothing had
+    // moved yet, so there is nothing to undo.
+    property double liftRequestedAt: 0
+
     function setLifted(entry: var, index: int): void {
         root.maskedEntry = entry;
         root.wantLift = entry;
         root.wantIndex = index;
+        root.liftRequestedAt = Date.now();
         coalesce.restart();
     }
 
