@@ -61,6 +61,11 @@ Item {
 
     function resetReader(): void {
         partTimer.stop();
+        // Backstop. The height Behavior clears this when its animation ends,
+        // which is every real case; this covers a teardown where the resize
+        // never ran at all, so the flag cannot be left set and quietly speed up
+        // the launcher's ordinary resizes afterwards.
+        readerResizing = false;
         const l = appList.item;
         if (l)
             l.resetLift();
@@ -96,6 +101,7 @@ Item {
             // these two writes -- clearing exiting first flips it false for one
             // statement, which tears down the live reader (invalidating its
             // context, so r.reenter() explodes) and builds a fresh one.
+            readerResizing = true;
             readerActive = true;
             readerExiting = false;
             r.reenter();
@@ -110,6 +116,7 @@ Item {
         readerEntry = l.currentEntry;
         const i = l.fullResults.indexOf(readerEntry);
         l.setLifted(readerEntry, Math.max(0, Math.min(i, l.fullResults.length - 2)));
+        readerResizing = true;
         readerActive = true;
         // Explicit rather than left to the currentEntry hook: lifting the entry
         // out of the model moves currentEntry to a neighbour, so that hook would
@@ -231,6 +238,7 @@ Item {
             exitContentY = l.contentY;
             partTimer.index = i;
             partTimer.fromIndex = l.currentIndex;
+            readerResizing = true;
             readerActive = false;
             r.exitTo(target, () => {
                 // In order, and never partly: the row goes back into the model
@@ -586,15 +594,43 @@ Item {
         }
     }
 
+    // -- how fast the launcher resizes for the reader --
+    //
+    // Opening the reader on a SHORT entry is the launcher's longest resize:
+    // seven rows collapse to a single line, 447px down to 81px. On the default
+    // spatial curve that is 500ms of which the last 300 are spent creeping the
+    // final four pixels back out of the overshoot -- measured 237, 160, 103, 83,
+    // 78, 77, 78, 79, 80, 81 at 50ms intervals. The body has landed by 100ms and
+    // the frame is still closing in around it long after, which is what was
+    // left feeling sluggish once the text itself stopped being the slow part.
+    //
+    // Only the reader's own open and close are shortened; every other resize the
+    // launcher does keeps the curve it had. Same curve either way, so it is the
+    // drag that goes, not the overshoot.
+    //
+    // LATCHED rather than derived from readerActive/readerExiting: this picks a
+    // running animation's duration, and readerExiting can clear while the resize
+    // is still going (a close from the top row lands almost at once), which
+    // would retime it mid-flight.
+    property bool readerResizing: false
+
     Behavior on implicitWidth {
         enabled: root.screenState.launcher
 
-        Anim {}
+        Anim {
+            duration: root.readerResizing ? Tokens.anim.durations.expressiveFastSpatial : Tokens.anim.durations.expressiveDefaultSpatial
+        }
     }
 
     Behavior on implicitHeight {
         enabled: root.screenState.launcher
 
-        Anim {}
+        Anim {
+            duration: root.readerResizing ? Tokens.anim.durations.expressiveFastSpatial : Tokens.anim.durations.expressiveDefaultSpatial
+            // Cleared only once the resize is over, so the duration cannot
+            // change under it. Height is the one that matters -- width finishes
+            // with it or sooner.
+            onRunningChanged: if (!running) root.readerResizing = false
+        }
     }
 }
