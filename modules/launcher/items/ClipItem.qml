@@ -79,6 +79,12 @@ Item {
     }
 
     function playEntrance(): void {
+        // STOPPED first, and that is the whole of a row that went blank and
+        // stayed blank. start() on an already-running animation does nothing,
+        // so a second trigger arriving in the last frames of a run re-zeroed
+        // the opacity below and then had nothing left to raise it again --
+        // the row kept its slot in the layout and drew nothing in it.
+        entranceAnim.stop();
         // Set before starting, so the row is already displaced through its
         // stagger instead of popping down when the pause ends.
         entrance.y = Tokens.sizes.launcher.itemHeight + Tokens.spacing.small;
