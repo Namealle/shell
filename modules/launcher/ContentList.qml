@@ -247,7 +247,27 @@ Item {
                 root.readerEntry = null;
                 root.readerExiting = false;
             });
-            partTimer.restart();
+            // The staged re-insert is right only for a list that has SETTLED:
+            // it exists so the neighbours are seen parting mid-slide, which
+            // needs them to be sitting still first.
+            //
+            // Inside the enter's own gap-close it does the opposite. The rows
+            // are still travelling upward over the lifted row's slot, and
+            // holding the re-insert for another 140ms lets them keep going --
+            // closing a gap around a row that the exit has already decided to
+            // put back, and only then turning around. That is the whole
+            // "they keep moving as if it were missing, then come back": a
+            // close-then-reopen excursion for a keypress pair that meant
+            // nothing had happened.
+            //
+            // Re-inserting at once instead lets the rows reverse from wherever
+            // they have got to -- settleTo keeps a mid-flight row on its
+            // trajectory rather than snapping it, which is exactly the
+            // turn-around this needs.
+            if (Date.now() - l.liftRequestedAt < root.Tokens.anim.durations.expressiveDefaultSpatial)
+                root.reinsert();
+            else
+                partTimer.restart();
         } else {
             resetReader();
         }
