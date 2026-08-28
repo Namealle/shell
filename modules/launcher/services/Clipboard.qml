@@ -517,6 +517,54 @@ Singleton {
         delProc.running = true;
     }
 
+    // -- classification, on demand --
+    //
+    // An entry's icon and swatch colour are looked up through here rather than
+    // being bindings declared on ClipEntry itself.
+    //
+    // Creating an entry evaluates every binding it declares, and the entries are
+    // all created at once, synchronously, the moment `cliphist list` returns.
+    // So a classifier binding ran the whole regex battery below 750 times inside
+    // that one turn -- measured at 62ms, of which 43ms was iconFor -- and it was
+    // paid on the FIRST LAUNCHER OPEN of a session, whether or not the clipboard
+    // picker was ever asked for. Opening the launcher to start an app has no
+    // business classifying a clipboard.
+    //
+    // Now only entries that actually render pay, and each pays once. Memoised by
+    // id and never invalidated, for exactly the reason decodedText is not: a
+    // cliphist entry is immutable, ids are handed out in sequence, and content
+    // is only ever added, never rewritten in place.
+    //
+    // The cache is MUTATED, never reassigned -- that emits no change signal, so
+    // a binding that calls in here cannot loop through it.
+    property var classifyCache: ({})
+
+    function classify(entry: var): var {
+        // Falls back to the raw line for an entry cliphist gave no id, which is
+        // the only key left that identifies it.
+        const key = entry.entryId || entry.raw;
+        let v = root.classifyCache[key];
+        if (v === undefined) {
+            v = {
+                icon: entry.binMatch ? root.iconForBinary(entry.binMatch[1]) : root.iconFor(entry.preview),
+                colour: entry.binMatch ? "" : root.colourOf(entry.preview)
+            };
+            root.classifyCache[key] = v;
+        }
+        return v;
+    }
+
+    function iconOf(entry: var): string {
+        return entry ? root.classify(entry).icon : "content_paste";
+    }
+
+    // Non-empty when the entry is a lone colour, so the delegate paints a
+    // swatch. Named for the entry to keep it clear of colourOf(), which is the
+    // string parser this calls into.
+    function colourEntryOf(entry: var): string {
+        return entry ? root.classify(entry).colour : "";
+    }
+
     // Content-aware Material Symbol for a clipboard entry. FIRST MATCH WINS, so
     // rules are ordered by signal strength: high-entropy secrets/identifiers →
     // network addresses → shell/security commands → URLs/mail → data/code →
@@ -1009,9 +1057,6 @@ Singleton {
             } : null;
         }
 
-        // Non-empty when the entry is a lone colour → delegate paints a swatch.
-        readonly property string colour: entry.binMatch ? "" : root.colourOf(entry.preview)
-        readonly property string icon: entry.binMatch ? root.iconForBinary(entry.binMatch[1]) : root.iconFor(entry.preview)
         readonly property string name: {
             if (entry.binMatch)
                 return entry.isImage ? "Image" : "Binary data";
