@@ -138,6 +138,58 @@ Item {
     property real exitScroll: 0
     readonly property real slidePos: root.slideY - root.exitScroll
 
+    // -- the body's own slide --
+    //
+    // The text travels WITH the header. Entering, the header flies up from the
+    // row to the top, so the body comes up from below it; exiting, the header
+    // goes back down onto the row and the body goes down with it. Direction is
+    // taken from the slide the header is actually about to run, never assumed:
+    // opening on the top row is a real case where the header barely moves, and
+    // can move the other way.
+    //
+    // Text only. An image or a colour already HAS its shared-element morph --
+    // the row's thumbnail or swatch growing into the body -- and a second
+    // translation laid over that would drag the morph off its landing.
+    property real bodySlide: 0
+    property real bodyFade: 1
+    readonly property real bodySlideDistance: Tokens.sizes.launcher.itemHeight + Tokens.spacing.small
+    // Asked of the ENTRY, not of `body`: the delegates register themselves a
+    // moment after this reader is built, so on the way in there is nothing to
+    // ask yet. Same three tests ClipBody makes.
+    readonly property bool entryIsText: !!root.entry && !root.entry.binMatch && Clipboard.colourEntryOf(root.entry).length === 0
+
+    function beginBodySlide(travel: real, entering: bool): void {
+        bodySlideAnim.stop();
+        bodyFadeAnim.stop();
+
+        if (!root.entryIsText) {
+            root.bodySlide = 0;
+            // What the rail's visibility used to say outright: on the way out
+            // the list is already back underneath, so only the header (the
+            // shared element) has any business still being drawn.
+            root.bodyFade = entering ? 1 : 0;
+            return;
+        }
+
+        // travel < 0 is the header rising.
+        const dir = travel > 0 ? 1 : -1;
+        if (entering) {
+            // Start on the far side of where the header is going, so the body
+            // arrives travelling the same way the header does.
+            root.bodySlide = -dir * root.bodySlideDistance;
+            root.bodyFade = 0;
+            bodySlideAnim.to = 0;
+            bodyFadeAnim.to = 1;
+        } else {
+            bodySlideAnim.to = dir * root.bodySlideDistance;
+            bodyFadeAnim.to = 0;
+        }
+        bodySlideAnim.from = root.bodySlide;
+        bodyFadeAnim.from = root.bodyFade;
+        bodySlideAnim.start();
+        bodyFadeAnim.start();
+    }
+
     // The header's resting insets differ from the row content's insets in the
     // list (padding.large vs padding.medium horizontally). The slide targets the
     // row CONTENT's exact position so the landing handoff is pixel-true, not
@@ -174,6 +226,7 @@ Item {
         root.morphT = 0;
         slideAnim.start();
         slideXAnim.start();
+        root.beginBodySlide(slideAnim.to - slideAnim.from, false);
     }
 
     // Mid-exit reversal: stop the outbound slide wherever it is and return the
@@ -193,6 +246,7 @@ Item {
         root.morphT = 1;
         slideAnim.start();
         slideXAnim.start();
+        root.beginBodySlide(slideAnim.to - slideAnim.from, true);
     }
 
     Anim {
@@ -213,6 +267,26 @@ Item {
 
         target: root
         property: "slideX"
+    }
+
+    // Same curve and duration as the header's slide above, so the two read as
+    // one movement rather than as two things that happen to overlap.
+    Anim {
+        id: bodySlideAnim
+
+        target: root
+        property: "bodySlide"
+    }
+
+    // The fade is deliberately the shorter curve: on the way out it clears the
+    // body before the slide has finished, which is what keeps it from being
+    // drawn over the list coming back underneath.
+    Anim {
+        id: bodyFadeAnim
+
+        target: root
+        property: "bodyFade"
+        type: Anim.DefaultEffects
     }
 
     // Straight through from the body being read. The frame is always exactly
@@ -258,6 +332,8 @@ Item {
         slideXAnim.start();
         beginMorph();
         morphT = 1;
+        // to: 0, so the header's travel is the negation of where it starts.
+        beginBodySlide(-(startY + rowAlignY), true);
     }
 
     // -- header: same icon + title as the row --
@@ -351,9 +427,15 @@ Item {
     ListView {
         id: rail
 
-        // During exit the list is already returning underneath; only the header
-        // (the shared element) stays visible for the slide back onto its row.
-        visible: !root.exiting
+        // See beginBodySlide: the fade is what now says "only the header stays
+        // drawn on the way out", and it says it for image and colour entries
+        // by going straight to zero, exactly as `!root.exiting` used to.
+        visible: root.bodyFade > 0
+        opacity: root.bodyFade
+
+        transform: Translate {
+            y: root.bodySlide
+        }
 
         anchors.top: header.bottom
         anchors.topMargin: Tokens.spacing.small
