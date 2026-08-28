@@ -78,7 +78,13 @@ Item {
         id: entrance
     }
 
-    function playEntrance(): void {
+    // `fade` only for rows that are genuinely NEW. A row coming back from
+    // behind the reader was never gone, and hiding it to bring it back is what
+    // made the list flash black: every row dropped to nothing at once and then
+    // waited out its own stagger before it began to return, so for the length
+    // of the cascade there was simply nothing on screen. Those rows stagger
+    // their POSITION only and let the list's own fade carry them in.
+    function playEntrance(fade: bool): void {
         // STOPPED first, and that is the whole of a row that went blank and
         // stayed blank. start() on an already-running animation does nothing,
         // so a second trigger arriving in the last frames of a run re-zeroed
@@ -88,7 +94,8 @@ Item {
         // Set before starting, so the row is already displaced through its
         // stagger instead of popping down when the pause ends.
         entrance.y = Tokens.sizes.launcher.itemHeight + Tokens.spacing.small;
-        content.opacity = 0;
+        if (fade)
+            content.opacity = 0;
         entranceAnim.start();
     }
 
@@ -99,7 +106,7 @@ Item {
         // excluded there).
         if (!root.list || Date.now() - root.list.filterChangedAt > 150)
             return;
-        root.playEntrance();
+        root.playEntrance(true);
     }
 
     // TEMPORARY (trial): the same cascade when the reader closes. These rows
@@ -110,7 +117,7 @@ Item {
         function onReaderClosedAtChanged(): void {
             if (root.list?.maskedEntry === root.modelData)
                 return;
-            root.playEntrance();
+            root.playEntrance(false);
         }
 
         target: root.list

@@ -213,7 +213,13 @@ Item {
             // Start on the far side of where the header is going, so the body
             // arrives travelling the same way the header does.
             root.bodySlide = -dir * root.bodySlideDistance;
-            root.bodyFade = 0;
+            // Deliberately NOT faded up from nothing. The rail clips, so the
+            // body scrolls in from outside the frame with its text readable the
+            // whole way -- which is the point, since scrolling never fades. It
+            // used to start invisible and spend the fade's duration becoming
+            // legible, and that showed up as the reader feeling slow to answer
+            // the keypress. Animated rather than assigned so a re-entry
+            // half-way through an exit brings it back from where it got to.
             bodySlideAnim.to = 0;
             bodyFadeAnim.to = 1;
         } else {
