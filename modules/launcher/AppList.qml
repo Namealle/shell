@@ -160,42 +160,27 @@ StyledListView {
     readonly property var results: root.liftedEntry ? root.fullResults.filter(e => e !== root.liftedEntry) : root.fullResults
     readonly property var currentEntry: state === "clipboard" ? (root.results[root.currentIndex] ?? null) : null
 
-    // -- the filter change nothing can animate --
+    // -- the rows a filter change brings in without moving them --
     //
-    // Some filter changes have nothing for a per-row transition to attach to.
-    // Narrowing (";e" -> ";eg", ";fe" -> ";fec") drops the visible rows and the
-    // ones that take their place were ALREADY in the model, below the fold --
-    // so there is no add to fade and no move or displacement to slide, and the
-    // view simply builds them where they land. Removed rows go instantly by
-    // design. Instrumented on the real history, ";e" -> ";eg" emitted zero
-    // transitions of ANY kind, which is exactly the "swaps in a single frame"
-    // it looks like. Widening back out does emit them, which is why only one
-    // direction of the same pair ever looked broken.
+    // Narrowing a filter drops the visible rows, and the ones that take their
+    // place were ALREADY in the model, below the fold. The view instantiates
+    // those where they land: no add to fade, no move or displacement to slide.
+    // Instrumented on the real history, ";e" -> ";eg" emits zero transitions of
+    // any kind, and ";fe" -> ";fec" emits seven that each travel zero distance
+    // -- which is the same thing on screen. That is the "swaps in a single
+    // frame" this exists to answer.
     //
-    // Nothing per-row can be hooked in that case, so the list answers as a
-    // whole: the new contents slide up a row into place. Only ever an entrance
-    // -- by the time this is detectable the swap has happened -- and not
-    // staggered by row, because at typing speed the next keystroke lands
-    // mid-flight.
+    // The answer belongs to the ROW, not to the list. A list-level offset was
+    // tried and is wrong on its face: it shifts every row, including the ones
+    // that are already where they belong and the ones that are mid-slide, so a
+    // change that moved four rows correctly nudged the other three for no
+    // reason and double-moved the four. Per row, only what actually arrived
+    // without motion animates -- see ClipItem's entrance.
     //
-    // Measured, not predicted, and measured as TRAVEL rather than as
-    // transitions started. Two earlier versions of this got it wrong in the
-    // same direction:
-    //
-    //   - asking the query whether any visible row survived, and standing down
-    //     if one had. One row out of seven carries nothing: ";fe" -> ";fec"
-    //     keeps exactly one, so six rows swapped in place while the survivor
-    //     slid -- a teleport with a nudge in it.
-    //   - counting the transitions the view started. ";fe" -> ";fec" starts
-    //     SEVEN displaced transitions and still looks like a teleport, because
-    //     a row scrolled in from below the fold is instantiated at its final
-    //     position and its transition animates zero distance. It fires, it is
-    //     counted, and nothing on screen moves.
-    //
-    // So settleTo tallies the rows whose animation will actually cover ground,
-    // after its own repairs have had their say. That is the only question that
-    // matters here, and the view is the only thing that can answer it.
-    property int rowMoves: 0
+    // A delegate is only built for a row that was not on screen a moment ago,
+    // so "was one just built?" is the exact question, and the row asks it by
+    // looking at how recently the results changed.
+    property double filterChangedAt: 0
     property string lastTopState: ""
     property var lastLifted: null
 
@@ -208,66 +193,13 @@ StyledListView {
 
         // Not across a mode switch -- that has its own fade-and-scale
         // transition and does not want a second one inside it -- and not for
-        // the reader's lift or re-insert, which is a deliberate one-row change
-        // with its own choreography. Lifting the LAST row displaces nothing, so
-        // the count alone would mistake it for a wholly replaced list.
+        // the reader's lift or re-insert, whose one-row change has its own
+        // choreography and must not make the row scrolling up into the gap
+        // look like a filter result.
         if (!sameMode || liftChanged)
             return;
 
-        root.rowMoves = 0;
-        replaceCheck.restart();
-    }
-
-    // One turn later, which is enough: the view starts its transitions while
-    // the model change is still being processed, so by the time this fires the
-    // count is final.
-    Timer {
-        id: replaceCheck
-
-        interval: 0
-        onTriggered: {
-            const shown = Math.min(Config.launcher.maxShown, root.count);
-            if (shown === 0 || root.rowMoves * 2 >= shown)
-                return;
-            // Re-entrant on purpose. At typing speed the next filter change
-            // lands mid-flight, and restarting from the full offset each time
-            // pulls the list back down a whole row on every keystroke. The
-            // entrance already in the air says the same thing; let it finish.
-            if (replaceAnim.running)
-                return;
-            replaceAnim.restart();
-        }
-    }
-
-    // contentItem, NOT root: the mode-switch transition below animates the
-    // list's own opacity, and two animations on one property fight. The
-    // scrollbar rides along with the translate, which costs nothing -- it sits
-    // at zero opacity unless it is being used.
-    transform: Translate {
-        id: replaceShift
-    }
-
-    ParallelAnimation {
-        id: replaceAnim
-
-        Anim {
-            target: root.contentItem
-            property: "opacity"
-            from: 0
-            to: 1
-            type: Anim.DefaultEffects
-        }
-        Anim {
-            target: replaceShift
-            property: "y"
-            // One row stride, on the curve a displaced row uses: when the whole
-            // viewport is replaced it should travel the way a row travels. 16px
-            // on the short curve was measurably too little and read as a nudge
-            // rather than as movement.
-            from: Tokens.sizes.launcher.itemHeight + root.spacing
-            to: 0
-            type: Anim.DefaultSpatial
-        }
+        root.filterChangedAt = Date.now();
     }
 
     model: ScriptModel {
@@ -585,13 +517,9 @@ StyledListView {
             const stride = Tokens.sizes.launcher.itemHeight + root.spacing;
             if (Math.abs(item.y - want) > stride * 2)
                 item.y = want;
-        } else {
-            root.capTravel(item, want);
+            return;
         }
-        // Tally the rows that will actually TRAVEL, once every repair above has
-        // had its say -- see rowMoves.
-        if (Math.abs(want - item.y) > 2)
-            root.rowMoves++;
+        root.capTravel(item, want);
     }
 
     move: Transition {
