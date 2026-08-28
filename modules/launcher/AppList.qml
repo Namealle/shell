@@ -144,6 +144,26 @@ StyledListView {
 
     model: ScriptModel {
         values: root.results
+
+        // Identity, NOT the default Structure -- this is the whole typing
+        // freeze.
+        //
+        // ScriptModel diffs old against new to emit move/insert/remove ops
+        // (which is what makes the row animations possible at all), and that
+        // diff is O(old x new) comparisons: ~70k of them for a clipboard
+        // filter going 300 <-> 750. Under Structure, every comparison that is
+        // not already identical falls into a RECURSIVE walk of both objects'
+        // properties -- for a ClipEntry that means comparing raw (up to 999
+        // chars), preview, name, desc, binMatch, imgDims and the rest, tens of
+        // thousands of times per keystroke. Measured 100ms of a 140ms stall.
+        //
+        // Every mode this list serves compares correctly by identity, so the
+        // structural walk buys nothing here: clipboard entries are the shared
+        // ClipEntry instances resolved through Clipboard.entryFor, apps are
+        // DesktopEntry objects, actions/schemes/variants are declared QtObject
+        // instances, emoji are plain integer indices and calc is a literal.
+        comparisonMode: ObjectComparison.Identity
+
         // Lift/unlift must not yank the view back to the top: they pass the
         // index to keep via pendingIndex; genuine query changes still reset.
         onValuesChanged: {
