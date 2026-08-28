@@ -248,14 +248,20 @@ Item {
             // That is what reads as a glitch: the transition undoes itself in a
             // moment while the cascade plays out in full regardless.
             //
-            // Measured against how long the list's own fade takes, so the test
-            // is "did the rows have time to leave" rather than a number picked
-            // out of the air. Deliberately elapsed TIME and not the fade's
-            // current opacity: these curves are front-loaded, so opacity is
-            // already 0.03 after 80ms and would call that a completed
-            // departure.
-            if (Date.now() - root.readerOpenedAt >= root.Tokens.anim.durations.expressiveFastEffects)
-                l.readerClosedAt = Date.now();
+            // SCALED by how long the reader was actually open, rather than
+            // switched on past a threshold. A threshold has a cliff in it --
+            // the same gesture a few milliseconds either side of the line
+            // playing nothing or playing everything -- and an animation that
+            // sometimes happens and sometimes does not for no visible reason is
+            // the very inconsistency this was meant to remove. Scaled, a glance
+            // gets a hint of the cascade, a real read gets all of it, and there
+            // is no line to land on.
+            //
+            // Deliberately elapsed TIME and not the fade's current opacity:
+            // these curves are front-loaded, so opacity is already 0.03 after
+            // 80ms and would call that a completed departure.
+            l.readerCascade = Math.max(0, Math.min(1, (Date.now() - root.readerOpenedAt) / root.Tokens.anim.durations.expressiveFastSpatial));
+            l.readerClosedAt = Date.now();
             readerActive = false;
             r.exitTo(target, () => {
                 // In order, and never partly: the row goes back into the model

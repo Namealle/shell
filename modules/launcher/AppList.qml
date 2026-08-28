@@ -187,6 +187,9 @@ StyledListView {
     // the reader the whole time, so they have to be TOLD to play, where a
     // filter's rows announce themselves by being built.
     property double readerClosedAt: 0
+    // TEMPORARY (trial): 0..1, how much of that cascade to play -- see
+    // ContentList, which sets it from how long the reader was actually open.
+    property real readerCascade: 0
     property string lastTopState: ""
     property var lastLifted: null
 
