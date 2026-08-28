@@ -37,6 +37,9 @@ Item {
     // slides to the top, and slides back down here on exit.
     property real readerStartY: 0
     property bool readerExiting: false
+    // TEMPORARY (trial): when the reader last opened, so a close can tell a
+    // real reading session from a keypress the next keypress cancelled.
+    property double readerOpenedAt: 0
     // The list's contentY when exitReader measured the header's landing target.
     property real exitContentY: 0
     // displayState, NOT state: state's binding involves `frozen` (which we set
@@ -98,6 +101,7 @@ Item {
             // context, so r.reenter() explodes) and builds a fresh one.
             readerActive = true;
             readerExiting = false;
+            readerOpenedAt = Date.now();
             r.reenter();
             return;
         }
@@ -111,6 +115,7 @@ Item {
         const i = l.fullResults.indexOf(readerEntry);
         l.setLifted(readerEntry, Math.max(0, Math.min(i, l.fullResults.length - 2)));
         readerActive = true;
+        readerOpenedAt = Date.now();
         // Explicit rather than left to the currentEntry hook: lifting the entry
         // out of the model moves currentEntry to a neighbour, so that hook would
         // centre the window one row off.
@@ -234,7 +239,23 @@ Item {
             // TEMPORARY (trial): cascade the rows back in. Stamped as the exit
             // STARTS, so the cascade runs under the header's slide rather than
             // after it.
-            l.readerClosedAt = Date.now();
+            //
+            // Only when the rows actually went away. A reader opened and closed
+            // in the same breath never lets the list fade out -- the rows are
+            // still sitting there at full strength, and the row that was lifted
+            // has barely moved -- so throwing all of them out to their offset
+            // and sliding them back is a full movement with nothing behind it.
+            // That is what reads as a glitch: the transition undoes itself in a
+            // moment while the cascade plays out in full regardless.
+            //
+            // Measured against how long the list's own fade takes, so the test
+            // is "did the rows have time to leave" rather than a number picked
+            // out of the air. Deliberately elapsed TIME and not the fade's
+            // current opacity: these curves are front-loaded, so opacity is
+            // already 0.03 after 80ms and would call that a completed
+            // departure.
+            if (Date.now() - root.readerOpenedAt >= root.Tokens.anim.durations.expressiveFastEffects)
+                l.readerClosedAt = Date.now();
             readerActive = false;
             r.exitTo(target, () => {
                 // In order, and never partly: the row goes back into the model
