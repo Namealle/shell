@@ -54,7 +54,7 @@ Item {
     // deliberately NOT a text body -- no decode, no gutter, no find, since the
     // preview IS the whole content. The header still shows the exact string
     // that was copied.
-    readonly property string colour: root.entry?.colour ?? ""
+    readonly property string colour: Clipboard.colourEntryOf(root.entry)
     readonly property bool isColour: root.colour.length > 0
     readonly property color colourValue: root.isColour ? root.colour : "transparent"
     readonly property bool isText: !!root.entry && !root.isBinary && !root.isColour

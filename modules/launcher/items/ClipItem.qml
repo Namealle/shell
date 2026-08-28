@@ -17,7 +17,7 @@ Item {
     required property var list
 
     readonly property bool isImage: root.modelData?.isImage ?? false
-    readonly property string swatchColour: root.isImage ? "" : (root.modelData?.colour ?? "")
+    readonly property string swatchColour: root.isImage ? "" : Clipboard.colourEntryOf(root.modelData)
     readonly property bool isColour: root.swatchColour.length > 0
     readonly property string imgCache: root.isImage ? `/tmp/caelestia-clip-preview-${root.modelData.entryId}.png` : ""
 
@@ -103,7 +103,7 @@ Item {
             // extra 0.2em is leading -- vertical space for stacking lines of
             // text, of which there are none in an icon slot. 1em is the box the
             // glyphs are actually drawn to.
-            text: root.modelData?.icon ?? "content_paste"
+            text: Clipboard.iconOf(root.modelData)
             color: Colours.palette.m3onSurfaceVariant
             fontStyle: Tokens.font.icon.builders.large.scale(1.3).build()
         }
