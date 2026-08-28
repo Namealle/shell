@@ -202,7 +202,27 @@ Singleton {
     // case around 25MB, typically far less -- and a timer would either expire
     // mid-browse or keep holding pictures long after the launcher closed.
     readonly property int retainMax: 10
+
+    // FIXED SLOTS, not a most-recent-first list. `retained[i]` is whatever is
+    // held in slot i, and a slot's occupant changes only when that particular
+    // picture is evicted -- every other slot keeps pointing exactly where it
+    // did.
+    //
+    // The Wrapper renders one warm-copy delegate per SLOT (a constant count),
+    // so no retain can create or destroy a delegate. It used to render one per
+    // ENTRY off this array, and this array was reassigned on every retain() to
+    // move the touched entry to the front -- which is a different array, so a
+    // Repeater over it destroyed and rebuilt all ten delegates (twenty Images,
+    // and on two monitors twice that) several times per keystroke. That was
+    // the typing freeze: measured 12 retains and 336 config warnings per
+    // keystroke in the picker, ~90ms of the ~150ms stall.
     property var retained: []
+
+    // The same entries, most-recently-wanted first. Mutated IN PLACE and bound
+    // to by nothing, which is the point: bumping recency is the common case
+    // (every row that renders, every reader move) and it must cost nothing.
+    // Read only to decide which slot to overwrite.
+    property var retainOrder: []
 
     // Decode size for the row thumbnails, shared by the delegate that draws them
     // and the launcher that holds them warm. ONE definition on purpose: it is
@@ -220,16 +240,31 @@ Singleton {
     function retain(entry: var): void {
         if (root.noCache || !entry?.isImage || !entry.entryId)
             return;
-        if (root.retained[0] === entry)
+
+        const order = root.retainOrder;
+        const at = order.indexOf(entry);
+        if (at === 0)
             return;
-        const out = [entry];
-        for (const e of root.retained) {
-            if (out.length >= root.retainMax)
-                break;
-            if (e !== entry && e?.entryId)
-                out.push(e);
+        if (at > 0) {
+            // Already held: this is pure recency bookkeeping, so it must not
+            // touch `retained` at all.
+            order.splice(at, 1);
+            order.unshift(entry);
+            return;
         }
-        root.retained = out;
+
+        order.unshift(entry);
+        const next = root.retained.slice();
+        if (next.length < root.retainMax) {
+            next.push(entry);
+        } else {
+            // Take over the least-recently-wanted picture's slot. One slot
+            // changes; the other nine delegates never learn anything happened.
+            const lru = order.pop();
+            const slot = next.indexOf(lru);
+            next[slot >= 0 ? slot : 0] = entry;
+        }
+        root.retained = next;
     }
 
     function seedRetained(): void {
