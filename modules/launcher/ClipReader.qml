@@ -152,7 +152,20 @@ Item {
     // translation laid over that would drag the morph off its landing.
     property real bodySlide: 0
     property real bodyFade: 1
-    readonly property real bodySlideDistance: Tokens.sizes.launcher.itemHeight + Tokens.spacing.small
+    // Three rows' worth of travel -- a scroll's distance, not a nudge.
+    //
+    // One row stride was too little, and the FIRST row is where that showed.
+    // Open the reader anywhere else and the header flies up from the row, which
+    // is most of what you see; open it on row 0 and the header is already where
+    // it lands, so nothing flies at all and the body is the only thing moving.
+    // A row-sized offset simply vanished inside the panel's own growth, which
+    // is why that one case still felt like the old no-animation open.
+    //
+    // Sized against paging the text instead (ClipBody.scrollPage moves 0.9 of a
+    // viewport), so the body arrives the way it moves when you scroll it. The
+    // rail clips, so it genuinely scrolls up into the frame rather than
+    // appearing from outside the launcher.
+    readonly property real bodySlideDistance: (Tokens.sizes.launcher.itemHeight + Tokens.spacing.small) * 3
     // Asked of the ENTRY, not of `body`: the delegates register themselves a
     // moment after this reader is built, so on the way in there is nothing to
     // ask yet. Same three tests ClipBody makes.
@@ -171,8 +184,16 @@ Item {
             return;
         }
 
-        // travel < 0 is the header rising.
-        const dir = travel > 0 ? 1 : -1;
+        // Which way the BODY goes: the same way the header does, travel < 0
+        // being the header rising.
+        //
+        // When the header has nowhere to go the sign of ~0 is meaningless, and
+        // that is not a corner case -- it is opening on the row the header
+        // already lands on, i.e. the first one. Fall back to the direction the
+        // READER is unfolding instead: up on the way in, down on the way out.
+        // Taking the raw sign there sent the body up on the way out while the
+        // panel collapsed downwards underneath it.
+        const dir = Math.abs(travel) > 4 ? (travel > 0 ? 1 : -1) : (entering ? -1 : 1);
         if (entering) {
             // Start on the far side of where the header is going, so the body
             // arrives travelling the same way the header does.
