@@ -15,6 +15,8 @@ Item {
 
     required property var modelData
     required property var list
+    // For the entrance stagger below -- the view injects it.
+    required property int index
 
     readonly property bool isImage: root.modelData?.isImage ?? false
     readonly property string swatchColour: root.isImage ? "" : Clipboard.colourEntryOf(root.modelData)
@@ -52,6 +54,72 @@ Item {
 
     implicitHeight: Tokens.sizes.launcher.itemHeight
 
+    // -- entrance for a row the filter brought in without moving it --
+    //
+    // A narrowing filter fills the viewport from BELOW THE FOLD, and the view
+    // builds those rows straight at their final position: no add to fade, no
+    // displacement to slide, nothing to watch. Measured on the real history,
+    // ";e" -> ";eg" emits no transitions at all and ";fe" -> ";fec" emits seven
+    // that travel zero distance, which looks identical.
+    //
+    // Being BUILT is the exact signal. A row that survived the filter is not
+    // recreated -- it keeps whatever slide the view gave it and never doubles
+    // up -- so this can only ever fire for a row that genuinely arrived without
+    // motion. That is the whole reason it lives here and not on the list: a
+    // list-level offset shifts everything, including the rows already in place
+    // and the ones mid-slide, which reads as a glitch rather than as movement.
+    //
+    // Staggered by row on purpose. Seven rows arriving together on one curve
+    // read as a single block sliding; a few tens of milliseconds between
+    // neighbours is what makes a list look like it is settling into place. The
+    // app list gets that quality for free, because its rows each move a
+    // different distance and so never arrive in step.
+    transform: Translate {
+        id: entrance
+    }
+
+    Component.onCompleted: {
+        // Only rows built as part of a filter change, not rows built by
+        // scrolling. The list stamps the time whenever its results change for a
+        // reason worth animating (its own mode switch and the reader's lift are
+        // excluded there).
+        if (!root.list || Date.now() - root.list.filterChangedAt > 150)
+            return;
+        // Set before starting, so the row is already displaced through its
+        // stagger instead of popping down when the pause ends.
+        entrance.y = Tokens.sizes.launcher.itemHeight + Tokens.spacing.small;
+        content.opacity = 0;
+        entranceAnim.start();
+    }
+
+    SequentialAnimation {
+        id: entranceAnim
+
+        PauseAnimation {
+            // Capped: past a screenful the delay stops meaning anything, and
+            // the list only ever enters from the top anyway.
+            duration: Math.min(root.index, 6) * 24
+        }
+
+        ParallelAnimation {
+            Anim {
+                target: entrance
+                property: "y"
+                to: 0
+                type: Anim.DefaultSpatial
+            }
+            // On the content, NOT the row: the list's add transition animates
+            // the row's own opacity for genuinely new entries, and two
+            // animations on one property fight.
+            Anim {
+                target: content
+                property: "opacity"
+                to: 1
+                type: Anim.DefaultEffects
+            }
+        }
+    }
+
     // While this entry is lifted into the reader (or its header is still sliding
     // back), the reader's header IS this row -- rendering it here too would show
     // the same object twice.
@@ -83,6 +151,8 @@ Item {
     }
 
     Item {
+        id: content
+
         anchors.fill: parent
         anchors.leftMargin: Tokens.padding.medium
         anchors.rightMargin: Tokens.padding.medium
