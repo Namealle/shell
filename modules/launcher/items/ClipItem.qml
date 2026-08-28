@@ -84,7 +84,11 @@ Item {
     // waited out its own stagger before it began to return, so for the length
     // of the cascade there was simply nothing on screen. Those rows stagger
     // their POSITION only and let the list's own fade carry them in.
-    function playEntrance(fade: bool): void {
+    // 0..1, scaling both the offset and the stagger, so a weak entrance is
+    // genuinely a smaller version of a strong one rather than a shorter one.
+    property real entranceStrength: 1
+
+    function playEntrance(fade: bool, strength: real): void {
         // STOPPED first, and that is the whole of a row that went blank and
         // stayed blank. start() on an already-running animation does nothing,
         // so a second trigger arriving in the last frames of a run re-zeroed
@@ -93,7 +97,8 @@ Item {
         entranceAnim.stop();
         // Set before starting, so the row is already displaced through its
         // stagger instead of popping down when the pause ends.
-        entrance.y = Tokens.sizes.launcher.itemHeight + Tokens.spacing.small;
+        root.entranceStrength = strength;
+        entrance.y = (Tokens.sizes.launcher.itemHeight + Tokens.spacing.small) * strength;
         if (fade)
             content.opacity = 0;
         entranceAnim.start();
@@ -106,7 +111,7 @@ Item {
         // excluded there).
         if (!root.list || Date.now() - root.list.filterChangedAt > 150)
             return;
-        root.playEntrance(true);
+        root.playEntrance(true, 1);
     }
 
     // TEMPORARY (trial): the same cascade when the reader closes. These rows
@@ -117,7 +122,12 @@ Item {
         function onReaderClosedAtChanged(): void {
             if (root.list?.maskedEntry === root.modelData)
                 return;
-            root.playEntrance(false);
+            const strength = root.list?.readerCascade ?? 0;
+            // Nothing worth moving for -- a reader that opened and shut in the
+            // same gesture leaves this at essentially zero.
+            if (strength < 0.02)
+                return;
+            root.playEntrance(false, strength);
         }
 
         target: root.list
@@ -129,7 +139,7 @@ Item {
         PauseAnimation {
             // Capped: past a screenful the delay stops meaning anything, and
             // the list only ever enters from the top anyway.
-            duration: Math.min(root.index, 6) * 24
+            duration: Math.min(root.index, 6) * 24 * root.entranceStrength
         }
 
         ParallelAnimation {
