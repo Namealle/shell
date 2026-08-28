@@ -79,13 +79,21 @@ Item {
     // rather than wasteful: Qt bakes the screen's device pixel ratio into the
     // decode, so a 1x and a 1.5x monitor genuinely need different pixmaps, and a
     // singleton with no window of its own would warm neither reliably.
+    //
+    // One delegate per retained SLOT, and the slot count is a constant -- so
+    // these are built once for the life of the launcher and a retain only ever
+    // re-points one slot's two source bindings. Modelled on the entry ARRAY it
+    // rebuilt every delegate each time that array was reassigned, which
+    // retain() did on nearly every call: see Clipboard.retained.
     Repeater {
-        model: Clipboard.retained
+        model: Clipboard.retainMax
 
         Item {
             id: preload
 
-            required property var modelData
+            required property int index
+
+            readonly property var modelData: Clipboard.retained[preload.index] ?? null
 
             readonly property string src: preload.modelData?.entryId ? `file:///tmp/caelestia-clip-preview-${preload.modelData.entryId}.png` : ""
 
