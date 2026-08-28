@@ -298,7 +298,7 @@ Item {
             // too, and the title sits at the same x in both. Any mismatch here
             // rides visibly through the whole slide and teleports across when
             // the handoff unmasks the row.
-            text: root.entry?.icon ?? "content_paste"
+            text: Clipboard.iconOf(root.entry)
             color: Colours.palette.m3onSurfaceVariant
             fontStyle: Tokens.font.icon.builders.large.scale(1.3).build()
         }
