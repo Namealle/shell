@@ -142,6 +142,78 @@ StyledListView {
     readonly property var results: root.liftedEntry ? root.fullResults.filter(e => e !== root.liftedEntry) : root.fullResults
     readonly property var currentEntry: state === "clipboard" ? (root.results[root.currentIndex] ?? null) : null
 
+    // -- the filter change nothing can animate --
+    //
+    // Narrowing a filter (";e" -> ";eg") keeps no visible row, and the rows
+    // that take their place were ALREADY in the model, below the fold. So there
+    // is no add to fade, no move or displacement to slide, and no removal worth
+    // watching -- the view simply builds the new rows where they land. Measured
+    // on real history, that change emits zero transitions of any kind, which is
+    // exactly the "swaps in a single frame" it looks like. (Widening back out
+    // does emit adds and displacements, which is why only one direction of the
+    // same pair looked broken.)
+    //
+    // Nothing per-row can be hooked, so the list answers as a whole: the new
+    // contents fade up into place. Only ever an entrance -- by the time this is
+    // detectable the swap has already happened -- and deliberately un-staggered,
+    // because at typing speed the next keystroke lands mid-animation.
+    property var lastTop: []
+    property var lastFull: []
+    property string lastTopState: ""
+
+    onResultsChanged: {
+        const top = root.results.slice(0, Config.launcher.maxShown);
+        const prevTop = root.lastTop;
+        const prevFull = root.lastFull;
+        const sameMode = root.displayState === root.lastTopState;
+
+        root.lastTop = top;
+        root.lastFull = root.results;
+        root.lastTopState = root.displayState;
+
+        // Not across a mode switch: that has its own fade-and-scale transition
+        // and does not want a second one inside it.
+        if (!sameMode || prevTop.length === 0 || top.length === 0)
+            return;
+        // Something visible survived -- it slides, and carries the change.
+        if (top.some(e => prevTop.includes(e)))
+            return;
+        // Every new row was already in the model, so nothing was added and
+        // nothing will animate. Asked exactly rather than guessed from the
+        // direction of the count, because a filter can narrow and still bring
+        // in rows the old one never had -- those DO get their add transition
+        // and must not be given a second animation on top of it.
+        if (!top.every(e => prevFull.includes(e)))
+            return;
+
+        replaceAnim.restart();
+    }
+
+    // contentItem, NOT root: the mode-switch transition below animates the
+    // list's own opacity, and two animations on one property fight.
+    transform: Translate {
+        id: replaceShift
+    }
+
+    ParallelAnimation {
+        id: replaceAnim
+
+        Anim {
+            target: root.contentItem
+            property: "opacity"
+            from: 0
+            to: 1
+            type: Anim.DefaultEffects
+        }
+        Anim {
+            target: replaceShift
+            property: "y"
+            from: 16
+            to: 0
+            type: Anim.StandardSmall
+        }
+    }
+
     model: ScriptModel {
         values: root.results
 
