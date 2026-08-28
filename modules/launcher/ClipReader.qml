@@ -152,20 +152,35 @@ Item {
     // translation laid over that would drag the morph off its landing.
     property real bodySlide: 0
     property real bodyFade: 1
-    // Three rows' worth of travel -- a scroll's distance, not a nudge.
+    // Travel scales with the body, and the DURATION follows the travel, so the
+    // speed is the same whatever is being read.
     //
-    // One row stride was too little, and the FIRST row is where that showed.
-    // Open the reader anywhere else and the header flies up from the row, which
-    // is most of what you see; open it on row 0 and the header is already where
-    // it lands, so nothing flies at all and the body is the only thing moving.
-    // A row-sized offset simply vanished inside the panel's own growth, which
-    // is why that one case still felt like the old no-animation open.
+    // The ceiling is three rows' worth -- a scroll's distance rather than a
+    // nudge, sized against paging the text (ClipBody.scrollPage moves 0.9 of a
+    // viewport). The FIRST row is what made that necessary: open the reader
+    // anywhere else and the header flies up from its row, which is most of what
+    // you see, but on row 0 the header already sits where it lands, nothing
+    // flies, and the body is the only thing moving. A row-sized offset vanished
+    // inside the panel's own growth there.
     //
-    // Sized against paging the text instead (ClipBody.scrollPage moves 0.9 of a
-    // viewport), so the body arrives the way it moves when you scroll it. The
-    // rail clips, so it genuinely scrolls up into the frame rather than
-    // appearing from outside the launcher.
-    readonly property real bodySlideDistance: (Tokens.sizes.launcher.itemHeight + Tokens.spacing.small) * 3
+    // But a fixed distance is wrong at the other end. A one-line entry is ~19px
+    // tall, so three rows of travel moved it ten times its own height, and at a
+    // fixed 500ms that read as slow -- the panel had finished growing long
+    // before the text stopped arriving. Scaling both together keeps a
+    // one-liner's entrance short and quick and a full-screen one long and
+    // stately, at one constant speed.
+    readonly property real bodySlideMax: (Tokens.sizes.launcher.itemHeight + Tokens.spacing.small) * 3
+    readonly property real bodySlideDistance: {
+        const h = root.body?.liveHeight ?? 0;
+        // No body to measure yet -- take the long entrance rather than a
+        // fraction of a guess, since an entry still resolving its height is far
+        // likelier to be a big one than a one-liner.
+        if (h <= 0)
+            return root.bodySlideMax;
+        return Math.max(Tokens.spacing.large * 2, Math.min(root.bodySlideMax, h * 0.6));
+    }
+    readonly property int bodySlideDuration: Math.max(Tokens.anim.durations.expressiveFastEffects, Math.round(Tokens.anim.durations.expressiveDefaultSpatial * root.bodySlideDistance / root.bodySlideMax))
+
     // Asked of the ENTRY, not of `body`: the delegates register themselves a
     // moment after this reader is built, so on the way in there is nothing to
     // ask yet. Same three tests ClipBody makes.
@@ -205,6 +220,12 @@ Item {
             bodySlideAnim.to = dir * root.bodySlideDistance;
             bodyFadeAnim.to = 0;
         }
+        // Set here rather than bound, so a body that resolves its height
+        // mid-flight cannot change the duration of the run already going.
+        bodySlideAnim.duration = root.bodySlideDuration;
+        // Kept under the slide's, so the body is always gone before the slide
+        // ends rather than lingering over the list coming back.
+        bodyFadeAnim.duration = Math.min(Tokens.anim.durations.expressiveDefaultEffects, Math.round(root.bodySlideDuration * 0.7));
         bodySlideAnim.from = root.bodySlide;
         bodyFadeAnim.from = root.bodyFade;
         bodySlideAnim.start();
