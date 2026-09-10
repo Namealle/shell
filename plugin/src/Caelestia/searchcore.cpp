@@ -41,7 +41,7 @@ int scoreMatch(const QString& item, const QString& query) {
         }
 
         // Word-boundary bonus (start, or after a separator)
-        if (ii == 0 || item[ii - 1] == ' ' || item[ii - 1] == '-' || item[ii - 1] == '_')
+        if (ii == 0 || item[ii - 1] == u' ' || item[ii - 1] == u'-' || item[ii - 1] == u'_')
             score += 10;
 
         lastMatch = ii;
