@@ -114,7 +114,7 @@ Item {
         root.playEntrance(true, 1);
     }
 
-    // TEMPORARY (trial): the same cascade when the reader closes. These rows
+    // The same cascade when the reader closes. These rows
     // are not rebuilt -- they were behind the reader all along -- so they have
     // to be told. The row being read is excluded: it is still masked, and the
     // header morph is already carrying it back onto its slot.

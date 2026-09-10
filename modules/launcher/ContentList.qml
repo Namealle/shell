@@ -38,7 +38,7 @@ Item {
     // slides to the top, and slides back down here on exit.
     property real readerStartY: 0
     property bool readerExiting: false
-    // TEMPORARY (trial): when the reader last opened, so a close can tell a
+    // When the reader last opened, so a close can tell a
     // real reading session from a keypress the next keypress cancelled.
     property double readerOpenedAt: 0
     // The list's contentY when exitReader measured the header's landing target.
@@ -237,7 +237,7 @@ Item {
             exitContentY = l.contentY;
             partTimer.index = i;
             partTimer.fromIndex = l.currentIndex;
-            // TEMPORARY (trial): cascade the rows back in. Stamped as the exit
+            // Cascade the rows back in. Stamped as the exit
             // STARTS, so the cascade runs under the header's slide rather than
             // after it.
             //
