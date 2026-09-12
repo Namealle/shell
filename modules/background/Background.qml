@@ -64,6 +64,15 @@ Variants {
                     screenSeed: Services.Ambient.seedFor(win.modelData.name)
                     ambientBirth: Services.Ambient.forScreen(win.modelData.name).birth
                     ambientLive: Services.Ambient.forScreen(win.modelData.name).live
+                    paletteColors: Services.Starfield.paletteColors
+                    paletteWeightsTarget: Services.Ambient.forScreen(win.modelData.name).paletteWeights
+                    paletteMixTarget: Services.Ambient.forScreen(win.modelData.name).mix
+                    archetypeWeightsTarget: Services.Ambient.forScreen(win.modelData.name).archetypeWeights
+                    archetypeParams: Services.Starfield.archetypeParams
+                    calmTarget: Services.Ambient.forScreen(win.modelData.name).calm
+                    ambientHole: Services.Ambient.forScreen(win.modelData.name).hole
+                    eventFamilies: Services.Starfield.eventFamilies
+                    eventHeadCap: Services.Starfield.eventHeadCap
                     devicePixelRatio: behindClock.Screen.devicePixelRatio
                     density: Services.Starfield.density
                     driftSpeed: Services.Starfield.driftSpeed

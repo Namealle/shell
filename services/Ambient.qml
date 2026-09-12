@@ -4,6 +4,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import Quickshell.Hyprland
 import Quickshell.Wayland
 import Caelestia.Config
 import Caelestia.Services
@@ -46,9 +47,20 @@ Singleton {
     }
 
     function neutral(running: bool): var {
+        return profile(Rules.evaluate({
+            enabled: false
+        }, {}, Starfield.palette, Starfield.archetypes), running);
+    }
+
+    function profile(target: var, running: bool): var {
         return {
-            birth: Qt.vector4d(0, 0, 0, 0.5),
-            live: Qt.vector4d(0.5, 0.5, 0.5, 0.5),
+            birth: Qt.vector4d(target.birth[0], target.birth[1], target.birth[2], target.birth[3]),
+            live: Qt.vector4d(target.live[0], target.live[1], target.live[2], target.live[3]),
+            paletteWeights: target.paletteWeights,
+            archetypeWeights: target.archetypeWeights,
+            mix: target.mix,
+            calm: target.calm,
+            hole: Qt.vector4d(target.hole[0], target.hole[1], target.hole[2], target.hole[3]),
             running: running
         };
     }
@@ -82,11 +94,9 @@ Singleton {
         const contexts = Object.create(null);
         for (const name of Object.keys(policy)) {
             const previous = forScreen(name);
-            next[name] = policy[name] && !Starfield.reactive.enabled ? neutral(true) : {
-                birth: previous.birth,
-                live: previous.live,
+            next[name] = policy[name] && !Starfield.reactive.enabled ? neutral(true) : Object.assign({}, previous, {
                 running: policy[name]
-            };
+            });
             contexts[name] = state.contexts[name] || Signals.createBank();
         }
         state.contexts = contexts;
@@ -162,17 +172,21 @@ Singleton {
         }
     }
 
+    function workspaceEvent(name: string): void {
+        // One event variant, no workspace ID/name, event data or timestamp retained.
+        if (root.polling && name === "workspacev2")
+            state.workspaceActivity = Signals.workspaceActivity(state.workspaceActivity, 0, true);
+    }
+
     function publish(global: var, dt: real, now: real): void {
         const next = Object.create(null);
         for (const name of Object.keys(policy)) {
             if (!policy[name]) {
                 // Preserve vectors while covered, including configuration edits.
                 const old = forScreen(name);
-                next[name] = {
-                    birth: old.birth,
-                    live: old.live,
+                next[name] = Object.assign({}, old, {
                     running: false
-                };
+                });
                 continue;
             }
             if (!global || !Starfield.reactive.enabled) {
@@ -183,12 +197,8 @@ Singleton {
             const context = Signals.advance(bank, now, dt);
             const values = Object.assign({}, global.values, context.values);
             Signals.derive(values, Starfield.reactive.processPresenceWeight, state.bank, global.weights);
-            const target = Rules.evaluate(Starfield.reactive, values);
-            next[name] = {
-                birth: Qt.vector4d(target.birth[0], target.birth[1], target.birth[2], target.birth[3]),
-                live: Qt.vector4d(target.live[0], target.live[1], target.live[2], target.live[3]),
-                running: true
-            };
+            const target = Rules.evaluate(Starfield.reactive, values, Starfield.palette, Starfield.archetypes);
+            next[name] = profile(target, true);
         }
         state.profiles = next;
     }
@@ -287,6 +297,9 @@ Singleton {
         }
         manageProcesses(now);
         const global = Signals.advance(state.bank, now, dt);
+        state.workspaceActivity = Signals.workspaceActivity(state.workspaceActivity, dt, false);
+        global.values.workspaceActivity = state.workspaceActivity;
+        global.valid.workspaceActivity = true;
         Signals.derive(global.values, Starfield.reactive.processPresenceWeight, state.bank, global.weights);
         state.signals = global.values;
         state.rates = global.rates;
@@ -312,6 +325,7 @@ Singleton {
         id: state
 
         property bool ready: false
+        property real workspaceActivity: 0
         property bool resumePending: true
         property bool clockReady: false
         property bool resetPending: false
@@ -387,8 +401,16 @@ Singleton {
     Connections {
         target: Starfield
 
-        function onReactiveChanged(): void {
+        function onDocumentChanged(): void {
             root.configChanged();
+        }
+    }
+
+    Connections {
+        target: Hyprland
+
+        function onRawEvent(event: HyprlandEvent): void {
+            root.workspaceEvent(event.name);
         }
     }
 
@@ -561,20 +583,15 @@ Singleton {
     // current per-screen targets and normalised signals. Never includes titles.
     IpcHandler {
         function dump(): string {
-            const out = {};
+            const out = Object.create(null);
             for (const name of Object.keys(root.profiles)) {
-                const p = root.profiles[name];
-                out[name] = {
-                    running: p.running,
-                    birth: [p.birth.x, p.birth.y, p.birth.z, p.birth.w].map(v => Math.round(v * 1000) / 1000),
-                    live: [p.live.x, p.live.y, p.live.z, p.live.w].map(v => Math.round(v * 1000) / 1000)
-                };
+                out[name] = Rules.serializeProfile(root.profiles[name]);
             }
             return JSON.stringify({
                 polling: root.polling,
                 locked: root.locked,
                 profiles: out,
-                signals: root.signals,
+                signals: Rules.serializeNumbers(root.signals),
                 valid: root.valid
             });
         }

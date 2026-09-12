@@ -15,13 +15,25 @@ layout(std140, binding = 0) uniform buf {
     float brightness;
     vec4 skyColor;
     float edgeLift;
-    vec4 meteorHead;
-    vec3 meteorShape;
-    vec4 companionHead;
-    vec3 companionShape;
-    vec4 cometHead;
-    vec3 cometShape;
-    vec4 satelliteHead;
+    vec4 event0Head;
+    vec4 event0Colour;
+    vec4 event0Tail01;
+    vec4 event0Tail23;
+    vec4 event0Shape;
+    vec4 event0Bounds;
+    vec4 event1Head;
+    vec4 event1Colour;
+    vec4 event1Tail01;
+    vec4 event1Tail23;
+    vec4 event1Shape;
+    vec4 event1Bounds;
+    vec4 event2Head;
+    vec4 event2Colour;
+    vec4 event2Tail01;
+    vec4 event2Tail23;
+    vec4 event2Shape;
+    vec4 event2Bounds;
+    vec2 activeStamp;
     float radialMode;
     vec2 centreOffset;
     vec3 flowZoom;
@@ -41,73 +53,9 @@ layout(std140, binding = 0) uniform buf {
     float flowPhaseLocal;
     float variableFraction;
     vec4 mood;
-    mat4 birthHistory0;
-    mat4 birthHistory1;
-    mat4 birthHistory2;
-    mat4 birthHistory3;
-    mat4 birthHistory4;
-    mat4 birthHistory5;
-    mat4 birthHistory6;
-    mat4 birthHistory7;
-    mat4 birthHistory8;
-    mat4 birthHistory9;
-    mat4 birthHistory10;
-    mat4 birthHistory11;
-    mat4 birthHistory12;
-    mat4 birthHistory13;
-    mat4 birthHistory14;
-    mat4 birthHistory15;
-    mat4 birthHistory16;
-    mat4 birthHistory17;
-    mat4 birthHistory18;
-    mat4 birthHistory19;
-    mat4 birthHistory20;
-    mat4 birthHistory21;
-    mat4 birthHistory22;
-    mat4 birthHistory23;
-    mat4 birthHistory24;
-    mat4 birthHistory25;
-    mat4 birthHistory26;
-    mat4 birthHistory27;
-    mat4 birthHistory28;
-    mat4 birthHistory29;
-    mat4 birthHistory30;
-    mat4 birthHistory31;
-    mat4 birthHistory32;
-    mat4 birthHistory33;
-    mat4 birthHistory34;
-    mat4 birthHistory35;
-    mat4 birthHistory36;
-    mat4 birthHistory37;
-    mat4 birthHistory38;
-    mat4 birthHistory39;
-    mat4 birthHistory40;
-    mat4 birthHistory41;
-    mat4 birthHistory42;
-    mat4 birthHistory43;
-    mat4 birthHistory44;
-    mat4 birthHistory45;
-    mat4 birthHistory46;
-    mat4 birthHistory47;
-    mat4 birthHistory48;
-    mat4 birthHistory49;
-    mat4 birthHistory50;
-    mat4 birthHistory51;
-    mat4 birthHistory52;
-    mat4 birthHistory53;
-    mat4 birthHistory54;
-    mat4 birthHistory55;
-    mat4 birthHistory56;
-    mat4 birthHistory57;
-    mat4 birthHistory58;
-    mat4 birthHistory59;
-    mat4 birthHistory60;
-    mat4 birthHistory61;
-    mat4 birthHistory62;
-    mat4 birthHistory63;
 } ubuf;
 
-// No textures, sine hash or finite star catalogue. Each layer evaluates one cell.
+// Procedural identity, without a finite star catalogue. One cell per layer.
 vec4 hash4(vec2 p) {
     vec4 p4 = fract(vec4(p.xy, p.xy) * vec4(0.1031, 0.1030, 0.0973, 0.1099));
     p4 += dot(p4, p4.wzxy + 33.33);
@@ -126,265 +74,96 @@ vec4 columnAt(mat4 m, float column) {
     if (column < 2.5) return m[2];
     return m[3];
 }
-// Six balanced decisions select one of 64 matrices. Only fragments inside
-// a star's bounded support fetch history; the UBO remains below 5 KiB.
-vec4 historyAt(float bucket) {
-    float slot = mod(bucket, 256.0);
-    float column = mod(slot, 4.0);
-    if (slot < 128.0) {
-        if (slot < 64.0) {
-            if (slot < 32.0) {
-                if (slot < 16.0) {
-                    if (slot < 8.0) {
-                        if (slot < 4.0) {
-                            return columnAt(ubuf.birthHistory0, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory1, column);
-                        }
-                    } else {
-                        if (slot < 12.0) {
-                            return columnAt(ubuf.birthHistory2, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory3, column);
-                        }
-                    }
-                } else {
-                    if (slot < 24.0) {
-                        if (slot < 20.0) {
-                            return columnAt(ubuf.birthHistory4, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory5, column);
-                        }
-                    } else {
-                        if (slot < 28.0) {
-                            return columnAt(ubuf.birthHistory6, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory7, column);
-                        }
-                    }
-                }
-            } else {
-                if (slot < 48.0) {
-                    if (slot < 40.0) {
-                        if (slot < 36.0) {
-                            return columnAt(ubuf.birthHistory8, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory9, column);
-                        }
-                    } else {
-                        if (slot < 44.0) {
-                            return columnAt(ubuf.birthHistory10, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory11, column);
-                        }
-                    }
-                } else {
-                    if (slot < 56.0) {
-                        if (slot < 52.0) {
-                            return columnAt(ubuf.birthHistory12, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory13, column);
-                        }
-                    } else {
-                        if (slot < 60.0) {
-                            return columnAt(ubuf.birthHistory14, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory15, column);
-                        }
-                    }
-                }
-            }
-        } else {
-            if (slot < 96.0) {
-                if (slot < 80.0) {
-                    if (slot < 72.0) {
-                        if (slot < 68.0) {
-                            return columnAt(ubuf.birthHistory16, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory17, column);
-                        }
-                    } else {
-                        if (slot < 76.0) {
-                            return columnAt(ubuf.birthHistory18, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory19, column);
-                        }
-                    }
-                } else {
-                    if (slot < 88.0) {
-                        if (slot < 84.0) {
-                            return columnAt(ubuf.birthHistory20, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory21, column);
-                        }
-                    } else {
-                        if (slot < 92.0) {
-                            return columnAt(ubuf.birthHistory22, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory23, column);
-                        }
-                    }
-                }
-            } else {
-                if (slot < 112.0) {
-                    if (slot < 104.0) {
-                        if (slot < 100.0) {
-                            return columnAt(ubuf.birthHistory24, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory25, column);
-                        }
-                    } else {
-                        if (slot < 108.0) {
-                            return columnAt(ubuf.birthHistory26, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory27, column);
-                        }
-                    }
-                } else {
-                    if (slot < 120.0) {
-                        if (slot < 116.0) {
-                            return columnAt(ubuf.birthHistory28, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory29, column);
-                        }
-                    } else {
-                        if (slot < 124.0) {
-                            return columnAt(ubuf.birthHistory30, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory31, column);
-                        }
-                    }
-                }
-            }
-        }
-    } else {
-        if (slot < 192.0) {
-            if (slot < 160.0) {
-                if (slot < 144.0) {
-                    if (slot < 136.0) {
-                        if (slot < 132.0) {
-                            return columnAt(ubuf.birthHistory32, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory33, column);
-                        }
-                    } else {
-                        if (slot < 140.0) {
-                            return columnAt(ubuf.birthHistory34, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory35, column);
-                        }
-                    }
-                } else {
-                    if (slot < 152.0) {
-                        if (slot < 148.0) {
-                            return columnAt(ubuf.birthHistory36, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory37, column);
-                        }
-                    } else {
-                        if (slot < 156.0) {
-                            return columnAt(ubuf.birthHistory38, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory39, column);
-                        }
-                    }
-                }
-            } else {
-                if (slot < 176.0) {
-                    if (slot < 168.0) {
-                        if (slot < 164.0) {
-                            return columnAt(ubuf.birthHistory40, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory41, column);
-                        }
-                    } else {
-                        if (slot < 172.0) {
-                            return columnAt(ubuf.birthHistory42, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory43, column);
-                        }
-                    }
-                } else {
-                    if (slot < 184.0) {
-                        if (slot < 180.0) {
-                            return columnAt(ubuf.birthHistory44, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory45, column);
-                        }
-                    } else {
-                        if (slot < 188.0) {
-                            return columnAt(ubuf.birthHistory46, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory47, column);
-                        }
-                    }
-                }
-            }
-        } else {
-            if (slot < 224.0) {
-                if (slot < 208.0) {
-                    if (slot < 200.0) {
-                        if (slot < 196.0) {
-                            return columnAt(ubuf.birthHistory48, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory49, column);
-                        }
-                    } else {
-                        if (slot < 204.0) {
-                            return columnAt(ubuf.birthHistory50, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory51, column);
-                        }
-                    }
-                } else {
-                    if (slot < 216.0) {
-                        if (slot < 212.0) {
-                            return columnAt(ubuf.birthHistory52, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory53, column);
-                        }
-                    } else {
-                        if (slot < 220.0) {
-                            return columnAt(ubuf.birthHistory54, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory55, column);
-                        }
-                    }
-                }
-            } else {
-                if (slot < 240.0) {
-                    if (slot < 232.0) {
-                        if (slot < 228.0) {
-                            return columnAt(ubuf.birthHistory56, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory57, column);
-                        }
-                    } else {
-                        if (slot < 236.0) {
-                            return columnAt(ubuf.birthHistory58, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory59, column);
-                        }
-                    }
-                } else {
-                    if (slot < 248.0) {
-                        if (slot < 244.0) {
-                            return columnAt(ubuf.birthHistory60, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory61, column);
-                        }
-                    } else {
-                        if (slot < 252.0) {
-                            return columnAt(ubuf.birthHistory62, column);
-                        } else {
-                            return columnAt(ubuf.birthHistory63, column);
-                        }
-                    }
-                }
-            }
-        }
-    }
+layout(binding = 1) uniform sampler2D descriptorAtlas;
+
+// All channels are opaque, nearest-sampled RGB bytes. Palette RGB and all
+// metadata for a cohort share one row and one scene-graph publication.
+vec3 descriptor(float row, float column) {
+    return texture(descriptorAtlas, vec2((column + 0.5) / 64.0, (mod(row, 256.0) + 0.5) / 256.0)).rgb;
 }
+vec3 descriptorBytes(float row, float column) {
+    return floor(descriptor(row, column) * 255.0 + 0.5);
+}
+float descriptorWord(float row, float column) {
+    return dot(descriptorBytes(row, column), vec3(1.0, 256.0, 65536.0));
+}
+float descriptor16(float row, float column, float maximum) {
+    return dot(descriptorBytes(row, column).rg, vec2(1.0, 256.0)) * (maximum / 65535.0);
+}
+float chooseArchetype(float row, float draw) {
+    float p = descriptorWord(row, 50.0);
+    if (draw < max(0.75, mod(p, 1024.0) / 1023.0)) return 0.0;
+    if (draw < floor(p / 1024.0) / 1023.0) return 1.0;
+    p = descriptorWord(row, 51.0);
+    if (draw < mod(p, 1024.0) / 1023.0) return 2.0;
+    if (draw < floor(p / 1024.0) / 1023.0) return 3.0;
+    p = descriptorWord(row, 52.0);
+    if (draw < mod(p, 1024.0) / 1023.0) return 4.0;
+    return 5.0;
+}
+float choosePalette(float row, float draw) {
+    // Six RGB fetches at most, with early exits for the selected CDF triplet.
+    for (int i = 0; i < 6; ++i) {
+        vec3 cdf = descriptor(row, 44.0 + float(i));
+        if (draw < cdf.r) return min(15.0, float(i) * 3.0);
+        if (draw < cdf.g) return min(15.0, float(i) * 3.0 + 1.0);
+        if (draw < cdf.b) return min(15.0, float(i) * 3.0 + 2.0);
+    }
+    return 15.0;
+}
+vec4 archetypeParameters(float row, float kind) {
+    float col = 16.0 + 4.0 * kind;
+    vec4 maxima = kind < 1.5 ? vec4(4096.0, 4096.0, 1.0, 1.0)
+        : kind < 2.5 ? vec4(3600.0, 3600.0, 120.0, 120.0)
+        : kind < 3.5 ? vec4(4096.0, 4096.0, 60.0, 60.0)
+        : kind < 4.5 ? vec4(4096.0, 4096.0, 8.0, 8.0)
+        : kind < 5.5 ? vec4(4096.0, 4096.0, 16.0, 16.0)
+        : vec4(4096.0, 4096.0, 1.0, 1.0);
+    return vec4(descriptor16(row, col, maxima.x), descriptor16(row, col + 1.0, maxima.y),
+                descriptor16(row, col + 2.0, maxima.z), descriptor16(row, col + 3.0, maxima.w));
+}
+float activeAge(float row) {
+    float days = descriptorWord(row, 54.0) - 32768.0;
+    float seconds = descriptorWord(row, 55.0) / 128.0;
+    // Subtract integer days BEFORE converting to seconds. Months of active
+    // uptime do not consume the sub-second precision of a young decayer.
+    return (ubuf.activeStamp.x - days) * 86400.0 + ubuf.activeStamp.y - seconds;
+}
+
+// INTEGRATION: all far-layer pixel -> (u, theta) mapping lives here. Pass
+// bhWarpBackground(pixel, weight) here for FAR; bhWarpMaterial for other layers.
+vec4 radialCoordinates(vec2 pixel, vec2 centre, float radius, float zoom, float baseAngle) {
+    vec2 relative = pixel - centre;
+    vec2 q = relative / (radius * zoom);
+    float u = 0.5 * dot(q, q);
+    vec2 base = pixel - ubuf.resolution * 0.5;
+    float t = (base.x * relative.y - base.y * relative.x) / max(dot(base, relative), 0.0001);
+    float t2 = t * t;
+    float angle = baseAngle + t * (1.0 + t2 * (-1.0 / 3.0 + t2 * (1.0 / 5.0 + t2 * (-1.0 / 7.0 + t2 / 9.0))));
+    if (abs(t) > 0.25 || dot(base, relative) <= 0.0) angle = atan(relative.y, relative.x);
+    return vec4(q, u, angle);
+}
+
+// BEGIN CENTRAL FADE / LIFETIME — replace the radial rim factors here with
+// bhWarpMaterial's rimLife during integration. Do not add a second centre fade.
+float centralMinimumU(float radius, float zoom, float padding, float requestedSupport, float layer) {
+    float middle = step(0.5, layer), nearLayer = step(1.5, layer);
+    float inner = mix(mix(0.008, 0.025, middle), 0.070, nearLayer);
+    float depth = mix(mix(0.10, 0.42, middle), 1.0, nearLayer);
+    float edgeR = 1.0 + padding / radius;
+    float starR = max(2.0 * inner, sqrt(max(0.0, edgeR * edgeR - mix(15120.0, 1200.0, middle) * (6.0 / 1080.0) * depth)));
+    float pixelR = max(0.0, starR - requestedSupport / (radius * zoom));
+    return pixelR * pixelR * 0.5;
+}
+float centralLifetime(float r, float age, float layer, vec4 h) {
+    float middle = step(0.5, layer), nearLayer = step(1.5, layer);
+    float inner = mix(mix(0.008, 0.025, middle), 0.070, nearLayer);
+    float outer = mix(mix(0.020, 0.060, middle), 0.140, nearLayer);
+    float lifetime = mix(7440.0, 480.0, middle) + 120.0 * fract(h.x * 13.71 + h.z * 19.13);
+    return smoothstep(inner, outer, r * 0.5) * smoothstep(0.0, 4.0, age)
+        * (1.0 - smoothstep(lifetime - 90.0, lifetime, age));
+}
+// END CENTRAL FADE / LIFETIME
 
 vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
     float nearLayer = step(1.5, layer);
@@ -397,6 +176,7 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
     vec4 h;
     vec2 p;
     float support;
+    float cellMargin;
     float life = 1.0;
     float age = 0.0;
     if (ubuf.radialMode > 0.5) {
@@ -406,26 +186,13 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
         float shortSide = min(ubuf.resolution.x, ubuf.resolution.y);
         float radius = shortSide * 0.5;
         vec2 centre = ubuf.resolution * 0.5 + ubuf.centreOffset * depth;
-        vec2 q = (pixel - centre) / (radius * zoom);
-        float u = dot(q, q) * 0.5;
         float padding = layer < 0.5 ? ubuf.birthPadding.x : layer < 1.5 ? ubuf.birthPadding.y : ubuf.birthPadding.z;
-        float fadeInner = mix(mix(0.008, 0.025, middleLayer), 0.070, nearLayer);
-        // The far layer reaches its central fade even from rectangular corners.
-        // Keep the original middle/near lifetime and their population unchanged.
-        float minimumEdgeR = 1.0 + padding / radius;
-        float minimumStarR = max(2.0 * fadeInner, sqrt(max(0.0, minimumEdgeR * minimumEdgeR - mix(15120.0, 1200.0, middleLayer) * (6.0 / 1080.0) * depth)));
-        float minimumPixelR = max(0.0, minimumStarR - requestedSupport / (radius * zoom));
-        if (u < minimumPixelR * minimumPixelR * 0.5 || u < 1e-12) return vec3(0.0);
-        // One shared atan per pixel, with a small centre-offset correction.
-        // The central fades bound |t| < .3 at the allowed wander amplitude.
-        // Alternating atan series through t^9 errs by < 0.001 physical px.
-        vec2 base = pixel - ubuf.resolution * 0.5;
-        vec2 relative = pixel - centre;
-        float t = (base.x * relative.y - base.y * relative.x) / max(dot(base, relative), 0.0001);
-        float t2 = t * t;
-        float angle = baseAngle + t * (1.0 + t2 * (-1.0 / 3.0 + t2 * (1.0 / 5.0 + t2 * (-1.0 / 7.0 + t2 / 9.0))));
-        if (abs(t) > 0.25 || dot(base, relative) <= 0.0)
-            angle = atan(relative.y, relative.x);
+        float minimumU = centralMinimumU(radius, zoom, padding, requestedSupport, layer);
+        vec4 coordinates = radialCoordinates(pixel, centre, radius, zoom, baseAngle);
+        vec2 q = coordinates.xy;
+        float u = coordinates.z;
+        float angle = coordinates.w;
+        if (u < minimumU || u < 1e-12) return vec3(0.0);
         // Integer sector count makes both sides of atan's branch cut identical.
         float sectors = floor(grid.y * 6.28318530718 + 0.5);
         float angleOffset = 0.37 + layer * 1.23;
@@ -465,7 +232,8 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
         // Dust needs only a subpixel guard. A full pixel erased cores in
         // the narrow inner sectors. Both guards remain strictly inside the
         // cell; the support taper reaches zero before its boundary.
-        support = min(requestedSupport, mix(0.98, 0.9, middleLayer) * max(0.0, radius * zoom * min(angularMargin, radialMargin) - mix(0.125, 1.0, middleLayer)));
+        cellMargin = max(0.0, radius * zoom * min(angularMargin, radialMargin) - mix(0.125, 1.0, middleLayer));
+        support = min(requestedSupport, mix(0.98, 0.9, middleLayer) * cellMargin);
         if (support <= 0.0 || dot(p,p) >= support * support) return vec3(0.0);
         // Entry is measured against an immutable expanded rectangle, including
         // maximum camera excursion and optical support. Thus the palette was
@@ -473,14 +241,7 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
         vec2 boundary = (ubuf.resolution * 0.5 + padding) / max(abs(direction), vec2(0.00001));
         float edgeR = min(boundary.x, boundary.y) / radius;
         age = (0.5 * edgeR * edgeR - starU) / ((6.0 / 1080.0) * depth);
-        float fadeOuter = mix(mix(0.020, 0.060, middleLayer), 0.140, nearLayer);
-        life = smoothstep(fadeInner, fadeOuter, r * 0.5);
-        // The extended 7680 s ring covers the far layer's full journey on
-        // portrait, ultrawide and tablet buffers. This last-resort lifetime
-        // also prevents overwritten-history reads on extreme aspect ratios.
-        // Two 30 s endpoints and a further 60 s margin remain at maximum age.
-        float lifetime = mix(7440.0, 480.0, middleLayer) + 120.0 * fract(h.x * 13.71 + h.z * 19.13);
-        life *= smoothstep(0.0, 4.0, age) * (1.0 - smoothstep(lifetime - 90.0, lifetime, age));
+        life = centralLifetime(r, age, layer, h);
         if (life <= 0.0) return vec3(0.0);
     } else {
         float angle = 0.37 + layer * 1.23;
@@ -503,40 +264,105 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
         vec2 position = support + 1.0 + h.xy * max(vec2(0.0), vec2(cellSize - 2.0 * (support + 1.0)));
         vec2 delta = (fract(world) * cellSize - position) * zoom;
         support *= zoom;
+        cellMargin = support;
         if (support <= 0.0 || dot(delta,delta) >= support * support) return vec3(0.0);
         p = rotate(rotate(delta, c, -s), cameraC, cameraS);
     }
-    float r2 = dot(p, p);
-    vec4 birth = vec4(0.0, 0.0, 0.0, 0.5);
+    float originalSupport = support;
+    vec2 originalP = p;
+    vec3 birth = vec3(0.5, 0.0, 0.0); // calm, tinted mix, palette count
+    float cohort = 0.0;
+    float birthBucket = 0.0;
+    float archetype = 0.0;
+    // Independently salted projections of the already uniform cell hash.
+    // Avoid two additional full hashes on each supported dust fragment.
+    vec4 draws = fract(h.xyzw * vec4(73.17, 31.73, 59.31, 97.13)
+        + h.wzxy * vec4(19.71, 53.11, 41.17, 61.19));
     if (ubuf.radialMode > 0.5) {
-        float birthBucket = (ubuf.flowPhaseLocal - age) / 30.0;
+        birthBucket = (ubuf.flowPhaseLocal - age) / 30.0;
         float n = floor(birthBucket);
-        birth = mix(historyAt(n - 1.0), historyAt(n), fract(birthBucket));
+        cohort = n - 1.0 + (draws.x < fract(birthBucket) ? 1.0 : 0.0);
+        if (middleLayer > 0.5) {
+            birth = descriptorBytes(cohort, 53.0) / vec3(255.0, 255.0, 1.0);
+            birth.y = min(0.45, birth.y);
+            archetype = chooseArchetype(cohort, draws.y);
+        } else {
+            float farHeader = descriptorWord(cohort, 57.0);
+            birth = vec3(mod(farHeader, 256.0) / 255.0, 0.0, floor(farHeader / 262144.0));
+            archetype = draws.y < min(0.25, mod(floor(farHeader / 256.0), 1024.0) / 1023.0) ? 1.0 : 0.0;
+        }
+        // The near-only decayer's middle-layer share returns to steady.
+        if (nearLayer < 0.5 && archetype > 1.5 && archetype < 2.5) archetype = 0.0;
+        if (middleLayer > 0.5 && archetype == 0.0 && birth.z > 0.0 && draws.z < birth.y
+            && draws.y < descriptor16(cohort, 58.0, 1.0) / max(0.00001, birth.y)) archetype = 6.0;
     }
-    float calm = birth.w;
+    float calm = birth.x;
     float acceptance = middleLayer > 0.5 ? mix(0.76, 0.68, nearLayer) : mix(0.90, 0.62, calm);
     float moodTarget = acceptance;
     if (ubuf.mood.x < 0.5) moodTarget -= mix(0.08, 0.06, middleLayer) * (1.0 - nearLayer);
     else if (ubuf.mood.x < 1.5) moodTarget += mix(0.14, 0.02, middleLayer) * (1.0 - nearLayer);
-    // Two stable masks: reserve stars fade over 60 seconds, never grid reseeding
-    // or an animated threshold. Reactive acceptance itself is birth-frozen.
     float population = mix(1.0 - step(acceptance, h.w), 1.0 - step(moodTarget, h.w), ubuf.mood.y);
     if (population <= 0.0) return vec3(0.0);
     life *= population;
+    vec4 traits = fract(h.zwxy * vec4(97.31, 41.13, 71.17, 89.31)
+        + h.yxwz * vec4(61.91, 11.71, 37.13, 23.17));
+    float tauTime = ubuf.phaseTime * (6.28318530718 / 4096.0);
+    vec4 parameters = vec4(0.0);
+    float behaviour = 1.0;
+    float behaviourPhase = traits.z * 6.28318530718;
+    float behaviourCycles = 1.0;
+    float motionA = 0.0;
+    vec2 binaryOffset = vec2(0.0);
+    if (archetype > 0.5) {
+        parameters = archetypeParameters(cohort, archetype);
+        behaviourCycles = max(1.0, floor(4096.0 / max(1.0, mix(parameters.x, parameters.y, traits.x)) + 0.5));
+        float oscillation = tauTime * behaviourCycles + behaviourPhase;
+        if (archetype < 1.5) {
+            float amplitude = mix(parameters.z, parameters.w, traits.y);
+            behaviour = 1.0 + min(amplitude, middleLayer > 0.5 ? 0.22 : 0.08) * sin(oscillation);
+        } else if (archetype < 2.5) {
+            // The next boundary's actual sealed ACTIVE timestamp, not flow age.
+            float anchor = floor(birthBucket) + 1.0;
+            float anchorDistance = age - (anchor - birthBucket) * 30.0;
+            if (anchorDistance < 0.0) return vec3(0.0);
+            float a = activeAge(anchor);
+            float L = mix(parameters.x, parameters.y, traits.x);
+            float entrance = mix(parameters.z, parameters.w, traits.y);
+            behaviour = smoothstep(0.0, entrance, a) * (1.0 - smoothstep(0.55 * L, L, a))
+                * (1.0 + 0.25 * exp2(-4.0 * max(0.0, a) / L));
+        } else if (archetype < 3.5) {
+            float period = 4096.0 / behaviourCycles;
+            float width = min(period * 0.5, mix(parameters.z, parameters.w, traits.y));
+            float phaseAge = abs(fract(oscillation / 6.28318530718) - 0.5) * period;
+            behaviour = 1.0 + min(0.18, descriptor(cohort, 58.0).b) * (1.0 - smoothstep(0.0, width * 0.5, phaseAge));
+        } else if (archetype < 4.5) {
+            // Original rejection contains the complete moving support disc.
+            motionA = min(min(parameters.z, 8.0), min(0.15 * cellMargin, 0.20 * support));
+            vec2 delta = motionA * 0.70710678118 * vec2(sin(oscillation), sin(tauTime * (behaviourCycles + 1.0) + behaviourPhase * 1.7));
+            p -= delta;
+            support -= motionA;
+        } else if (archetype < 5.5) {
+            motionA = min(min(mix(parameters.z, parameters.w, traits.y) * 0.5, 8.0), 0.15 * support);
+            binaryOffset = motionA * vec2(cos(oscillation), sin(oscillation));
+            support -= motionA;
+        }
+    }
+    if (behaviour <= 0.0) return vec3(0.0);
+    float r2 = dot(p, p);
+
     float variation = fract(h.z * 37.19);
     float phase = h.z * 6.28318530718;
-    float tauTime = ubuf.phaseTime * (6.28318530718 / 4096.0);
     float cycles = floor(mix(370.0, 990.0, variation));
     float flareDraw = fract(h.x * 71.31 + h.z * 23.17);
-    float flare = nearLayer * (1.0 - step(ubuf.flareFraction * 65.0 * mix(1.3, 0.7, calm), flareDraw));
+    float flare = (archetype == 0.0 ? 1.0 : 0.0) * nearLayer * (1.0 - step(ubuf.flareFraction * 65.0 * mix(1.3, 0.7, calm), flareDraw));
     float variableDraw = fract(h.y * 47.23 + h.z * 11.73);
-    float variable = middleLayer * (1.0 - flare) * (1.0 - step(ubuf.variableFraction, variableDraw));
+    float variable = (archetype == 0.0 ? 1.0 : 0.0) * middleLayer * (1.0 - flare) * (1.0 - step(ubuf.variableFraction, variableDraw));
     float slowCycles = variable > 0.5 ? floor(mix(18.0, 46.0, variation)) : floor(mix(31.0, 83.0, h.z));
     float slow = sin(tauTime * slowCycles + phase * 2.3);
     float pulse = sin(tauTime * cycles + phase + 0.55 * slow);
     float shimmer = 1.0 + ubuf.twinkle * (0.60 * pulse + 0.28 * sin(tauTime * floor(mix(193.0, 431.0, h.w)) + phase * 1.7));
     // Unsynchronised 0.5–1.5 s glints, with variable strength, on a minority.
-    if (variation > 0.78) {
+    if (variation > 0.78 && archetype == 0.0) {
         float glint = pow(max(0.0, sin(tauTime * floor(mix(63.0, 181.0, h.z)) + phase * 3.7)), 48.0);
         shimmer += ubuf.twinkle * glint * (0.8 + 0.6 * slow) * (1.0 + 0.35 * ubuf.mood.y * step(1.5, ubuf.mood.x) * (1.0 - step(2.5, ubuf.mood.x)));
     }
@@ -583,58 +409,95 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
         light += (cross + glow) * breath;
     }
 
-    // Compact support reaches zero smoothly before a cell boundary can clip it.
-    light *= 1.0 - smoothstep(support * support * 0.64, support * support, r2);
+    if (archetype > 4.5 && archetype < 5.5) {
+        vec2 a = p - binaryOffset, b = p + binaryOffset;
+        float a2 = dot(a, a), b2 = dot(b, b);
+        float cutA = 1.0 - smoothstep(support * support * 0.64, support * support, a2);
+        float cutB = 1.0 - smoothstep(support * support * 0.64, support * support, b2);
+        float pairCore = 0.5 * (exp2(-0.7213475 * a2 / variance) * cutA + exp2(-0.7213475 * b2 / variance) * cutB) * sigma * sigma / variance;
+        light = (pairCore + halo) * energy * shimmer;
+        if (nearLayer > 0.5) {
+            float hotSigma = min(2.5, optics * mix(0.55, 0.68, h.z) * mix(0.92, 1.08, calm));
+            float hotVariance = hotSigma * hotSigma + 0.0833333;
+            float pairHot = 0.5 * (exp2(-0.7213475 * a2 / hotVariance) * cutA + exp2(-0.7213475 * b2 / hotVariance) * cutB) * hotSigma * hotSigma / hotVariance;
+            float sharedSoft = exp2(-r2 / (26.0 * optics * optics));
+            light = 1.0 - exp(-(3.2 * pairHot + 0.085 * sharedSoft) * shimmer);
+        }
+    } else {
+        light *= 1.0 - smoothstep(support * support * 0.64, support * support, r2);
+    }
+    // Shared halo and displaced cores all die inside the unmodified cell disc.
+    if (motionA > 0.0)
+        light *= 1.0 - smoothstep(originalSupport * originalSupport * 0.64, originalSupport * originalSupport, dot(originalP, originalP));
     vec3 tint = mix(vec3(0.73, 0.84, 1.0), vec3(1.0, 0.98, 0.94), h.z);
-    vec3 probability = max(vec3(0.0), birth.xyz);
-    probability *= min(1.0, 0.45 / max(0.00001, probability.x + probability.y + probability.z));
     float tintDraw = fract(h.x * 31.17 + h.y * 17.13 + h.z * 7.97);
-    vec3 target = tint;
-    if (tintDraw < probability.x) target = vec3(0.65, 1.0, 0.78);
-    else if (tintDraw < probability.x + probability.y) target = vec3(0.86, 0.80, 1.0);
-    else if (tintDraw < probability.x + probability.y + probability.z) target = vec3(1.0, 0.83, 0.67);
-    tint = mix(tint, target, 0.45);
-    // Foreground light stays near-white; whitening is an immutable layer trait,
-    // independent of twinkle/intensity, so normalized colour cannot cycle live.
-    tint = mix(tint, vec3(1.0), nearLayer * 0.65);
-    return light * tint * visibility;
+    if (birth.z > 0.5 && middleLayer > 0.5 && draws.z < birth.y) {
+        float index = choosePalette(cohort, draws.w);
+        tint = descriptor(cohort, index);
+        if (archetype > 5.5) {
+            float byteIndex = floor(index / 2.0);
+            vec3 neighbours = descriptorBytes(cohort, 60.0 + floor(byteIndex / 3.0));
+            float component = mod(byteIndex, 3.0);
+            float packed = component < 0.5 ? neighbours.x : component < 1.5 ? neighbours.y : neighbours.z;
+            float neighbour = mod(floor(packed / (mod(index, 2.0) < 0.5 ? 1.0 : 16.0)), 16.0);
+            tint = mix(tint, descriptor(cohort, neighbour), 0.5 - 0.5 * cos(tauTime * behaviourCycles + behaviourPhase));
+        }
+        vec3 whitening = descriptor(cohort, 59.0);
+        tint = mix(tint, vec3(1.0), min(0.10, mix(whitening.x, whitening.y, traits.w)));
+        tint = mix(tint, vec3(1.0), nearLayer * whitening.z);
+    } else if (birth.z < 0.5) {
+        vec3 probability = ubuf.radialMode > 0.5 ? descriptor(cohort, 56.0) : vec3(0.0);
+        probability *= min(1.0, 0.45 / max(0.00001, probability.x + probability.y + probability.z));
+        vec3 target = tint;
+        if (tintDraw < probability.x) target = vec3(0.65, 1.0, 0.78);
+        else if (tintDraw < probability.x + probability.y) target = vec3(0.86, 0.80, 1.0);
+        else if (tintDraw < probability.x + probability.y + probability.z) target = vec3(1.0, 0.83, 0.67);
+        tint = mix(tint, target, 0.45);
+        tint = mix(tint, vec3(1.0), nearLayer * 0.65);
+    } else {
+        tint = mix(tint, vec3(1.0), nearLayer * 0.35);
+    }
+    return light * tint * visibility * behaviour;
 }
 
-// CPU-computed deterministic event geometry; uniform branches skip idle events.
-// Every distance and the anti-alias footprint are in physical pixels.
-vec3 streak(vec2 pixel, vec4 head, vec3 shape, bool slowComet) {
-    if (head.w <= 0.0)
-        return vec3(0.0);
-    vec2 p = pixel - head.xy;
-    float along = -dot(p, shape.xy);
-    float across = dot(p, vec2(-shape.y, shape.x));
-    float extent = shape.z * (slowComet ? 14.0 : 6.0);
-    if (along < -extent || along > head.z + extent || abs(across) > extent)
-        return vec3(0.0);
-    float u = clamp(along / max(head.z, 1.0), 0.0, 1.0);
-    float width = shape.z * (slowComet ? 1.8 + 8.0 * u : 1.0 - 0.65 * u);
+// CPU bounds and at most six connected segments across three generic slots.
+// Every segment uses total tail distance for opacity/width. max-combination
+// avoids bright joints; the nucleus is evaluated exactly once per slot.
+float tailSegment(vec2 pixel, vec2 a, vec2 b, float travelled, vec4 head, vec4 shape, float style) {
+    vec2 v = b - a;
+    float length = sqrt(dot(v, v));
+    if (length < 0.001) return 0.0;
+    float t = clamp(dot(pixel - a, v) / (length * length), 0.0, 1.0);
+    float u = clamp((travelled + t * length) / max(shape.x, 0.001), 0.0, 1.0);
+    float width = head.z * (style > 0.5 ? 1.8 + 8.0 * u : 1.0 - 0.65 * u);
+    vec2 delta = pixel - mix(a, b, t);
+    float r2 = dot(delta, delta);
+    // Compact circular cross-section; bounding box alone must not cut a glow.
+    float support = head.z * (style > 0.5 ? 14.0 : 6.0);
+    if (r2 >= support * support) return 0.0;
     float variance = width * width + 0.0833333;
-    float tail = exp2(-0.7213475 * across * across / variance) * width / sqrt(variance);
-    tail *= smoothstep(-shape.z, shape.z, along) * pow(1.0 - u, slowComet ? 1.6 : 2.0);
-    float coreVariance = shape.z * shape.z + 0.0833333;
-    float r2 = dot(p, p);
-    float hot = exp2(-0.7213475 * r2 / coreVariance) * shape.z * shape.z / coreVariance;
-    float glow = exp2(-r2 / (shape.z * shape.z * (slowComet ? 32.0 : 6.0)));
-    vec3 nucleus = (1.35 * hot + (slowComet ? 0.22 : 0.12) * glow) * vec3(0.94, 0.97, 1.0);
-    vec3 tailTint = slowComet ? vec3(0.68, 0.80, 1.0) : vec3(0.81, 0.89, 1.0);
-    return head.w * (nucleus + tail * tailTint * (slowComet ? 0.23 : 0.62));
+    float light = exp2(-0.7213475 * r2 / variance) * width / sqrt(variance);
+    light *= pow(1.0 - u, style > 0.5 ? 1.6 : 2.0);
+    return light * (1.0 - smoothstep(0.64 * support * support, support * support, r2));
 }
-
-vec3 satellite(vec2 pixel) {
-    if (ubuf.satelliteHead.w <= 0.0)
-        return vec3(0.0);
-    vec2 p = pixel - ubuf.satelliteHead.xy;
+vec3 eventSlot(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec4 shape, vec4 bounds) {
+    if (head.w <= 0.0 || pixel.x < bounds.x || pixel.y < bounds.y || pixel.x > bounds.z || pixel.y > bounds.w) return vec3(0.0);
+    vec2 p = pixel - head.xy;
     float r2 = dot(p, p);
-    if (r2 > 16.0)
-        return vec3(0.0);
-    float sigma2 = ubuf.satelliteHead.z * ubuf.satelliteHead.z;
-    float light = exp2(-0.7213475 * r2 / (sigma2 + 0.0833333)) * sigma2 / (sigma2 + 0.0833333);
-    return light * ubuf.satelliteHead.w * vec3(1.0, 0.95, 0.86);
+    float sigma2 = head.z * head.z;
+    float variance = sigma2 + 0.0833333;
+    float extent = head.z * (colour.w > 0.5 && colour.w < 1.5 ? 14.0 : 6.0);
+    float taper = 1.0 - smoothstep(0.64 * extent * extent, extent * extent, r2);
+    float hot = exp2(-0.7213475 * r2 / variance) * sigma2 / variance;
+    float glow = colour.w > 1.5 ? 0.0 : exp2(-r2 / (sigma2 * (colour.w > 0.5 ? 32.0 : 6.0)));
+    vec3 nucleus = (hot * (colour.w > 1.5 ? 1.0 : 1.35) + glow * (colour.w > 0.5 ? 0.22 : 0.12)) * taper * mix(colour.rgb, vec3(1.0), 0.60);
+    float tail = 0.0;
+    if (shape.z > 0.5) tail = tailSegment(pixel, tail01.xy, tail01.zw, 0.0, head, shape, colour.w);
+    float distance = length(tail01.zw - tail01.xy);
+    if (shape.z > 1.5) tail = max(tail, tailSegment(pixel, tail01.zw, tail23.xy, distance, head, shape, colour.w));
+    distance += length(tail23.xy - tail01.zw);
+    if (shape.z > 2.5) tail = max(tail, tailSegment(pixel, tail23.xy, tail23.zw, distance, head, shape, colour.w));
+    return head.w * (nucleus + shape.y * tail * colour.rgb);
 }
 
 void main() {
@@ -655,10 +518,9 @@ void main() {
         field += stars(pixel, baseAngle, scale, 2.0);
         colour += field * ubuf.brightness;
     }
-    colour += streak(pixel, ubuf.meteorHead, ubuf.meteorShape, false);
-    colour += streak(pixel, ubuf.companionHead, ubuf.companionShape, false);
-    colour += streak(pixel, ubuf.cometHead, ubuf.cometShape, true);
-    colour += satellite(pixel);
+    colour += eventSlot(pixel, ubuf.event0Head, ubuf.event0Colour, ubuf.event0Tail01, ubuf.event0Tail23, ubuf.event0Shape, ubuf.event0Bounds);
+    colour += eventSlot(pixel, ubuf.event1Head, ubuf.event1Colour, ubuf.event1Tail01, ubuf.event1Tail23, ubuf.event1Shape, ubuf.event1Bounds);
+    colour += eventSlot(pixel, ubuf.event2Head, ubuf.event2Colour, ubuf.event2Tail01, ubuf.event2Tail23, ubuf.event2Shape, ubuf.event2Bounds);
     // Stationary sub-code-value dither; no animated noise in the black sky.
     float dither = fract(52.9829189 * fract(dot(floor(pixel), vec2(0.06711056, 0.00583715)))) - 0.5;
     // Never lift empty black pixels with dither: the default sky is exactly zero.

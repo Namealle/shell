@@ -43,6 +43,16 @@ Item {
     property real companionChance: 0.04
     property real fireballChance: 0.01
 
+    property var paletteColors: []
+    property var paletteWeightsTarget: []
+    property real paletteMixTarget: 0.32
+    property var archetypeWeightsTarget: [0.82, 0.10, 0.04, 0.02, 0.015, 0.005]
+    property var archetypeParams: ({})
+    property real calmTarget: 0.5
+    property vector4d ambientHole: Qt.vector4d(0.5, 0.5, 0.5, 0.5)
+    property var eventFamilies: ({})
+    property int eventHeadCap: 3
+
     // Mutable JS numbers stay doubles; only publish() converts bounded values
     // to GPU floats. No target has a direct binding to the ShaderEffect.
     property var _state: null
@@ -82,19 +92,36 @@ Item {
 
     function resetState(): void {
         const history = [];
-        for (let i = 0; i < 256; ++i)
-            history.push([0, 0, 0, 0.5]);
+        const colors = paletteSnapshot();
+        const palette = normalized(paletteWeightsTarget, colors.length, null);
+        const archetypes = archetypeWeights(archetypeWeightsTarget);
+        const initialMix = clamp(paletteMixTarget, 0, 0.45);
+        const initialCalm = colors.length ? clamp(calmTarget, 0, 1) : 0.5;
+        for (let i = 0; i < 256; ++i) {
+            const bucket = i === 0 ? 0 : i - 256;
+            history.push(sealDescriptor(bucket * 30, [0, 0, 0, 0.5], palette, archetypes, initialMix, initialCalm));
+        }
         _state = {
             clock: 0,
             flow: 0,
             birth: [0, 0, 0, 0.5],
             live: [0.5, 0.5, 0.5, 0.5],
             history: history,
-            publishedHistory: [],
+            atlasRevision: 1,
+            publishedRevision: 0,
+            pendingRevision: 0,
+            pendingImage: null,
+            runtimeAtlas: false,
+            palette: palette,
+            archetypes: archetypes,
+            mix: initialMix,
+            calm: initialCalm,
+            hole: [0.5, 0.5, 0.5, 0.5],
             bucket: 0,
             travel: [0, 0],
-            events: [null, null, null],
-            eventIds: [0, 0, 0],
+            events: [null, null, null, null, null],
+            eventIds: [0, 0, 0, 0, 0],
+            familyLast: {},
             moodClock: Date.now() / 1000,
             moodCorrection: 0,
             mood: [0, 0, 0, 0],
@@ -113,11 +140,13 @@ Item {
     // its 7560 s safety lifetime leaves two sealed interpolation endpoints.
     // Keep 30 s sampling for every layer: extending coverage must not delay
     // the palette response of new middle/near stars or clamp a living palette.
-    // Samples are sealed at flow boundaries. Interpolation in the shader uses
-    // P[n-1] and P[n], both already sealed at a star's immutable birth phase.
+    // Samples are sealed at flow boundaries. The shader selects ONE of P[n-1]
+    // and P[n] with a birth-owned categorical draw; it never blends RGB meanings.
     function advance(dt: real): void {
         const s = _state;
         const before = s.birth.slice();
+        const oldPalette = s.palette.slice(), oldArchetypes = s.archetypes.slice();
+        const oldMix = s.mix, oldCalm = s.calm;
         const oldFlow = s.flow;
         const oldRate = 0.8 + 0.4 * s.live[2];
         const birth = [ambientBirth.x, ambientBirth.y, ambientBirth.z, ambientBirth.w];
@@ -126,6 +155,16 @@ Item {
             s.birth[i] = filtered(s.birth[i], birth[i], dt, 60);
             s.live[i] = filtered(s.live[i], live[i], dt, i === 3 ? 120 : 90);
         }
+        const colors = paletteSnapshot();
+        const palette = normalized(paletteWeightsTarget, colors.length, null);
+        // Reordering changes future index meanings only. Sealed rows own RGB.
+        s.palette = palette.map((x, i) => filtered(s.palette[i] || 0, x, dt, 60));
+        const archetypes = archetypeWeights(archetypeWeightsTarget);
+        s.archetypes = archetypeWeights(s.archetypes.map((x, i) => filtered(x, archetypes[i], dt, 60)));
+        s.mix = filtered(s.mix, clamp(paletteMixTarget, 0, 0.45), dt, 60);
+        s.calm = filtered(s.calm, colors.length ? calmTarget : ambientBirth.w, dt, 60);
+        const hole = [ambientHole.x, ambientHole.y, ambientHole.z, ambientHole.w];
+        s.hole = s.hole.map((x, i) => filtered(x, hole[i], dt, 90));
         // Flow seconds include the user speed. Changing it never changes an
         // inferred birth phase. Zero speed freezes the ring as well as motion.
         const flowRate = (oldRate + 0.8 + 0.4 * s.live[2]) * 0.5;
@@ -133,8 +172,10 @@ Item {
         const bucket = Math.floor((s.flow + 1e-7) / 30);
         for (let n = Math.max(s.bucket + 1, bucket - 255); n <= bucket; ++n) {
             const f = clamp((n * 30 - oldFlow) / Math.max(1e-12, s.flow - oldFlow), 0, 1);
-            s.history[modulo(n, 256)] = before.map((x, i) => x + (s.birth[i] - x) * f);
+            const lerp = (a, b) => a + (b - a) * f;
+            s.history[modulo(n, 256)] = sealDescriptor(s.clock + dt * f, before.map((x, i) => lerp(x, s.birth[i])), s.palette.map((x, i) => lerp(oldPalette[i] || 0, x)), oldArchetypes.map((x, i) => lerp(x, s.archetypes[i])), lerp(oldMix, s.mix), lerp(oldCalm, s.calm));
             ++s.historyWrites;
+            ++s.atlasRevision;
         }
         s.bucket = bucket;
         const from = s.clock;
@@ -168,6 +209,7 @@ Item {
         // suspend catch-up path. Runtime frame gaps never enter this loop.
         while (_state.clock < target - 1e-9)
             advance(Math.min(30, target - _state.clock));
+        _state.runtimeAtlas = false;
         publish();
     }
 
@@ -191,6 +233,7 @@ Item {
         _writingTime = true;
         time = _state.clock;
         _writingTime = false;
+        _state.runtimeAtlas = true;
         publish();
     }
 
@@ -208,14 +251,166 @@ Item {
         return [kind, weight, slot, duration];
     }
 
-    // QMatrix4x4's constructor is ROW-major. GLSL history columns each hold one
-    // sample: transpose the four vectors here, never pass a JS array as a UBO.
-    function historyMatrix(index: int): matrix4x4 {
-        const a = _state.history[index * 4];
-        const b = _state.history[index * 4 + 1];
-        const c = _state.history[index * 4 + 2];
-        const d = _state.history[index * 4 + 3];
-        return Qt.matrix4x4(a[0], b[0], c[0], d[0], a[1], b[1], c[1], d[1], a[2], b[2], c[2], d[2], a[3], b[3], c[3], d[3]);
+    // Every row is an immutable value. All 12 packed history floats travel in
+    // columns 44..55 of the SAME 64x256 opaque image as their descriptors.
+    // This replaces the 12 KiB UBO with exact RGB24 storage (no bit operations
+    // in GLSL). No finite palette-version bank, shortened ring or live RGB UBO.
+    function normalized(values: var, count: int, fallback: var): var {
+        const out = [];
+        let total = 0;
+        for (let i = 0; i < count; ++i) {
+            const x = Number(values && values[i]);
+            out.push(Number.isFinite(x) ? Math.max(0, x) : 0);
+            total += out[i];
+        }
+        if (total <= 0) {
+            for (let i = 0; i < count; ++i)
+                out[i] = fallback && Number.isFinite(fallback[i]) ? Math.max(0, fallback[i]) : 1;
+            total = out.reduce((a, b) => a + b, 0);
+        }
+        return out.map(x => total > 0 ? x / total : 1 / Math.max(1, count));
+    }
+
+    function archetypeWeights(values: var): var {
+        const a = normalized(values, 6, [0.82, 0.10, 0.04, 0.02, 0.015, 0.005]);
+        const moving = a.slice(1).reduce((x, y) => x + y, 0);
+        const scale = Math.min(1, 0.25 / Math.max(1e-12, moving));
+        for (let i = 1; i < 6; ++i)
+            a[i] *= scale;
+        a[0] = 1 - Math.min(0.25, moving);
+        return a;
+    }
+
+    function parameterRange(object: var, key: string, fallback: var, low: real, high: real): var {
+        const raw = object && object[key];
+        if (!Array.isArray(raw) || raw.length !== 2 || !raw.every(x => Number.isFinite(x)))
+            return fallback.slice();
+        const a = clamp(raw[0], low, high);
+        return [a, clamp(raw[1], a, high)];
+    }
+
+    function paletteSnapshot(): var {
+        if (!Array.isArray(paletteColors))
+            return [];
+        return paletteColors.slice(0, 16).map(c => [0, 1, 2].map(i => clamp(Number(c && c[i]), 0, 1)));
+    }
+
+    function sealDescriptor(stamp: real, birth: var, weights: var, archetypes: var, mix: real, calm: real): var {
+        const colors = paletteSnapshot();
+        const pixels = new Array(64 * 3).fill(0);
+        const packed = new Array(12).fill(0);
+        function rgb(column, r, g, b) {
+            pixels[column * 3] = Math.round(r);
+            pixels[column * 3 + 1] = Math.round(g);
+            pixels[column * 3 + 2] = Math.round(b);
+        }
+        function integer(column, value) {
+            const n = Math.round(value);
+            rgb(column, n % 256, Math.floor(n / 256) % 256, Math.floor(n / 65536) % 256);
+        }
+        function number16(column, value, maximum) {
+            const q = Math.round(clamp(value / maximum, 0, 1) * 65535);
+            rgb(column, q % 256, Math.floor(q / 256), 0);
+        }
+        for (let i = 0; i < colors.length; ++i)
+            rgb(i, colors[i][0] * 255, colors[i][1] * 255, colors[i][2] * 255);
+        const cw = normalized(weights, colors.length, null);
+        let cumulative = 0;
+        for (let i = 0; i < 16; ++i) {
+            cumulative += i < cw.length ? cw[i] : 0;
+            const threshold = i >= colors.length - 1 ? 255 : Math.round(cumulative * 255);
+            packed[Math.floor(i / 3)] += threshold * Math.pow(256, i % 3);
+        }
+        const aw = archetypeWeights(archetypes);
+        cumulative = 0;
+        for (let i = 0; i < 6; ++i) {
+            cumulative += aw[i];
+            packed[6 + Math.floor(i / 2)] += (i === 5 ? 1023 : Math.round(cumulative * 1023)) * Math.pow(1024, i % 2);
+        }
+        packed[9] = Math.round(clamp(calm, 0, 1) * 255) + 256 * Math.round(clamp(mix, 0, 0.45) * 255) + 65536 * colors.length;
+        // Epoch days are biased to represent the startup prehistory. The second
+        // word is 1/128 s within the day: <2^24, 7.8125 ms precision at any uptime.
+        const ticks = Math.floor(stamp * 128);
+        packed[10] = Math.floor(ticks / 11059200) + 32768;
+        packed[11] = modulo(ticks, 11059200);
+        for (let i = 0; i < 12; ++i)
+            integer(44 + i, packed[i]);
+        rgb(56, clamp(birth[0], 0, 1) * 255, clamp(birth[1], 0, 1) * 255, clamp(birth[2], 0, 1) * 255);
+        const params = archetypeParams || {};
+        const pulse = params.pulsator || {};
+        const decay = params.decayer || {};
+        const glint = params.glint || {};
+        const wander = params.wanderer || {};
+        const binary = params.binary || {};
+        const shifter = params.colorShifter || {};
+        const ranges = [[0, 0, 0, 0], parameterRange(pulse, "periodSec", [6, 40], 1, 4096).concat(parameterRange(pulse, "amplitude", [0.08, 0.22], 0, 0.22)), parameterRange(decay, "lifeSec", [20, 90], 20, 3600).concat(parameterRange(decay, "fadeInSec", [3, 8], 0.1, 120)), parameterRange(glint, "everySec", [18, 65], 2, 4096).concat(parameterRange(glint, "widthSec", [0.8, 2], 0.1, 60)), parameterRange(wander, "periodSec", [30, 100], 2, 4096).concat([clamp(wander.offsetPx === undefined ? 8 : wander.offsetPx, 0, 8), 0]), parameterRange(binary, "periodSec", [12, 45], 2, 4096).concat(parameterRange(binary, "separationPx", [1.5, 5], 0, 16)), parameterRange(shifter, "periodSec", [120, 360], 30, 4096).concat([0, 0])];
+        const maxima = [[1, 1, 1, 1], [4096, 4096, 1, 1], [3600, 3600, 120, 120], [4096, 4096, 60, 60], [4096, 4096, 8, 8], [4096, 4096, 16, 16], [4096, 4096, 1, 1]];
+        for (let a = 0; a < 7; ++a)
+            for (let j = 0; j < 4; ++j)
+                number16(16 + 4 * a + j, ranges[a][j], maxima[a][j]);
+        const far = params.farWeights || {
+            steady: 0.97,
+            pulsator: 0.03
+        };
+        const farWeights = normalized(Array.isArray(far) ? far : [far.steady, far.pulsator], 2, [0.97, 0.03]);
+        // Far dust needs one header fetch, including calm and palette mode.
+        integer(57, Math.round(clamp(calm, 0, 1) * 255) + 256 * Math.round(Math.min(0.25, farWeights[1]) * 1023) + 262144 * colors.length);
+        const shiftShare = shifter.enabled ? clamp(shifter.share === undefined ? 0.005 : shifter.share, 0, 0.005) : 0;
+        // Shifters take steady share; all non-steady types together remain <=25%.
+        const sealedSteady = Math.max(0.75, Math.round(aw[0] * 1023) / 1023);
+        number16(58, Math.floor(Math.min(shiftShare, sealedSteady - 0.75) * 65535) / 65535, 1);
+        pixels[58 * 3 + 2] = Math.round(clamp(glint.gain === undefined ? 0.18 : glint.gain, 0, 0.18) * 255);
+        rgb(59, 0, 0.10 * 255, 0.35 * 255); // fixed layer traits, not live brightness
+        function hue(c) {
+            const hi = Math.max(...c), lo = Math.min(...c), d = hi - lo;
+            if (d < 1e-6)
+                return 0;
+            const h = hi === c[0] ? (c[1] - c[2]) / d : hi === c[1] ? 2 + (c[2] - c[0]) / d : 4 + (c[0] - c[1]) / d;
+            return modulo(h, 6);
+        }
+        const order = colors.map((c, i) => [hue(c), i]).sort((a, b) => a[0] - b[0]);
+        for (let i = 0; i < order.length; ++i) {
+            const index = order[i][1], next = order[(i + 1) % order.length][1];
+            const byte = 60 * 3 + Math.floor(index / 2);
+            pixels[byte] += next * Math.pow(16, index % 2);
+        }
+        rgb(63, 3, 0, 0);
+        return {
+            packed: packed,
+            pixels: pixels
+        };
+    }
+
+    function atlasUrl(): string {
+        // 24-bit BI_RGB BMP has no colour profile or gamma chunk, no alpha to
+        // premultiply, and a fixed 64x256 decoder size independent of scene DPR.
+        // QImage uploads this opaque image as RGBA8. Bottom-up rows are explicit.
+        const bytes = [];
+        function le(n, count) {
+            for (let i = 0; i < count; ++i)
+                bytes.push(Math.floor(n / Math.pow(256, i)) % 256);
+        }
+        le(0x4d42, 2);
+        le(54 + 64 * 256 * 3, 4);
+        le(0, 4);
+        le(54, 4);
+        le(40, 4);
+        le(64, 4);
+        le(256, 4);
+        le(1, 2);
+        le(24, 2);
+        le(0, 4);
+        le(64 * 256 * 3, 4);
+        le(0, 4);
+        le(0, 4);
+        le(0, 4);
+        le(0, 4);
+        for (let row = 255; row >= 0; --row) {
+            const p = _state.history[row].pixels;
+            for (let x = 0; x < 64; ++x)
+                bytes.push(p[x * 3 + 2], p[x * 3 + 1], p[x * 3]);
+        }
+        return "data:image/bmp;base64," + Qt.btoa(bytes);
     }
 
     function blockSalt(block: real, layer: int, axis: int): real {
@@ -223,80 +418,347 @@ Item {
     }
 
     function eventOff(): var {
-        return [0, 0, 0, 0, 1, 0, 1];
-    }
-
-    // All traits, including geometry and the next interval, are captured once.
-    function schedule(kind: int): var {
-        const s = _state;
-        if (!(kind === 0 ? meteorsEnabled : kind === 1 ? cometEnabled : satellitesEnabled))
-            return null;
-        const index = s.eventIds[kind]++;
-        const salt = screenSeed + 113 + kind * 701;
-        const range = kind === 0 ? meteorsInterval : kind === 1 ? cometInterval : satellitesInterval;
-        const minimum = Math.max(kind === 0 ? 3 : kind === 1 ? 60 : 45, range.x);
-        const maximum = Math.max(minimum, range.y);
-        const activeMood = s.mood[0] === 3 ? s.mood[1] : 0;
-        const rate = kind === 0 ? 0.5 + s.live[3] : 1;
-        const low = minimum + (18 - minimum) * activeMood;
-        const high = maximum + (36 - maximum) * activeMood;
-        const previous = s.events[kind];
-        const base = previous ? previous.start : s.clock;
-        let start = Math.max(s.clock, base + (low + (high - low) * random(index, salt)) / rate);
-        const fireball = kind === 0 && activeMood === 0 && random(index, salt + 9) < clamp(fireballChance, 0, 1);
-        const pair = kind === 0 && random(index, salt + 1) < clamp(companionChance, 0, 1);
-        const offset = pair ? 0.35 + 0.35 * random(index, salt + 2) : 0;
-        const duration = kind === 0 ? (fireball ? 1.4 + 0.8 * random(index, salt + 3) : 0.55 + 0.60 * random(index, salt + 3)) : kind === 1 ? 20 + 15 * random(index, salt + 3) : 30 + 15 * random(index, salt + 3);
-        // Serialize the rare tracks; a companion is the only second head. This
-        // avoids hiding/replacing active geometry to enforce the overlap cap.
-        for (let pass = 0; pass < 3; ++pass) {
-            for (const other of s.events) {
-                if (other && start < other.start + other.duration + other.offset + 1 && start + duration + offset + 1 > other.start)
-                    start = other.start + other.duration + other.offset + 1;
-            }
-        }
-        const w = width * devicePixelRatio;
-        const h = height * devicePixelRatio;
-        const shortSide = Math.min(w, h);
-        const optics = Math.max(1, Math.sqrt(w * h / (1024 * 576)));
         return {
-            kind: kind,
-            index: index,
-            start: start,
-            duration: duration,
-            pair: pair,
-            offset: offset,
-            fireball: fireball,
-            angle: (random(index, salt + 4) * 2 - 1) * Math.PI,
-            x: w * (0.20 + 0.60 * random(index, salt + 5)),
-            y: h * (0.20 + 0.60 * random(index, salt + 6)),
-            distance: shortSide * (kind === 0 ? 0.28 : kind === 1 ? 0.72 : 0.85),
-            shortSide: shortSide,
-            pointWidth: kind === 0 ? optics * 0.40 * (fireball ? 1.4 : 1) : kind === 1 ? optics * 0.70 : 0.65
+            head: [0, 0, 1, 0],
+            colour: [1, 1, 1, 0],
+            tail01: [0, 0, 0, 0],
+            tail23: [0, 0, 0, 0],
+            shape: [0, 0, 0, 0],
+            bounds: [0, 0, 0, 0]
         };
     }
 
-    function eventState(e: var, companion: bool): var {
+    function eventConfig(kind: int): var {
+        const config = eventFamilies || {};
+        return kind === 0 ? config.meteors || {} : kind === 1 ? config.comet || {} : kind === 3 ? (config.events || config).shower || {} : kind === 4 ? (config.events || config).slowWanderer || {} : {};
+    }
+
+    function eventEnabled(kind: int): bool {
+        if (kind < 3)
+            return kind === 0 ? meteorsEnabled : kind === 1 ? cometEnabled : satellitesEnabled;
+        return eventConfig(kind).enabled !== false;
+    }
+
+    function familyDefaults(kind: int): var {
+        // weight, duration low/high, gain cap, tail low/high, bend low/high,
+        // travel low/high. Lengths are fractions of the captured short side.
+        return kind === 0 ? {
+            straight: [0.75, 0.7, 1.3, 0.85, 0.08, 0.14, 0, 0, 0.28, 0.38],
+            curved: [0.20, 0.9, 1.7, 0.80, 0.06, 0.10, 0.005, 0.02, 0.28, 0.38],
+            skipping: [0.05, 1.2, 2.2, 0.70, 0.08, 0.12, 0, 0.008, 0.3, 0.4]
+        } : {
+            fast: [0.15, 4, 9, 0.55, 0.04, 0.08, 0, 0, 0.35, 0.65],
+            slow: [0.50, 30, 65, 0.26, 0.20, 0.32, 0, 0, 0.5, 0.8],
+            bent: [0.30, 12, 28, 0.38, 0.10, 0.18, 0.02, 0.06, 0.5, 0.8],
+            pulsating: [0.05, 20, 40, 0.32, 0.12, 0.22, 0.01, 0.04, 0.5, 0.8],
+            fragmenting: [0, 8, 16, 0.38, 0.06, 0.14, 0.01, 0.04, 0.45, 0.65],
+            spiral: [0, 18, 35, 0.25, 0.08, 0.16, 0, 0, 0.5, 0.8]
+        };
+    }
+
+    function chooseFamily(kind: int, index: int, start: real): string {
+        const defaults = familyDefaults(kind);
+        const names = Object.keys(defaults);
+        const overrides = eventConfig(kind).families || {};
+        const weights = names.map(name => {
+            const cfg = overrides[name] || {};
+            const value = cfg.weight === undefined ? defaults[name][0] : clamp(cfg.weight, 0, 100);
+            const cooldown = name === "fragmenting" ? 7200 : name === "spiral" ? 14400 : 0;
+            if (cooldown && start - (_state.familyLast[name] === undefined ? -1e12 : _state.familyLast[name]) < Math.max(cooldown, Number(cfg.cooldownSec) || 0))
+                return 0;
+            return value;
+        });
+        const fragment = names.indexOf("fragmenting");
+        if (fragment >= 0) {
+            const other = weights.reduce((a, b, i) => a + (i === fragment ? 0 : b), 0);
+            weights[fragment] = Math.min(weights[fragment], other * 0.02 / 0.98);
+        }
+        const probabilities = normalized(weights, names.length, names.map(name => defaults[name][0]));
+        let draw = random(index, screenSeed + 3107 + kind * 701);
+        for (let i = 0; i < names.length; ++i) {
+            draw -= probabilities[i];
+            if (draw < 0)
+                return names[i];
+        }
+        return names[names.length - 1];
+    }
+
+    function captureEvent(kind: int, index: int, start: real, family: string): var {
+        const salt = screenSeed + 113 + kind * 701;
+        const cfg = eventConfig(kind);
+        const d = kind < 2 ? familyDefaults(kind)[family] : [1, kind === 4 ? 180 : 30, kind === 4 ? 360 : 45, kind === 4 ? 0.40 : 0.33, 0, 0, 0.01, 0.04, 0.85, 1.1];
+        const f = (cfg.families || {})[family] || cfg;
+        function sample(key, fallback, lo, hi, offset) {
+            const range = parameterRange(f, key, fallback, lo, hi);
+            return range[0] + (range[1] - range[0]) * random(index, salt + offset);
+        }
+        const w = width * devicePixelRatio, h = height * devicePixelRatio;
+        const shortSide = Math.min(w, h);
+        const optics = Math.max(1, Math.sqrt(w * h / (1024 * 576)));
+        const angle = (random(index, salt + 4) * 2 - 1) * Math.PI;
+        const dx = Math.cos(angle), dy = Math.sin(angle);
+        const x = w * (0.2 + 0.6 * random(index, salt + 5));
+        const y = h * (0.2 + 0.6 * random(index, salt + 6));
+        const distance = shortSide * (d[8] + (d[9] - d[8]) * random(index, salt + 7));
+        const centre = [w * 0.5 + shader.centreOffset.x, h * 0.5 + shader.centreOffset.y];
+        const bend = sample("bendShortSide", [d[6], d[7]], 0, 0.12, 8) * shortSide;
+        const toward = clamp((centre[0] - x) * -dy + (centre[1] - y) * dx, -bend, bend);
+        const colors = paletteSnapshot();
+        const defaultMix = kind === 0 ? 0.25 : kind === 1 ? 0.35 : 0.25;
+        const mixConfig = (eventFamilies || {}).paletteMix;
+        const mixValue = cfg.paletteMix === undefined ? (mixConfig && mixConfig[kind === 0 ? "meteors" : "comet"]) : cfg.paletteMix;
+        const mix = clamp(mixValue === undefined ? defaultMix : mixValue, 0, 0.45);
+        let colour = kind === 2 ? [1, 0.95, 0.86] : [0.81, 0.89, 1];
+        if (colors.length && random(index, salt + 21) < mix) {
+            const weights = normalized(_state.palette, colors.length, null);
+            let draw = random(index, salt + 22), pick = 0;
+            for (; pick < weights.length - 1; ++pick) {
+                draw -= weights[pick];
+                if (draw < 0)
+                    break;
+            }
+            colour = colors[pick].slice();
+        }
+        const pair = kind === 0 && random(index, salt + 1) < clamp(companionChance, 0, 1);
+        const fireball = kind === 0 && random(index, salt + 9) < clamp(fireballChance, 0, 1);
+        const duration = sample("durationSec", [d[1], d[2]], kind < 2 ? 0.5 : 10, kind === 4 ? 3600 : 300, 3);
+        return {
+            kind: kind,
+            index: index,
+            family: family,
+            start: start,
+            duration: duration,
+            offset: pair ? 0.35 + 0.35 * random(index, salt + 2) : 0,
+            pair: pair,
+            fireball: fireball,
+            p0: [x - dx * distance / 2, y - dy * distance / 2],
+            p1: [x - dy * toward, y + dx * toward],
+            p2: [x + dx * distance / 2, y + dy * distance / 2],
+            centre: centre,
+            angle: angle,
+            distance: distance,
+            shortSide: shortSide,
+            tail: sample("tailShortSide", [d[4], d[5]], 0, 0.4, 11) * shortSide,
+            gain: clamp(f.gain === undefined ? d[3] : f.gain, 0, d[3]),
+            headCap: Math.round(clamp(eventHeadCap, 0, 3)),
+            pointWidth: kind === 0 ? optics * 0.40 * (fireball ? 1.4 : 1) : kind === 1 ? optics * 0.70 : 0.65,
+            colour: colour,
+            bend: toward,
+            pulsePeriod: sample("periodSec", [4, 9], 2, 60, 12),
+            pulseAmplitude: clamp(f.amplitude === undefined ? 0.12 : f.amplitude, 0, 0.12),
+            lobes: 2 + Math.floor(random(index, salt + 13) * 2),
+            splitU: sample("splitU", [0.45, 0.65], 0.3, 0.75, 14),
+            splitSec: clamp(f.splitSec === undefined ? 1.5 : f.splitSec, 1.5, 5),
+            omega: (random(index, salt + 15) < 0.5 ? -1 : 1) * Math.PI / 3,
+            radius: shortSide * (0.22 + 0.12 * random(index, salt + 16))
+        };
+    }
+
+    // Active-second scheduling, up to seven days; hourly streams do not get
+    // silently clamped to the v2 one-hour interval ceiling. Descriptors include
+    // their schedule and geometry; edits only affect the next captured event.
+    function schedule(kind: int): var {
+        const s = _state;
+        if (!eventEnabled(kind))
+            return null;
+        const index = s.eventIds[kind]++;
+        const cfg = eventConfig(kind);
+        let range;
+        if (kind >= 3) {
+            range = parameterRange(cfg, "everyHours", kind === 3 ? [2, 5] : [2, 6], 0.01, 168).map(x => x * 3600);
+        } else {
+            const v = kind === 0 ? meteorsInterval : kind === 1 ? cometInterval : satellitesInterval;
+            const minimum = clamp(v.x, kind === 0 ? 3 : kind === 1 ? 60 : 45, 604800);
+            range = [minimum, clamp(v.y, minimum, 604800)];
+        }
+        const shower = s.events[3];
+        const inShower = shower && s.clock >= shower.start && s.clock <= shower.start + shower.duration;
+        const activeMood = !inShower && s.mood[0] === 3 ? s.mood[1] : 0;
+        const rate = kind === 0 ? 0.5 + s.live[3] : 1;
+        if (kind === 0)
+            range = [range[0] + (18 - range[0]) * activeMood, range[1] + (36 - range[1]) * activeMood];
+        const previous = s.events[kind];
+        const base = previous ? previous.start : s.clock;
+        let start = Math.max(s.clock, base + (range[0] + (range[1] - range[0]) * random(index, screenSeed + 113 + kind * 701)) / rate);
+        const family = kind < 2 ? chooseFamily(kind, index, start) : kind === 3 ? "shower" : kind === 4 ? "slowWanderer" : "satellite";
+        const e = captureEvent(kind, index, start, kind === 3 ? "straight" : family);
+        if (kind === 3) {
+            e.duration = 30 + 30 * random(index, screenSeed + 4091);
+            e.pair = false;
+            e.offset = 0;
+        }
+        // Reserve complete episodes, companions and splits without replacing
+        // visible heads. Ordinary arrivals are capped at two; splits may use 3.
+        for (let pass = 0; pass < 6; ++pass)
+            for (let k = 0; k < s.events.length; ++k) {
+                const other = s.events[k];
+                if (k !== kind && other && start < other.start + other.duration + other.offset + 1 && start + e.duration + e.offset + 1 > other.start)
+                    start = other.start + other.duration + other.offset + 1;
+            }
+        e.start = start;
+        if (family === "fragmenting" || family === "spiral")
+            s.familyLast[family] = start;
+        if (kind === 3) {
+            e.family = "shower";
+            e.children = [];
+            e.radiant = [e.centre[0] - Math.cos(e.angle) * e.shortSide * 0.45, e.centre[1] - Math.sin(e.angle) * e.shortSide * 0.45];
+            const count = 4 + Math.floor(random(index, screenSeed + 4092) * 3);
+            // Equal stagger fits the captured 30..60s episode and remains 4..12s.
+            const stagger = clamp((e.duration - 3) / (count - 1), 4, 12);
+            for (let i = 0; i < count; ++i) {
+                const child = captureEvent(0, index * 7 + i, start + i * stagger, "straight");
+                // Family overrides cannot leave a visible child unfinished when
+                // its reserved episode ends, or overbook the next head slot.
+                child.duration = Math.min(child.duration, stagger - 1, e.duration - i * stagger);
+                const a = e.angle + (random(index * 7 + i, screenSeed + 4093) - 0.5) * 0.12;
+                const dx = Math.cos(a), dy = Math.sin(a);
+                const along = e.shortSide * (0.30 + 0.35 * random(index * 7 + i, screenSeed + 4094));
+                const x = e.radiant[0] + dx * along, y = e.radiant[1] + dy * along;
+                child.p0 = [x - dx * child.distance / 2, y - dy * child.distance / 2];
+                child.p1 = [x, y];
+                child.p2 = [x + dx * child.distance / 2, y + dy * child.distance / 2];
+                child.angle = a;
+                child.bend = 0;
+                child.pair = false;
+                child.offset = 0;
+                child.gain = Math.min(0.60, child.gain);
+                e.children.push(child);
+            }
+        }
+        return e;
+    }
+
+    // One analytic curve supplies the head AND every tail point. Integration
+    // round: this captured artistic path is separate from gravitational lensing.
+    function eventPath(e: var, u: real, branch: int): var {
+        const t = clamp(u, 0, 1);
+        let x, y;
+        if (e.family === "spiral") {
+            const a = e.angle + e.omega * t;
+            const r = e.radius * (1 - 0.55 * t);
+            x = e.centre[0] + r * Math.cos(a);
+            y = e.centre[1] + r * Math.sin(a);
+        } else {
+            const v = 1 - t;
+            x = v * v * e.p0[0] + 2 * v * t * e.p1[0] + t * t * e.p2[0];
+            y = v * v * e.p0[1] + 2 * v * t * e.p1[1] + t * t * e.p2[1];
+        }
+        if (e.family === "fragmenting" && branch !== 0) {
+            const split = ease((t - e.splitU) / (1 - e.splitU));
+            const offset = branch * e.shortSide * 0.035 * split * split;
+            x -= Math.sin(e.angle) * offset;
+            y += Math.cos(e.angle) * offset;
+        }
+        return [x, y];
+    }
+
+    function eventState(e: var, branch: int, companion: bool, segments: int): var {
         if (!e || (companion && !e.pair))
             return eventOff();
         const age = _state.clock - e.start - (companion ? e.offset : 0);
         if (age < 0 || age > e.duration)
             return eventOff();
         const u = age / e.duration;
-        const angle = e.angle + (companion ? 0.025 : 0);
-        const dx = Math.cos(angle);
-        const dy = Math.sin(angle);
         const progress = e.kind === 0 ? (1 - Math.exp(-2.4 * u)) / (1 - Math.exp(-2.4)) : u;
         const envelope = ease(u / (e.kind === 0 ? 0.09 : 0.16)) * ease((1 - u) / (e.kind === 0 ? 0.38 : 0.20));
-        const light = envelope * (e.kind === 0 ? (companion ? 0.45 : e.fireball ? 1.3 : 0.90) : e.kind === 1 ? 0.28 : 0.33);
-        const tail = e.shortSide * (e.kind === 0 ? (e.fireball ? 0.18 : 0.13) * (1 - 0.40 * u) : e.kind === 1 ? 0.22 : 0);
-        return [e.x + dx * e.distance * (progress - 0.5) + (companion ? e.shortSide * 0.012 : 0), e.y + dy * e.distance * (progress - 0.5), tail, light, dx, dy, e.pointWidth];
+        let gain = e.gain * envelope * (companion ? 0.5 : 1);
+        if (e.family === "pulsating")
+            gain *= (1 + e.pulseAmplitude * Math.sin(age * 2 * Math.PI / e.pulsePeriod)) / (1 + e.pulseAmplitude);
+        if (e.family === "skipping")
+            gain *= 0.10 + 0.90 * Math.pow(Math.sin(Math.PI * e.lobes * u), 2);
+        if (e.family === "fragmenting") {
+            const split = ease((u - e.splitU) * e.duration / e.splitSec);
+            const heads = Math.max(1, e.headCap);
+            gain *= branch === 0 ? 1 - (heads - 1) * split / heads : split / heads;
+        }
+        const count = e.tail > 0 ? segments : 0;
+        const span = e.tail / Math.max(1, e.family === "spiral" ? e.radius * Math.abs(e.omega) : e.distance);
+        const points = [];
+        for (let i = 0; i < 4; ++i) {
+            const p = eventPath(e, Math.max(0, progress - span * Math.min(i, count) / Math.max(1, count)), branch);
+            if (companion) {
+                p[0] += e.shortSide * 0.012;
+                p[1] += e.shortSide * 0.003;
+            }
+            points.push(p);
+        }
+        let length = 0;
+        for (let i = 0; i < count; ++i)
+            length += Math.hypot(points[i + 1][0] - points[i][0], points[i + 1][1] - points[i][1]);
+        const width = e.pointWidth;
+        const extent = width * (e.kind === 1 ? 14 : 6);
+        const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
+        return {
+            head: [points[0][0], points[0][1], width, gain],
+            colour: e.colour.concat(e.kind === 1 ? 1 : e.kind >= 2 ? 2 : 0),
+            tail01: points[0].concat(points[1]),
+            tail23: points[2].concat(points[3]),
+            shape: [length, e.kind === 1 ? 0.23 : 0.62, count, 0],
+            bounds: [Math.min(...xs) - extent, Math.min(...ys) - extent, Math.max(...xs) + extent, Math.max(...ys) + extent]
+        };
+    }
+
+    function publishEvents(): void {
+        const s = _state;
+        for (let kind = 0; kind < 5; ++kind) {
+            const e = s.events[kind];
+            if (!eventEnabled(kind) && e && s.clock < e.start)
+                s.events[kind] = null;
+            else if (!e || s.clock > e.start + e.duration + e.offset)
+                s.events[kind] = schedule(kind);
+        }
+        const shower = s.events[3];
+        const showerActive = shower && s.clock >= shower.start && s.clock <= shower.start + shower.duration;
+        if (showerActive && s.mood[0] === 3)
+            shader.mood = Qt.vector4d(0, 0, 0, 0);
+        const slots = [];
+        function append(e) {
+            if (!e || s.clock < e.start || s.clock > e.start + e.duration + e.offset)
+                return;
+            const fragment = e.family === "fragmenting";
+            const ceiling = Math.min(e.headCap, fragment ? 3 : 2);
+            const branches = fragment ? [0, -1, 1].slice(0, ceiling) : [0];
+            for (const branch of branches) {
+                if (slots.length < ceiling)
+                    slots.push(eventState(e, branch, false, fragment ? 2 : 3));
+            }
+            if (e.pair && slots.length < ceiling)
+                slots.push(eventState(e, 0, true, 3));
+        }
+        if (showerActive) {
+            for (const child of shower.children)
+                append(child);
+        } else
+            append(s.events[0]);
+        for (const kind of [1, 2, 4])
+            append(s.events[kind]);
+        for (let i = 0; i < 3; ++i) {
+            const slot = slots[i] || eventOff();
+            for (const name of ["head", "colour", "tail01", "tail23", "shape", "bounds"]) {
+                const v = slot[name];
+                shader["event" + i + name[0].toUpperCase() + name.slice(1)] = Qt.vector4d(v[0], v[1], v[2], v[3]);
+            }
+        }
     }
 
     function publish(): void {
         const s = _state;
         if (!s || width <= 0 || height <= 0)
             return;
+        // Data URLs can still complete asynchronously despite asynchronous:false.
+        // Decode into the inactive image. Until it is Ready retain BOTH the old
+        // texture and its uniforms; an unsealed row can never reach a live frame.
+        if (s.publishedRevision !== s.atlasRevision) {
+            if (s.pendingRevision !== s.atlasRevision) {
+                s.pendingRevision = s.atlasRevision;
+                const image = shader.descriptorAtlas === descriptorImage ? descriptorBack : descriptorImage;
+                s.pendingImage = image;
+                image.source = atlasUrl();
+                if (image.status === Image.Ready)
+                    completeAtlas(image);
+            }
+            return;
+        }
         const w = width * devicePixelRatio;
         const h = height * devicePixelRatio;
         const shortSide = Math.min(w, h);
@@ -307,6 +769,7 @@ Item {
         shader.resolution = Qt.vector2d(w, h);
         shader.radialMode = motionMode === "drift" ? 0 : 1;
         shader.phaseTime = modulo(s.clock, 4096);
+        shader.activeStamp = Qt.vector2d(Math.floor(s.clock / 86400), modulo(s.clock, 86400));
         shader.flowPhaseLocal = modulo(s.flow, 7680);
         shader.density = clamp(density, 0, 3);
         shader.twinkle = clamp(twinkle, 0, 1) * (0.6 + 0.8 * s.live[0]);
@@ -334,7 +797,11 @@ Item {
             const block = Math.floor(row / 256);
             shader["flowGrid" + layer] = Qt.vector4d(invU, invAngle, modulo(advanceCells, 1), modulo(row, 256));
             shader["flowSeeds" + layer] = Qt.vector4d(blockSalt(block, layer, 0), blockSalt(block, layer, 1), blockSalt(block + 1, layer, 0), blockSalt(block + 1, layer, 1));
-            padding.push([3.5, 6, 42 * displayScale][layer] + 2 + shortSide * 0.012 * depth + Math.hypot(w, h) * 0.003 * depth);
+            // Near births need a further 32 flow-second annular guard so
+            // their next boundary timestamp is sealed before first support entry.
+            const opticalPadding = [3.5, 6, 42 * displayScale][layer] + 2 + shortSide * 0.012 * depth + Math.hypot(w, h) * 0.003 * depth;
+            const extra = layer === 2 ? radius * (Math.sqrt(Math.pow(1 + opticalPadding / radius, 2) + 2 * (6 / 1080) * 32) - (1 + opticalPadding / radius)) : 0;
+            padding.push(opticalPadding + extra);
             const angle = 0.37 + layer * 1.23;
             // Centre the sampled rectangle in the 256-cell salt window. This
             // guarantees two blocks per axis even on the dense portrait grid.
@@ -356,42 +823,22 @@ Item {
             shader["driftSeeds" + layer] = Qt.matrix4x4(salts[0][0], salts[1][0], salts[2][0], salts[3][0], salts[0][1], salts[1][1], salts[2][1], salts[3][1], 0, 0, 0, 0, 0, 0, 0, 0);
         }
         shader.birthPadding = Qt.vector3d(padding[0], padding[1], padding[2]);
-        // advance() replaces sealed sample vectors. Compare those references
-        // so the larger ring rebuilds matrices only when a sample changes.
-        for (let i = 0; i < 64; ++i) {
-            const offset = i * 4;
-            if (s.history[offset] === s.publishedHistory[offset] && s.history[offset + 1] === s.publishedHistory[offset + 1] && s.history[offset + 2] === s.publishedHistory[offset + 2] && s.history[offset + 3] === s.publishedHistory[offset + 3])
-                continue;
-            shader["birthHistory" + i] = historyMatrix(i);
-            for (let j = offset; j < offset + 4; ++j)
-                s.publishedHistory[j] = s.history[j];
-        }
         s.mood = moodState();
         shader.mood = Qt.vector4d(s.mood[0], s.mood[1], 0, 0);
         const moodTwinkle = [0.18, 0.16, 0.24, 0.22][s.mood[0]];
         shader.twinkle *= 1 + (moodTwinkle / 0.22 - 1) * s.mood[1];
-        for (let kind = 0; kind < 3; ++kind) {
-            const e = s.events[kind];
-            const enabled = kind === 0 ? meteorsEnabled : kind === 1 ? cometEnabled : satellitesEnabled;
-            // Disabling cancels pending arrivals. An already visible event
-            // finishes its captured envelope rather than vanishing mid-flight.
-            if (!enabled && e && s.clock < e.start)
-                s.events[kind] = null;
-            else if (!e || s.clock > e.start + e.duration + e.offset)
-                s.events[kind] = schedule(kind);
-        }
-        const meteor = eventState(s.events[0], false);
-        const companion = eventState(s.events[0], true);
-        const comet = eventState(s.events[1], false);
-        const satellite = eventState(s.events[2], false);
-        shader.meteorHead = Qt.vector4d(meteor[0], meteor[1], meteor[2], meteor[3]);
-        shader.meteorShape = Qt.vector3d(meteor[4], meteor[5], meteor[6]);
-        shader.companionHead = Qt.vector4d(companion[0], companion[1], companion[2], companion[3]);
-        shader.companionShape = Qt.vector3d(companion[4], companion[5], companion[6]);
-        shader.cometHead = Qt.vector4d(comet[0], comet[1], comet[2], comet[3]);
-        shader.cometShape = Qt.vector3d(comet[4], comet[5], comet[6]);
-        shader.satelliteHead = Qt.vector4d(satellite[0], satellite[1], satellite[6], satellite[3]);
+        publishEvents();
         ++s.publications;
+    }
+
+    function completeAtlas(image: var): void {
+        const s = _state;
+        if (!s || image !== s.pendingImage || image.status !== Image.Ready || s.pendingRevision !== s.atlasRevision || (s.runtimeAtlas && !running))
+            return;
+        shader.descriptorAtlas = image;
+        s.publishedRevision = s.pendingRevision;
+        s.pendingImage = null;
+        publish();
     }
 
     onTimeChanged: {
@@ -403,6 +850,8 @@ Item {
         _firstFrame = true;
         if (running && _state)
             _state.moodCorrection = Date.now() / 1000 - _state.moodClock;
+        if (running && _state && _state.pendingImage)
+            completeAtlas(_state.pendingImage);
     }
     Component.onCompleted: {
         resetState();
@@ -414,6 +863,7 @@ Item {
         objectName: "starfieldShader"
         anchors.fill: parent
         blending: false
+        supportsAtlasTextures: false
 
         property vector2d resolution: Qt.vector2d(1, 1)
         property vector4d camera: Qt.vector4d(0, 0, 0, 0)
@@ -425,13 +875,26 @@ Item {
         property real brightness: 1
         property color skyColor: "#000000"
         property real edgeLift: 0
-        property vector4d meteorHead: Qt.vector4d(0, 0, 0, 0)
-        property vector3d meteorShape: Qt.vector3d(1, 0, 1)
-        property vector4d companionHead: Qt.vector4d(0, 0, 0, 0)
-        property vector3d companionShape: Qt.vector3d(1, 0, 1)
-        property vector4d cometHead: Qt.vector4d(0, 0, 0, 0)
-        property vector3d cometShape: Qt.vector3d(1, 0, 1)
-        property vector4d satelliteHead: Qt.vector4d(0, 0, 1, 0)
+        property vector4d event0Head: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event0Colour: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event0Tail01: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event0Tail23: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event0Shape: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event0Bounds: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event1Head: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event1Colour: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event1Tail01: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event1Tail23: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event1Shape: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event1Bounds: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event2Head: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event2Colour: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event2Tail01: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event2Tail23: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event2Shape: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event2Bounds: Qt.vector4d(0, 0, 0, 0)
+        property vector2d activeStamp: Qt.vector2d(0, 0)
+        property var descriptorAtlas: descriptorImage
         property real radialMode: 1
         property vector2d centreOffset: Qt.vector2d(0, 0)
         property vector3d flowZoom: Qt.vector3d(1, 1, 1)
@@ -451,72 +914,36 @@ Item {
         property real flowPhaseLocal: 0
         property real variableFraction: 0.006
         property vector4d mood: Qt.vector4d(0, 0, 0, 0)
-        property matrix4x4 birthHistory0
-        property matrix4x4 birthHistory1
-        property matrix4x4 birthHistory2
-        property matrix4x4 birthHistory3
-        property matrix4x4 birthHistory4
-        property matrix4x4 birthHistory5
-        property matrix4x4 birthHistory6
-        property matrix4x4 birthHistory7
-        property matrix4x4 birthHistory8
-        property matrix4x4 birthHistory9
-        property matrix4x4 birthHistory10
-        property matrix4x4 birthHistory11
-        property matrix4x4 birthHistory12
-        property matrix4x4 birthHistory13
-        property matrix4x4 birthHistory14
-        property matrix4x4 birthHistory15
-        property matrix4x4 birthHistory16
-        property matrix4x4 birthHistory17
-        property matrix4x4 birthHistory18
-        property matrix4x4 birthHistory19
-        property matrix4x4 birthHistory20
-        property matrix4x4 birthHistory21
-        property matrix4x4 birthHistory22
-        property matrix4x4 birthHistory23
-        property matrix4x4 birthHistory24
-        property matrix4x4 birthHistory25
-        property matrix4x4 birthHistory26
-        property matrix4x4 birthHistory27
-        property matrix4x4 birthHistory28
-        property matrix4x4 birthHistory29
-        property matrix4x4 birthHistory30
-        property matrix4x4 birthHistory31
-        property matrix4x4 birthHistory32
-        property matrix4x4 birthHistory33
-        property matrix4x4 birthHistory34
-        property matrix4x4 birthHistory35
-        property matrix4x4 birthHistory36
-        property matrix4x4 birthHistory37
-        property matrix4x4 birthHistory38
-        property matrix4x4 birthHistory39
-        property matrix4x4 birthHistory40
-        property matrix4x4 birthHistory41
-        property matrix4x4 birthHistory42
-        property matrix4x4 birthHistory43
-        property matrix4x4 birthHistory44
-        property matrix4x4 birthHistory45
-        property matrix4x4 birthHistory46
-        property matrix4x4 birthHistory47
-        property matrix4x4 birthHistory48
-        property matrix4x4 birthHistory49
-        property matrix4x4 birthHistory50
-        property matrix4x4 birthHistory51
-        property matrix4x4 birthHistory52
-        property matrix4x4 birthHistory53
-        property matrix4x4 birthHistory54
-        property matrix4x4 birthHistory55
-        property matrix4x4 birthHistory56
-        property matrix4x4 birthHistory57
-        property matrix4x4 birthHistory58
-        property matrix4x4 birthHistory59
-        property matrix4x4 birthHistory60
-        property matrix4x4 birthHistory61
-        property matrix4x4 birthHistory62
-        property matrix4x4 birthHistory63
 
         fragmentShader: "shaders/starfield.frag.qsb"
+    }
+
+    Image {
+        id: descriptorImage
+        objectName: "starfieldDescriptorAtlas"
+        visible: false
+        width: 64
+        height: 256
+        sourceSize: Qt.size(64, 256)
+        smooth: false
+        mipmap: false
+        cache: false
+        asynchronous: false
+        onStatusChanged: root.completeAtlas(descriptorImage)
+    }
+
+    Image {
+        id: descriptorBack
+        objectName: "starfieldDescriptorAtlasBack"
+        visible: false
+        width: 64
+        height: 256
+        sourceSize: Qt.size(64, 256)
+        smooth: false
+        mipmap: false
+        cache: false
+        asynchronous: false
+        onStatusChanged: root.completeAtlas(descriptorBack)
     }
 
     FrameAnimation {

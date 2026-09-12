@@ -25,6 +25,26 @@ Singleton {
     readonly property var variety: document.variety
     readonly property var variables: document.variables
     readonly property var reactive: document.reactive
+    readonly property var palette: document.palette
+    readonly property var paletteColors: palette.rgb
+    readonly property var paletteIds: palette.ids
+    readonly property var paletteBaseWeights: palette.baseWeights
+    readonly property var archetypes: document.archetypes
+    // Birth-owned metadata travels through the contract's descriptor-parameter object.
+    readonly property var archetypeParams: Object.assign({}, archetypes, {
+        palette: {
+            variationWhite: palette.variationWhite,
+            foregroundWhite: palette.foregroundWhite
+        }
+    })
+    readonly property var eventFamilies: ({
+            comet: document.comet,
+            meteors: document.meteors,
+            shower: document.events.shower,
+            slowWanderer: document.events.slowWanderer
+        })
+    readonly property int eventHeadCap: document.events.headCap
+    readonly property var blackHole: document.blackHole
     readonly property var meteors: ({
             enabled: document.meteors.enabled,
             interval: Qt.vector2d(document.meteors.interval[0], document.meteors.interval[1]),

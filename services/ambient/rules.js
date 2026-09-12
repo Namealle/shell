@@ -1,53 +1,447 @@
 // Plain ES5: shared by QML and the Node verification shim. No titles are retained.
 var MAX_ENTRIES = 32;
 var MAX_PATTERN = 256;
-var CONTROLS = ["green", "violet", "warm", "calm", "twinkle", "brightness", "flow", "meteor"];
-var SIGNALS = ["cpuLoad", "cpuHeat", "gpuLoad", "gpuHeat", "vram", "ram", "network",
-    "rain", "wind", "humidity", "temperature", "weatherNight", "night", "media", "idle",
-    "agentProcess", "agentWindow", "load", "heat", "loadRising", "memoryPressure", "agent",
-    "cpuLoadRising", "gpuLoadRising", "notifications"];
+var CONTROLS = ["green", "violet", "warm", "calm", "twinkle", "brightness", "flow", "meteor", "mix"];
+var ARCHETYPES = ["steady", "pulsator", "decayer", "glint", "wanderer", "binary"];
+var HOLE = ["activity", "warmth", "brightness", "structure"];
+var ROLE_HUES = {
+    green: 120,
+    yellow: 60,
+    red: 0,
+    blue: 240,
+    pink: 330,
+    orange: 30,
+    purple: 270,
+    teal: 180
+};
+var SIGNALS = ["cpuLoad", "cpuHeat", "gpuLoad", "gpuHeat", "vram", "ram", "network", "rain", "wind", "humidity", "temperature", "weatherNight", "night", "media", "idle", "agentProcess", "agentWindow", "load", "heat", "loadRising", "memoryPressure", "agent", "cpuLoadRising", "gpuLoadRising", "notifications", "workspaceActivity"];
 
-function own(obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); }
-function object(value) { return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {}; }
-function finite(value) { return typeof value === "number" && isFinite(value); }
-function clamp(value, low, high) { return Math.max(low, Math.min(high, value)); }
-function number(value, fallback, low, high) { return finite(value) ? clamp(value, low, high) : fallback; }
-function boolean(value, fallback) { return typeof value === "boolean" ? value : fallback; }
-function interval(value, fallback, minimum) {
+function own(obj, key) {
+    return Object.prototype.hasOwnProperty.call(obj, key);
+}
+function object(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+function finite(value) {
+    return typeof value === "number" && isFinite(value);
+}
+function clamp(value, low, high) {
+    return Math.max(low, Math.min(high, value));
+}
+function number(value, fallback, low, high) {
+    return finite(value) ? clamp(value, low, high) : fallback;
+}
+function boolean(value, fallback) {
+    return typeof value === "boolean" ? value : fallback;
+}
+function interval(value, fallback, minimum, maximum) {
     if (!Array.isArray(value) || value.length !== 2 || !finite(value[0]) || !finite(value[1]))
         return fallback.slice();
-    var low = clamp(value[0], minimum, 3600);
-    return [low, Math.max(low, clamp(value[1], minimum, 3600))];
+    var cap = maximum === undefined ? 86400 : maximum;
+    var low = clamp(value[0], minimum, cap);
+    return [low, Math.max(low, clamp(value[1], minimum, cap))];
+}
+
+function normalize(values, fallback) {
+    var total = 0, out = [], i;
+    for (i = 0; i < values.length; i++) {
+        out[i] = finite(values[i]) ? Math.max(0, values[i]) : 0;
+        total += out[i];
+    }
+    if (!total)
+        return fallback ? fallback.slice() : out.map(function () {
+            return out.length ? 1 / out.length : 0;
+        });
+    return out.map(function (v) {
+        return v / total;
+    });
+}
+
+function validId(id) {
+    return typeof id === "string" && /^[A-Za-z][A-Za-z0-9_]{0,47}$/.test(id) && id !== "constructor" && id !== "prototype";
+}
+
+function defaultPalette() {
+    return {
+        colors: ["#A8E6BD", "#FFF0AD", "#F2B1B1", "#ADCFFF", "#F4B9DA", "#FFD0A8", "#CFB8F4", "#A8E4DE"],
+        ids: ["green", "yellow", "red", "blue", "pink", "orange", "purple", "teal"],
+        weights: [1, 1, 1, 1, 1, 1, 1, 1],
+        lightness: 0.45,
+        saturationCap: 0.28,
+        mix: 0.32,
+        variationWhite: [0, 0.10],
+        foregroundWhite: 0.35
+    };
+}
+
+function lighten(rgb, lightness, saturationCap) {
+    var maximum = Math.max(rgb[0], rgb[1], rgb[2]);
+    if (!maximum)
+        return [1, 1, 1];
+    var c = rgb.map(function (v) {
+        return v / maximum * (1 - lightness) + lightness;
+    });
+    var saturation = Math.max(c[0], c[1], c[2]) - Math.min(c[0], c[1], c[2]);
+    var scale = Math.min(1, saturationCap / Math.max(saturation, 1e-9));
+    return c.map(function (v) {
+        return 1 + (v - 1) * scale;
+    });
+}
+
+function hue(rgb) {
+    var high = Math.max(rgb[0], rgb[1], rgb[2]), low = Math.min(rgb[0], rgb[1], rgb[2]), delta = high - low;
+    if (delta < 1e-9)
+        return null;
+    var h = high === rgb[0] ? (rgb[1] - rgb[2]) / delta : high === rgb[1] ? 2 + (rgb[2] - rgb[0]) / delta : 4 + (rgb[0] - rgb[1]) / delta;
+    return (h * 60 + 360) % 360;
+}
+
+function validatePalette(value, warn) {
+    var p = object(value), defaults = defaultPalette();
+    var input = p.colors === undefined ? defaults.colors : Array.isArray(p.colors) ? p.colors : [];
+    // User colours without IDs must never inherit semantic names from the preset.
+    var ids = p.ids === undefined && p.colors === undefined ? defaults.ids : Array.isArray(p.ids) ? p.ids : [];
+    var weights = Array.isArray(p.weights) ? p.weights : [];
+    var result = {
+        colors: [],
+        ids: [],
+        weights: [],
+        rgb: [],
+        hues: [],
+        sourceIndices: [],
+        lightness: number(p.lightness, 0.45, 0, 1),
+        saturationCap: number(p.saturationCap, 0.28, 0, 0.28),
+        mix: number(p.mix, 0.32, 0, 0.45),
+        variationWhite: interval(p.variationWhite, [0, 0.10], 0, 1),
+        foregroundWhite: number(p.foregroundWhite, 0.35, 0, 1)
+    };
+    var seen = Object.create(null);
+    for (var i = 0; i < input.length && result.colors.length < 16; i++) {
+        var hex = input[i];
+        if (typeof hex !== "string" || !/^#[0-9a-fA-F]{6}$/.test(hex)) {
+            // The only dynamic (and entire) warning payload is the index.
+            if (typeof warn === "function")
+                warn(i);
+            else
+                console.warn(i);
+            continue;
+        }
+        var rgb = [parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255];
+        var id = validId(ids[i]) && !own(seen, ids[i]) ? ids[i] : "";
+        if (id)
+            seen[id] = true;
+        result.colors.push(hex.toUpperCase());
+        result.rgb.push(lighten(rgb, result.lightness, result.saturationCap));
+        result.hues.push(hue(rgb));
+        result.ids.push(id);
+        result.sourceIndices.push(i);
+        result.weights.push(number(weights[i], 1, 0, 1000000));
+    }
+    result.baseWeights = normalize(result.weights);
+    return result;
+}
+
+function weightsObject(value, defaults) {
+    var w = object(value), values = [];
+    for (var i = 0; i < ARCHETYPES.length; i++)
+        values.push(number(w[ARCHETYPES[i]], defaults[i], 0, 1));
+    values = normalize(values, defaults);
+    var result = {};
+    for (i = 0; i < ARCHETYPES.length; i++)
+        result[ARCHETYPES[i]] = values[i];
+    return result;
+}
+
+function validateArchetypes(value) {
+    var a = object(value), p = object(a.pulsator), d = object(a.decayer), g = object(a.glint);
+    var w = object(a.wanderer), b = object(a.binary), c = object(a.colorShifter);
+    var far = weightsObject(a.farWeights, [0.97, 0.03, 0, 0, 0, 0]);
+    for (var i = 2; i < ARCHETYPES.length; i++) {
+        far.steady += far[ARCHETYPES[i]];
+        far[ARCHETYPES[i]] = 0;
+    }
+    return {
+        weights: weightsObject(a.weights, [0.82, 0.10, 0.04, 0.02, 0.015, 0.005]),
+        farWeights: far,
+        pulsator: {
+            periodSec: interval(p.periodSec, [6, 40], 6, 360),
+            amplitude: interval(p.amplitude, [0.08, 0.22], 0, 0.22)
+        },
+        decayer: {
+            lifeSec: interval(d.lifeSec, [20, 90], 20, 600),
+            fadeInSec: interval(d.fadeInSec, [3, 8], 3, 20)
+        },
+        glint: {
+            everySec: interval(g.everySec, [18, 65], 18, 3600),
+            widthSec: interval(g.widthSec, [0.8, 2], 0.8, 2),
+            gain: number(g.gain, 0.18, 0, 0.18)
+        },
+        wanderer: {
+            periodSec: interval(w.periodSec, [30, 100], 30, 600),
+            offsetPx: number(w.offsetPx, 8, 0, 8)
+        },
+        binary: {
+            periodSec: interval(b.periodSec, [12, 45], 12, 360),
+            separationPx: interval(b.separationPx, [1.5, 5], 0, 5)
+        },
+        colorShifter: {
+            enabled: boolean(c.enabled, false),
+            share: number(c.share, 0.005, 0, 0.005),
+            periodSec: interval(c.periodSec, [120, 360], 120, 3600)
+        }
+    };
+}
+
+function validateFamilies(value, comet) {
+    // duration, weight, gain cap, tail range, bend range. Unspecified tails are conservative defaults.
+    var defaults = comet ? {
+        fast: [[4, 9], 0.15, 0.55, [0.04, 0.08], [0, 0]],
+        slow: [[30, 65], 0.50, 0.26, [0.20, 0.32], [0, 0]],
+        bent: [[12, 28], 0.30, 0.38, [0.08, 0.18], [0.02, 0.06]],
+        pulsating: [[20, 40], 0.05, 0.32, [0.12, 0.22], [0.02, 0.06]],
+        fragmenting: [[8, 16], 0, 0.38, [0.08, 0.16], [0.02, 0.06]],
+        spiral: [[18, 35], 0, 0.25, [0.08, 0.16], [0, 0.06]]
+    } : {
+        straight: [[0.7, 1.3], 0.75, 0.85, [0.08, 0.14], [0, 0]],
+        curved: [[0.9, 1.7], 0.20, 0.80, [0.04, 0.10], [0.005, 0.02]],
+        skipping: [[1.2, 2.2], 0.05, 0.70, [0.08, 0.14], [0, 0]]
+    };
+    var input = object(value), out = {}, names = Object.keys(defaults);
+    for (var i = 0; i < names.length; i++) {
+        var name = names[i], f = object(input[name]), row = defaults[name];
+        out[name] = {
+            weight: number(f.weight, row[1], 0, 1),
+            durationSec: interval(f.durationSec, row[0], row[0][0], row[0][1]),
+            gain: number(f.gain, row[2], 0, row[2]),
+            tailShortSide: interval(f.tailShortSide, row[3], 0, row[3][1]),
+            bendShortSide: interval(f.bendShortSide, row[4], 0, row[4][1])
+        };
+        if (name === "fragmenting" || name === "spiral")
+            out[name].cooldownSec = number(f.cooldownSec, name === "spiral" ? 14400 : 7200, name === "spiral" ? 14400 : 7200, 604800);
+    }
+    if (comet) {
+        var other = 0;
+        for (i = 0; i < names.length; i++)
+            if (names[i] !== "fragmenting")
+                other += out[names[i]].weight;
+        out.fragmenting.weight = Math.min(out.fragmenting.weight, other * 0.02 / 0.98);
+    }
+    return out;
+}
+
+function validateEvents(value) {
+    var e = object(value), s = object(e.shower), w = object(e.slowWanderer);
+    return {
+        headCap: Math.round(number(e.headCap, 3, 1, 3)),
+        shower: {
+            enabled: boolean(s.enabled, true),
+            everyHours: interval(s.everyHours, [2, 5], 2, 168),
+            durationSec: interval(s.durationSec, [30, 60], 30, 60),
+            gain: number(s.gain, 0.60, 0, 0.60)
+        },
+        slowWanderer: {
+            enabled: boolean(w.enabled, true),
+            everyHours: interval(w.everyHours, [2, 6], 2, 168),
+            durationSec: interval(w.durationSec, [180, 360], 180, 360),
+            gain: number(w.gain, 0.40, 0, 0.40)
+        }
+    };
+}
+
+function validateBlackHole(value) {
+    var b = object(value), inner = number(b.diskInnerRs, 3, 3, 6);
+    return {
+        enabled: boolean(b.enabled, false),
+        size: number(b.size, 0.075, 0.06, 0.09),
+        tilt: number(b.tilt, 14, 10, 20),
+        intensity: number(b.intensity, 0.65, 0, 1),
+        warmth: number(b.warmth, 0.5, 0, 1),
+        spin: number(b.spin, 1, 0, 2),
+        diskInnerRs: inner,
+        diskOuterRs: number(b.diskOuterRs, 8, inner + 0.5, 12),
+        beamStrength: number(b.beamStrength, 0.15, 0, 0.2),
+        haloUpper: number(b.haloUpper, 0.55, 0, 1),
+        haloLower: number(b.haloLower, 0.35, 0, 1),
+        photonWidth: number(b.photonWidth, 0.006, 0.001, 0.02),
+        structure: number(b.structure, 0.05, 0, 0.08),
+        tiltWander: number(b.tiltWander, 0, 0, 1),
+        transitionSec: number(b.transitionSec, 30, 30, 300)
+    };
 }
 
 function defaultReactive() {
     return {
-        enabled: true, contextScope: "perScreen", processPresenceWeight: 0.35, paletteBudget: 0.45,
-        birthTauSec: 60, liveTauSec: 90, maxChangePerSec: 0.005,
+        enabled: true,
+        contextScope: "perScreen",
+        processPresenceWeight: 0.35,
+        paletteBudget: 0.45,
+        birthTauSec: 60,
+        liveTauSec: 90,
+        maxChangePerSec: 0.005,
         matchers: [
-            {id: "htb", "class": "^zen$", title: "\\bHTB\\b|Hack\\s*The\\s*Box|hackthebox\\.(com|eu)", flags: "i"},
-            {id: "steam", "class": "^steam$", flags: "i"},
-            {id: "game", "class": "^steam_app_[0-9]+$", flags: "i"},
-            {id: "terminal", "class": "^(foot|footclient)$"},
-            {id: "agentWindow", "class": "^(foot|footclient)$", title: "^[✳◑]"}
+            {
+                id: "htb",
+                "class": "^zen$",
+                title: "\\bHTB\\b|Hack\\s*The\\s*Box|hackthebox\\.(com|eu)",
+                flags: "i"
+            },
+            {
+                id: "steam",
+                "class": "^steam$",
+                flags: "i"
+            },
+            {
+                id: "game",
+                "class": "^steam_app_[0-9]+$",
+                flags: "i"
+            },
+            {
+                id: "terminal",
+                "class": "^(foot|footclient)$"
+            },
+            {
+                id: "agentWindow",
+                "class": "^(foot|footclient)$",
+                title: "^[✳◑]"
+            }
         ],
         rules: [
-            {signal: "htb", add: {green: 0.32}},
-            {signal: "agent", add: {violet: 0.14, twinkle: 0.04}},
-            {signal: "heat", add: {warm: 0.20}},
-            {signal: "load", add: {warm: 0.10, flow: 0.25}},
-            {signal: "loadRising", add: {flow: 0.05}},
-            {signal: "rain", add: {calm: 0.22, brightness: -0.25, twinkle: -0.15}},
-            {signal: "wind", add: {flow: 0.04}},
-            {signal: "night", add: {calm: 0.20, flow: -0.15, twinkle: -0.15, meteor: -0.25}},
-            {signal: "idle", add: {calm: 0.10, flow: -0.10, meteor: -0.10}},
-            {signal: "media", add: {twinkle: 0.05}},
-            {signal: "steam", add: {violet: 0.03}},
-            {signal: "game", add: {warm: 0.06}},
-            {signal: "terminal", add: {calm: 0.04}},
-            {signal: "memoryPressure", add: {calm: 0.05}},
-            {signal: "network", enabled: false, add: {twinkle: 0.03}},
-            {signal: "notifications", enabled: false, add: {meteor: 0.04}}
+            {
+                signal: "htb",
+                add: {
+                    palette: {
+                        green: 0.35,
+                        teal: 0.08
+                    }
+                }
+            },
+            {
+                signal: "rain",
+                add: {
+                    archetypes: {
+                        decayer: 0.025,
+                        pulsator: -0.02
+                    },
+                    calm: 0.12,
+                    twinkle: -0.08
+                }
+            },
+            {
+                signal: "night",
+                add: {
+                    palette: {
+                        blue: 0.16,
+                        purple: 0.10
+                    },
+                    calm: 0.12,
+                    flow: -0.08,
+                    meteor: -0.12
+                }
+            },
+            {
+                signal: "agent",
+                add: {
+                    archetypes: {
+                        wanderer: 0.007
+                    },
+                    palette: {
+                        purple: 0.16,
+                        teal: 0.06
+                    }
+                }
+            },
+            {
+                signal: "load",
+                add: {
+                    archetypes: {
+                        pulsator: 0.04
+                    }
+                }
+            },
+            {
+                signal: "heat",
+                add: {
+                    palette: {
+                        orange: 0.18,
+                        red: 0.08
+                    }
+                }
+            },
+            {
+                signal: "media",
+                add: {
+                    archetypes: {
+                        pulsator: 0.01
+                    }
+                }
+            },
+            {
+                signal: "idle",
+                add: {
+                    calm: 0.08,
+                    meteor: -0.08
+                }
+            },
+            {
+                signal: "workspaceActivity",
+                enabled: false,
+                add: {
+                    archetypes: {
+                        wanderer: 0.003
+                    }
+                }
+            },
+            {
+                signal: "network",
+                enabled: false,
+                add: {
+                    archetypes: {
+                        glint: 0.002
+                    }
+                }
+            },
+            {
+                signal: "notifications",
+                enabled: false,
+                add: {
+                    archetypes: {
+                        pulsator: 0.003
+                    }
+                }
+            },
+            {
+                signal: "gpuLoad",
+                add: {
+                    hole: {
+                        activity: 0.25
+                    }
+                }
+            },
+            {
+                signal: "heat",
+                add: {
+                    hole: {
+                        warmth: 0.15,
+                        brightness: 0.20
+                    }
+                }
+            },
+            {
+                signal: "agent",
+                add: {
+                    hole: {
+                        structure: 0.10
+                    }
+                }
+            },
+            {
+                signal: "night",
+                add: {
+                    hole: {
+                        brightness: -0.15
+                    }
+                }
+            }
         ]
     };
 }
@@ -58,7 +452,12 @@ function patternValid(pattern, flags) {
     // Bound GUI-thread matching: no backreferences, lookarounds or repeated groups.
     if (/\\[1-9]|\(\?|\)[+*{]/.test(pattern))
         return false;
-    try { new RegExp(pattern, flags); return true; } catch (error) { return false; }
+    try {
+        new RegExp(pattern, flags);
+        return true;
+    } catch (error) {
+        return false;
+    }
 }
 
 function validateMatchers(value) {
@@ -67,16 +466,19 @@ function validateMatchers(value) {
         return result;
     for (var i = 0; i < Math.min(value.length, MAX_ENTRIES); i++) {
         var m = object(value[i]), id = m.id, flags = m.flags === undefined ? "" : m.flags;
-        if (typeof id !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,47}$/.test(id) || own(seen, id)
-                || id === "constructor" || id === "prototype" || (SIGNALS.indexOf(id) !== -1 && id !== "agentWindow"))
+        if (typeof id !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,47}$/.test(id) || own(seen, id) || id === "constructor" || id === "prototype" || (SIGNALS.indexOf(id) !== -1 && id !== "agentWindow"))
             continue;
         seen[id] = true;
         var validFlags = typeof flags === "string" && /^(i?m?|mi)$/.test(flags);
-        var valid = validFlags && patternValid(m["class"], flags)
-            && (m.title === undefined || patternValid(m.title, flags));
+        var valid = validFlags && patternValid(m["class"], flags) && (m.title === undefined || patternValid(m.title, flags));
         // Invalid entries survive only as disabled category IDs; never throw away siblings.
-        result.push({id: id, "class": valid ? m["class"] : "", title: valid ? m.title : undefined,
-            flags: validFlags ? flags : "", enabled: valid && boolean(m.enabled, true)});
+        result.push({
+            id: id,
+            "class": valid ? m["class"] : "",
+            title: valid ? m.title : undefined,
+            flags: validFlags ? flags : "",
+            enabled: valid && boolean(m.enabled, true)
+        });
     }
     return result;
 }
@@ -86,7 +488,8 @@ function validateReactive(value) {
     var matchers = validateMatchers(r.matchers === undefined ? defaults.matchers : r.matchers);
     var known = SIGNALS.slice(), i;
     for (i = 0; i < matchers.length; i++)
-        if (matchers[i].enabled) known.push(matchers[i].id);
+        if (matchers[i].enabled)
+            known.push(matchers[i].id);
     var input = r.rules === undefined ? defaults.rules : r.rules;
     var rules = [];
     if (Array.isArray(input)) {
@@ -94,22 +497,43 @@ function validateReactive(value) {
             var entry = object(input[i]), add = object(entry.add), clean = {};
             for (var c = 0; c < CONTROLS.length; c++) {
                 var key = CONTROLS[c];
-                if (finite(add[key])) clean[key] = clamp(add[key], -1, 1);
+                if (finite(add[key]))
+                    clean[key] = clamp(add[key], -1, 1);
             }
-            rules.push({signal: typeof entry.signal === "string" ? entry.signal.slice(0, 48) : "",
+            var groups = ["palette", "archetypes", "hole"];
+            for (var g = 0; g < groups.length; g++) {
+                var group = groups[g], nested = object(add[group]), keys = Object.keys(nested), accepted = {};
+                for (var k = 0; k < Math.min(keys.length, group === "palette" ? 32 : 6); k++) {
+                    var name = keys[k];
+                    var allowed = group === "palette" ? (validId(name) || /^(0|[1-9][0-9]{0,5})$/.test(name)) : (group === "archetypes" ? ARCHETYPES : HOLE).indexOf(name) !== -1;
+                    if (allowed && finite(nested[name]))
+                        accepted[name] = clamp(nested[name], -1, 1);
+                }
+                if (Object.keys(accepted).length)
+                    clean[group] = accepted;
+            }
+            rules.push({
+                signal: typeof entry.signal === "string" ? entry.signal.slice(0, 48) : "",
                 enabled: boolean(entry.enabled, true) && known.indexOf(entry.signal) !== -1 && Object.keys(clean).length > 0,
-                add: clean});
+                add: clean
+            });
         }
     }
-    return {enabled: boolean(r.enabled, true), contextScope: "perScreen",
+    return {
+        enabled: boolean(r.enabled, true),
+        contextScope: "perScreen",
         processPresenceWeight: number(r.processPresenceWeight, 0.35, 0, 1),
         paletteBudget: number(r.paletteBudget, 0.45, 0, 0.45),
         // Frozen renderer API has no filter-setting properties. Keep these contract constants.
-        birthTauSec: 60, liveTauSec: 90, maxChangePerSec: 0.005,
-        matchers: matchers, rules: rules};
+        birthTauSec: 60,
+        liveTauSec: 90,
+        maxChangePerSec: 0.005,
+        matchers: matchers,
+        rules: rules
+    };
 }
 
-function validateDocument(value) {
+function validateDocument(value, warn) {
     var d = object(value), m = object(d.motion), v = object(d.variety), variables = object(d.variables);
     var mode = m.mode === "drift" ? "drift" : "radial";
     var meteor = object(d.meteors), comet = object(d.comet), satellites = object(d.satellites);
@@ -122,74 +546,118 @@ function validateDocument(value) {
         }
     }
     return {
-        screens: screens, density: number(d.density, 1, 0, 3),
-        driftSpeed: number(d.driftSpeed, 3.5, 0, 30), driftDirection: number(d.driftDirection, 165, -360, 360),
-        twinkle: number(d.twinkle, 0.22, 0, 1), flareFraction: number(d.flareFraction, 0.003, 0, 0.025),
-        brightness: number(d.brightness, 1, 0, 3), edgeLift: number(d.edgeLift, 0, 0, 1),
+        screens: screens,
+        density: number(d.density, 1, 0, 3),
+        driftSpeed: number(d.driftSpeed, 3.5, 0, 30),
+        driftDirection: number(d.driftDirection, 165, -360, 360),
+        twinkle: number(d.twinkle, 0.22, 0, 1),
+        flareFraction: number(d.flareFraction, 0.003, 0, 0.025),
+        brightness: number(d.brightness, 1, 0, 3),
+        edgeLift: number(d.edgeLift, 0, 0, 1),
         backgroundColor: typeof d.backgroundColor === "string" && /^#[0-9a-fA-F]{6}$/.test(d.backgroundColor) ? d.backgroundColor : "#000000",
         fps: Math.round(number(d.fps, 30, 1, 60)),
-        motion: {mode: mode, radialSpeed: number(m.radialSpeed, 6, 0, 26),
-            centreWander: number(m.centreWander, 0.012, 0, 0.05), zoom: number(m.zoom, mode === "drift" ? 0.025 : 0.003, 0, 0.15),
-            reversals: boolean(m.reversals, false), wander: number(m.wander, 0.8, 0, 2), rotation: number(m.rotation, 0.5, 0, 3)},
-        variety: {enabled: boolean(v.enabled, true), seed: Math.round(number(v.seed, 1, 0, 2147483647))},
-        variables: {fraction: number(variables.fraction, 0.006, 0, 0.05)},
-        meteors: {enabled: boolean(meteor.enabled, true), interval: interval(meteor.interval, [45, 120], 3),
-            companionChance: number(meteor.companionChance, 0.04, 0, 1), fireballChance: number(meteor.fireballChance, 0.01, 0, 1)},
-        comet: {enabled: boolean(comet.enabled, true), interval: interval(comet.interval, [900, 1800], 60)},
-        satellites: {enabled: boolean(satellites.enabled, true), interval: interval(satellites.interval, [240, 480], 45)},
+        motion: {
+            mode: mode,
+            radialSpeed: number(m.radialSpeed, 6, 0, 26),
+            centreWander: number(m.centreWander, 0.012, 0, 0.05),
+            zoom: number(m.zoom, mode === "drift" ? 0.025 : 0.003, 0, 0.15),
+            reversals: boolean(m.reversals, false),
+            wander: number(m.wander, 0.8, 0, 2),
+            rotation: number(m.rotation, 0.5, 0, 3)
+        },
+        variety: {
+            enabled: boolean(v.enabled, true),
+            seed: Math.round(number(v.seed, 1, 0, 2147483647))
+        },
+        variables: {
+            fraction: number(variables.fraction, 0.006, 0, 0.05)
+        },
+        meteors: {
+            enabled: boolean(meteor.enabled, true),
+            interval: interval(meteor.interval, [45, 120], 3),
+            companionChance: number(meteor.companionChance, 0.04, 0, 1),
+            fireballChance: number(meteor.fireballChance, 0.01, 0, 1),
+            paletteMix: number(meteor.paletteMix, 0.25, 0, 0.45),
+            families: validateFamilies(meteor.families, false)
+        },
+        comet: {
+            enabled: boolean(comet.enabled, true),
+            interval: interval(comet.interval, [900, 1800], 60),
+            paletteMix: number(comet.paletteMix, 0.35, 0, 0.45),
+            families: validateFamilies(comet.families, true)
+        },
+        satellites: {
+            enabled: boolean(satellites.enabled, true),
+            interval: interval(satellites.interval, [240, 480], 45)
+        },
+        palette: validatePalette(d.palette, warn),
+        archetypes: validateArchetypes(d.archetypes),
+        events: validateEvents(d.events),
+        blackHole: validateBlackHole(d.blackHole),
         reactive: validateReactive(d.reactive)
     };
 }
 
-function parseDocument(text) {
-    try { return validateDocument(JSON.parse(text)); } catch (error) { return validateDocument(null); }
+function parseDocument(text, warn) {
+    try {
+        return validateDocument(JSON.parse(text), warn);
+    } catch (error) {
+        return validateDocument(null, warn);
+    }
 }
 
 function compileMatchers(matchers) {
     var compiled = [];
     for (var i = 0; i < matchers.length; i++) {
         var m = matchers[i];
-        if (!m.enabled) continue;
-        compiled.push({id: m.id, classRx: new RegExp(m["class"], m.flags),
-            titleRx: m.title === undefined ? null : new RegExp(m.title, m.flags)});
+        if (!m.enabled)
+            continue;
+        compiled.push({
+            id: m.id,
+            classRx: new RegExp(m["class"], m.flags),
+            titleRx: m.title === undefined ? null : new RegExp(m.title, m.flags)
+        });
     }
     return compiled;
 }
 
 function sameWorkspace(a, b) {
-    if (!a || !b) return false;
-    if (a.id !== undefined && b.id !== undefined && a.id === b.id && a.id !== 0) return true;
+    if (!a || !b)
+        return false;
+    if (a.id !== undefined && b.id !== undefined && a.id === b.id && a.id !== 0)
+        return true;
     return !!a.name && !!b.name && a.name === b.name;
 }
 
 function onOutput(t, monitor) {
-    if (!t || !monitor) return false;
+    if (!t || !monitor)
+        return false;
     var ipc = t.lastIpcObject || {}, ws = t.workspace || ipc.workspace || {};
     var owner = t.monitor || ws.monitor;
-    if (owner) return owner === monitor || (typeof owner.name === "string" && owner.name.length > 0 && owner.name === monitor.name)
-        || (owner.id !== undefined && owner.id === monitor.id);
+    if (owner)
+        return owner === monitor || (typeof owner.name === "string" && owner.name.length > 0 && owner.name === monitor.name) || (owner.id !== undefined && owner.id === monitor.id);
     return ipc.monitor !== undefined && (ipc.monitor === monitor.id || ipc.monitor === monitor.name);
 }
 
 function visible(t, monitor) {
-    if (!t || !monitor) return false;
+    if (!t || !monitor)
+        return false;
     var ipc = t.lastIpcObject || {}, mi = monitor.lastIpcObject || {};
-    if (t.mapped === false || ipc.mapped === false || t.hidden === true || ipc.hidden === true
-            || t.minimized === true || ipc.minimized === true || ipc.minimised === true
-            || (t.wayland && t.wayland.minimized === true) || !onOutput(t, monitor))
+    if (t.mapped === false || ipc.mapped === false || t.hidden === true || ipc.hidden === true || t.minimized === true || ipc.minimized === true || ipc.minimised === true || (t.wayland && t.wayland.minimized === true) || !onOutput(t, monitor))
         return false;
     var ws = t.workspace || ipc.workspace;
-    return t.pinned === true || ipc.pinned === true || sameWorkspace(ws, monitor.activeWorkspace || mi.activeWorkspace)
-        || sameWorkspace(ws, monitor.specialWorkspace || mi.specialWorkspace);
+    return t.pinned === true || ipc.pinned === true || sameWorkspace(ws, monitor.activeWorkspace || mi.activeWorkspace) || sameWorkspace(ws, monitor.specialWorkspace || mi.specialWorkspace);
 }
 
 function visibilityWeight(t, monitor, active) {
-    if (!visible(t, monitor)) return 0;
+    if (!visible(t, monitor))
+        return 0;
     return t === active || t.activated === true || (t.wayland && t.wayland.activated === true) ? 1 : 0.6;
 }
 
 function runningFor(monitor, toplevels, locked) {
-    if (locked) return false;
+    if (locked)
+        return false;
     for (var i = 0; i < toplevels.length; i++) {
         var t = toplevels[i], ipc = t.lastIpcObject || {};
         if (visible(t, monitor) && number(ipc.fullscreen, number(t.fullscreen, 0, 0, 3), 0, 3) > 1)
@@ -200,19 +668,23 @@ function runningFor(monitor, toplevels, locked) {
 
 function categories(compiled, toplevels, monitor, active) {
     var result = Object.create(null);
-    for (var m = 0; m < compiled.length; m++) result[compiled[m].id] = 0;
+    for (var m = 0; m < compiled.length; m++)
+        result[compiled[m].id] = 0;
     for (var i = 0; i < toplevels.length; i++) {
         var t = toplevels[i], weight = visibilityWeight(t, monitor, active);
-        if (!weight) continue;
+        if (!weight)
+            continue;
         var ipc = t.lastIpcObject || {};
         var appClass = typeof ipc["class"] === "string" ? ipc["class"].slice(0, 256) : "";
         for (m = 0; m < compiled.length; m++) {
             var matcher = compiled[m];
-            if (!matcher.classRx.test(appClass)) continue;
+            if (!matcher.classRx.test(appClass))
+                continue;
             // Read only AFTER class matching. Never attach a title or window to the result/state.
             if (matcher.titleRx) {
                 var title = typeof t.title === "string" ? t.title : (typeof ipc.title === "string" ? ipc.title : "");
-                if (!matcher.titleRx.test(title.slice(0, 512))) continue;
+                if (!matcher.titleRx.test(title.slice(0, 512)))
+                    continue;
             }
             result[matcher.id] = Math.max(result[matcher.id], weight);
         }
@@ -230,21 +702,134 @@ function seedFor(name) {
     return hash & 0x7fffffff;
 }
 
-function evaluate(config, signals) {
-    var target = [0, 0, 0, 0.5, 0.5, 0.5, 0.5, 0.5];
+function nearestHue(palette, degrees) {
+    var best = -1, distance = 30 + 1e-9;
+    for (var i = 0; i < palette.hues.length; i++) {
+        if (palette.hues[i] === null)
+            continue;
+        var gap = Math.abs(palette.hues[i] - degrees);
+        gap = Math.min(gap, 360 - gap);
+        if (gap < distance) {
+            best = i;
+            distance = gap;
+        }
+    }
+    return best;
+}
+
+function paletteIndex(palette, key) {
+    if (/^(0|[1-9][0-9]{0,5})$/.test(key))
+        return palette.sourceIndices.indexOf(Number(key));
+    var index = palette.ids.indexOf(key);
+    return index !== -1 ? index : own(ROLE_HUES, key) ? nearestHue(palette, ROLE_HUES[key]) : -1;
+}
+
+function archetypeProbabilities(values, steadyAdd) {
+    var out = values.slice(), sum = 0, i;
+    for (i = 1; i < 6; i++) {
+        out[i] = Math.max(0, out[i]);
+        sum += out[i];
+    }
+    out[0] = Math.max(0, 1 - sum + steadyAdd);
+    out = normalize(out, [1, 0, 0, 0, 0, 0]);
+    sum = 1 - out[0];
+    if (sum > 0.25) {
+        for (i = 1; i < 6; i++)
+            out[i] *= 0.25 / sum;
+        out[0] = 0.75;
+    }
+    return out;
+}
+
+function evaluate(config, signals, palette, archetypes) {
+    palette = palette || validatePalette(null);
+    archetypes = archetypes || validateArchetypes(null);
+    var target = [0, 0, 0, 0.5, 0.5, 0.5, 0.5, 0.5, palette.mix];
+    var weights = palette.baseWeights.slice(), types = [], hole = [0.5, 0.5, 0.5, 0.5], steadyAdd = 0;
+    for (var a = 0; a < ARCHETYPES.length; a++)
+        types.push(archetypes.weights[ARCHETYPES[a]]);
     if (config.enabled) {
         for (var i = 0; i < config.rules.length; i++) {
             var rule = config.rules[i];
-            if (!rule.enabled || !own(signals, rule.signal) || !finite(signals[rule.signal])) continue;
+            if (!rule.enabled || !own(signals, rule.signal) || !finite(signals[rule.signal]))
+                continue;
             var strength = clamp(signals[rule.signal], 0, 1);
             for (var c = 0; c < CONTROLS.length; c++) {
                 var add = rule.add[CONTROLS[c]];
-                if (finite(add)) target[c] += strength * add;
+                if (!finite(add))
+                    continue;
+                if (c < 3) {
+                    var legacyIndex = nearestHue(palette, [120, 270, 30][c]);
+                    if (legacyIndex === -1)
+                        continue;
+                    weights[legacyIndex] += strength * add;
+                }
+                target[c] += strength * add;
             }
+            var paletteAdds = object(rule.add.palette), keys = Object.keys(paletteAdds);
+            for (var k = 0; k < keys.length; k++) {
+                var index = paletteIndex(palette, keys[k]);
+                if (index !== -1)
+                    weights[index] += strength * paletteAdds[keys[k]];
+            }
+            var typeAdds = object(rule.add.archetypes), holeAdds = object(rule.add.hole);
+            for (a = 0; a < ARCHETYPES.length; a++) {
+                if (!finite(typeAdds[ARCHETYPES[a]]))
+                    continue;
+                if (a === 0)
+                    steadyAdd += strength * typeAdds.steady;
+                else
+                    types[a] += strength * typeAdds[ARCHETYPES[a]];
+            }
+            for (a = 0; a < HOLE.length; a++)
+                if (finite(holeAdds[HOLE[a]]))
+                    hole[a] += strength * holeAdds[HOLE[a]];
         }
     }
-    for (var j = 0; j < target.length; j++) target[j] = clamp(target[j], 0, 1);
+    for (var j = 0; j < target.length; j++)
+        target[j] = clamp(target[j], 0, 1);
     var total = target[0] + target[1] + target[2], budget = number(config.paletteBudget, 0.45, 0, 0.45);
-    if (total > budget) for (j = 0; j < 3; j++) target[j] *= budget / total;
-    return {birth: target.slice(0, 4), live: target.slice(4, 8)};
+    if (total > budget)
+        for (j = 0; j < 3; j++)
+            target[j] *= budget / total;
+    weights = normalize(weights, palette.baseWeights);
+    while (weights.length < 16)
+        weights.push(0);
+    return {
+        birth: target.slice(0, 4),
+        live: target.slice(4, 8),
+        paletteWeights: weights,
+        archetypeWeights: archetypeProbabilities(types, steadyAdd),
+        mix: palette.rgb.length ? Math.min(target[8], budget) : 0,
+        calm: target[3],
+        hole: hole.map(function (v) {
+            return clamp(v, 0, 1);
+        })
+    };
+}
+
+function vectorArray(value) {
+    return Array.isArray(value) ? value : [value.x, value.y, value.z, value.w];
+}
+function rounded(value) {
+    return finite(value) ? Math.round(value * 1000) / 1000 : 0;
+}
+function serializeProfile(profile) {
+    return {
+        running: profile.running,
+        birth: vectorArray(profile.birth).map(rounded),
+        live: vectorArray(profile.live).map(rounded),
+        paletteWeights: profile.paletteWeights.map(rounded),
+        archetypeWeights: profile.archetypeWeights.map(rounded),
+        mix: rounded(profile.mix),
+        calm: rounded(profile.calm),
+        hole: vectorArray(profile.hole).map(rounded)
+    };
+}
+function serializeNumbers(values) {
+    var out = Object.create(null), keys = Object.keys(values);
+    for (var i = 0; i < keys.length; i++)
+        if (finite(values[keys[i]]))
+            out[keys[i]] = rounded(values[keys[i]]);
+    return out;
 }
