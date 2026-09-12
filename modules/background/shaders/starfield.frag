@@ -49,6 +49,62 @@ layout(std140, binding = 0) uniform buf {
     mat4 birthHistory5;
     mat4 birthHistory6;
     mat4 birthHistory7;
+    mat4 birthHistory8;
+    mat4 birthHistory9;
+    mat4 birthHistory10;
+    mat4 birthHistory11;
+    mat4 birthHistory12;
+    mat4 birthHistory13;
+    mat4 birthHistory14;
+    mat4 birthHistory15;
+    mat4 birthHistory16;
+    mat4 birthHistory17;
+    mat4 birthHistory18;
+    mat4 birthHistory19;
+    mat4 birthHistory20;
+    mat4 birthHistory21;
+    mat4 birthHistory22;
+    mat4 birthHistory23;
+    mat4 birthHistory24;
+    mat4 birthHistory25;
+    mat4 birthHistory26;
+    mat4 birthHistory27;
+    mat4 birthHistory28;
+    mat4 birthHistory29;
+    mat4 birthHistory30;
+    mat4 birthHistory31;
+    mat4 birthHistory32;
+    mat4 birthHistory33;
+    mat4 birthHistory34;
+    mat4 birthHistory35;
+    mat4 birthHistory36;
+    mat4 birthHistory37;
+    mat4 birthHistory38;
+    mat4 birthHistory39;
+    mat4 birthHistory40;
+    mat4 birthHistory41;
+    mat4 birthHistory42;
+    mat4 birthHistory43;
+    mat4 birthHistory44;
+    mat4 birthHistory45;
+    mat4 birthHistory46;
+    mat4 birthHistory47;
+    mat4 birthHistory48;
+    mat4 birthHistory49;
+    mat4 birthHistory50;
+    mat4 birthHistory51;
+    mat4 birthHistory52;
+    mat4 birthHistory53;
+    mat4 birthHistory54;
+    mat4 birthHistory55;
+    mat4 birthHistory56;
+    mat4 birthHistory57;
+    mat4 birthHistory58;
+    mat4 birthHistory59;
+    mat4 birthHistory60;
+    mat4 birthHistory61;
+    mat4 birthHistory62;
+    mat4 birthHistory63;
 } ubuf;
 
 // No textures, sine hash or finite star catalogue. Each layer evaluates one cell.
@@ -70,17 +126,264 @@ vec4 columnAt(mat4 m, float column) {
     if (column < 2.5) return m[2];
     return m[3];
 }
+// Six balanced decisions select one of 64 matrices. Only fragments inside
+// a star's bounded support fetch history; the UBO remains below 5 KiB.
 vec4 historyAt(float bucket) {
-    float slot = mod(bucket, 32.0);
+    float slot = mod(bucket, 256.0);
     float column = mod(slot, 4.0);
-    if (slot < 4.0) return columnAt(ubuf.birthHistory0, column);
-    if (slot < 8.0) return columnAt(ubuf.birthHistory1, column);
-    if (slot < 12.0) return columnAt(ubuf.birthHistory2, column);
-    if (slot < 16.0) return columnAt(ubuf.birthHistory3, column);
-    if (slot < 20.0) return columnAt(ubuf.birthHistory4, column);
-    if (slot < 24.0) return columnAt(ubuf.birthHistory5, column);
-    if (slot < 28.0) return columnAt(ubuf.birthHistory6, column);
-    return columnAt(ubuf.birthHistory7, column);
+    if (slot < 128.0) {
+        if (slot < 64.0) {
+            if (slot < 32.0) {
+                if (slot < 16.0) {
+                    if (slot < 8.0) {
+                        if (slot < 4.0) {
+                            return columnAt(ubuf.birthHistory0, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory1, column);
+                        }
+                    } else {
+                        if (slot < 12.0) {
+                            return columnAt(ubuf.birthHistory2, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory3, column);
+                        }
+                    }
+                } else {
+                    if (slot < 24.0) {
+                        if (slot < 20.0) {
+                            return columnAt(ubuf.birthHistory4, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory5, column);
+                        }
+                    } else {
+                        if (slot < 28.0) {
+                            return columnAt(ubuf.birthHistory6, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory7, column);
+                        }
+                    }
+                }
+            } else {
+                if (slot < 48.0) {
+                    if (slot < 40.0) {
+                        if (slot < 36.0) {
+                            return columnAt(ubuf.birthHistory8, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory9, column);
+                        }
+                    } else {
+                        if (slot < 44.0) {
+                            return columnAt(ubuf.birthHistory10, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory11, column);
+                        }
+                    }
+                } else {
+                    if (slot < 56.0) {
+                        if (slot < 52.0) {
+                            return columnAt(ubuf.birthHistory12, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory13, column);
+                        }
+                    } else {
+                        if (slot < 60.0) {
+                            return columnAt(ubuf.birthHistory14, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory15, column);
+                        }
+                    }
+                }
+            }
+        } else {
+            if (slot < 96.0) {
+                if (slot < 80.0) {
+                    if (slot < 72.0) {
+                        if (slot < 68.0) {
+                            return columnAt(ubuf.birthHistory16, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory17, column);
+                        }
+                    } else {
+                        if (slot < 76.0) {
+                            return columnAt(ubuf.birthHistory18, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory19, column);
+                        }
+                    }
+                } else {
+                    if (slot < 88.0) {
+                        if (slot < 84.0) {
+                            return columnAt(ubuf.birthHistory20, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory21, column);
+                        }
+                    } else {
+                        if (slot < 92.0) {
+                            return columnAt(ubuf.birthHistory22, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory23, column);
+                        }
+                    }
+                }
+            } else {
+                if (slot < 112.0) {
+                    if (slot < 104.0) {
+                        if (slot < 100.0) {
+                            return columnAt(ubuf.birthHistory24, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory25, column);
+                        }
+                    } else {
+                        if (slot < 108.0) {
+                            return columnAt(ubuf.birthHistory26, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory27, column);
+                        }
+                    }
+                } else {
+                    if (slot < 120.0) {
+                        if (slot < 116.0) {
+                            return columnAt(ubuf.birthHistory28, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory29, column);
+                        }
+                    } else {
+                        if (slot < 124.0) {
+                            return columnAt(ubuf.birthHistory30, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory31, column);
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        if (slot < 192.0) {
+            if (slot < 160.0) {
+                if (slot < 144.0) {
+                    if (slot < 136.0) {
+                        if (slot < 132.0) {
+                            return columnAt(ubuf.birthHistory32, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory33, column);
+                        }
+                    } else {
+                        if (slot < 140.0) {
+                            return columnAt(ubuf.birthHistory34, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory35, column);
+                        }
+                    }
+                } else {
+                    if (slot < 152.0) {
+                        if (slot < 148.0) {
+                            return columnAt(ubuf.birthHistory36, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory37, column);
+                        }
+                    } else {
+                        if (slot < 156.0) {
+                            return columnAt(ubuf.birthHistory38, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory39, column);
+                        }
+                    }
+                }
+            } else {
+                if (slot < 176.0) {
+                    if (slot < 168.0) {
+                        if (slot < 164.0) {
+                            return columnAt(ubuf.birthHistory40, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory41, column);
+                        }
+                    } else {
+                        if (slot < 172.0) {
+                            return columnAt(ubuf.birthHistory42, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory43, column);
+                        }
+                    }
+                } else {
+                    if (slot < 184.0) {
+                        if (slot < 180.0) {
+                            return columnAt(ubuf.birthHistory44, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory45, column);
+                        }
+                    } else {
+                        if (slot < 188.0) {
+                            return columnAt(ubuf.birthHistory46, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory47, column);
+                        }
+                    }
+                }
+            }
+        } else {
+            if (slot < 224.0) {
+                if (slot < 208.0) {
+                    if (slot < 200.0) {
+                        if (slot < 196.0) {
+                            return columnAt(ubuf.birthHistory48, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory49, column);
+                        }
+                    } else {
+                        if (slot < 204.0) {
+                            return columnAt(ubuf.birthHistory50, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory51, column);
+                        }
+                    }
+                } else {
+                    if (slot < 216.0) {
+                        if (slot < 212.0) {
+                            return columnAt(ubuf.birthHistory52, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory53, column);
+                        }
+                    } else {
+                        if (slot < 220.0) {
+                            return columnAt(ubuf.birthHistory54, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory55, column);
+                        }
+                    }
+                }
+            } else {
+                if (slot < 240.0) {
+                    if (slot < 232.0) {
+                        if (slot < 228.0) {
+                            return columnAt(ubuf.birthHistory56, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory57, column);
+                        }
+                    } else {
+                        if (slot < 236.0) {
+                            return columnAt(ubuf.birthHistory58, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory59, column);
+                        }
+                    }
+                } else {
+                    if (slot < 248.0) {
+                        if (slot < 244.0) {
+                            return columnAt(ubuf.birthHistory60, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory61, column);
+                        }
+                    } else {
+                        if (slot < 252.0) {
+                            return columnAt(ubuf.birthHistory62, column);
+                        } else {
+                            return columnAt(ubuf.birthHistory63, column);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
@@ -107,10 +410,10 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
         float u = dot(q, q) * 0.5;
         float padding = layer < 0.5 ? ubuf.birthPadding.x : layer < 1.5 ? ubuf.birthPadding.y : ubuf.birthPadding.z;
         float fadeInner = mix(mix(0.008, 0.025, middleLayer), 0.070, nearLayer);
-        // A conservative lifetime bound rejects the empty central far field
-        // before hashing or reconstructing a candidate.
+        // The far layer reaches its central fade even from rectangular corners.
+        // Keep the original middle/near lifetime and their population unchanged.
         float minimumEdgeR = 1.0 + padding / radius;
-        float minimumStarR = max(2.0 * fadeInner, sqrt(max(0.0, minimumEdgeR * minimumEdgeR - 1200.0 * (6.0 / 1080.0) * depth)));
+        float minimumStarR = max(2.0 * fadeInner, sqrt(max(0.0, minimumEdgeR * minimumEdgeR - mix(15120.0, 1200.0, middleLayer) * (6.0 / 1080.0) * depth)));
         float minimumPixelR = max(0.0, minimumStarR - requestedSupport / (radius * zoom));
         if (u < minimumPixelR * minimumPixelR * 0.5 || u < 1e-12) return vec3(0.0);
         // One shared atan per pixel, with a small centre-offset correction.
@@ -159,7 +462,10 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
         float outerR = sqrt(max(0.0, 2.0 * (row + 1.0 - grid.z) / grid.x));
         float angularMargin = r * sin(min(jitter.x, 1.0 - jitter.x) / grid.y);
         float radialMargin = min(r - innerR, outerR - r);
-        support = min(requestedSupport, 0.9 * max(0.0, radius * zoom * min(angularMargin, radialMargin) - 1.0));
+        // Dust needs only a subpixel guard. A full pixel erased cores in
+        // the narrow inner sectors. Both guards remain strictly inside the
+        // cell; the support taper reaches zero before its boundary.
+        support = min(requestedSupport, mix(0.98, 0.9, middleLayer) * max(0.0, radius * zoom * min(angularMargin, radialMargin) - mix(0.125, 1.0, middleLayer)));
         if (support <= 0.0 || dot(p,p) >= support * support) return vec3(0.0);
         // Entry is measured against an immutable expanded rectangle, including
         // maximum camera excursion and optical support. Thus the palette was
@@ -169,9 +475,11 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
         age = (0.5 * edgeR * edgeR - starU) / ((6.0 / 1080.0) * depth);
         float fadeOuter = mix(mix(0.020, 0.060, middleLayer), 0.140, nearLayer);
         life = smoothstep(fadeInner, fadeOuter, r * 0.5);
-        // Slow far stars cannot reach the centre inside the 960-second ring.
-        // Stagger the terminal fade; no live star ever references an old slot.
-        float lifetime = 480.0 + 120.0 * fract(h.x * 13.71 + h.z * 19.13);
+        // The extended 7680 s ring covers the far layer's full journey on
+        // portrait, ultrawide and tablet buffers. This last-resort lifetime
+        // also prevents overwritten-history reads on extreme aspect ratios.
+        // Two 30 s endpoints and a further 60 s margin remain at maximum age.
+        float lifetime = mix(7440.0, 480.0, middleLayer) + 120.0 * fract(h.x * 13.71 + h.z * 19.13);
         life *= smoothstep(0.0, 4.0, age) * (1.0 - smoothstep(lifetime - 90.0, lifetime, age));
         if (life <= 0.0) return vec3(0.0);
     } else {

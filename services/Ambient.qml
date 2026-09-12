@@ -556,4 +556,29 @@ Singleton {
             onRead: data => {}
         }
     }
+
+    // Diagnostics only: `caelestia shell ipc call ambient dump` prints the
+    // current per-screen targets and normalised signals. Never includes titles.
+    IpcHandler {
+        function dump(): string {
+            const out = {};
+            for (const name of Object.keys(root.profiles)) {
+                const p = root.profiles[name];
+                out[name] = {
+                    running: p.running,
+                    birth: [p.birth.x, p.birth.y, p.birth.z, p.birth.w].map(v => Math.round(v * 1000) / 1000),
+                    live: [p.live.x, p.live.y, p.live.z, p.live.w].map(v => Math.round(v * 1000) / 1000)
+                };
+            }
+            return JSON.stringify({
+                polling: root.polling,
+                locked: root.locked,
+                profiles: out,
+                signals: root.signals,
+                valid: root.valid
+            });
+        }
+
+        target: "ambient"
+    }
 }

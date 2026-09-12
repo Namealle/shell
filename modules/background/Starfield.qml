@@ -82,7 +82,7 @@ Item {
 
     function resetState(): void {
         const history = [];
-        for (let i = 0; i < 32; ++i)
+        for (let i = 0; i < 256; ++i)
             history.push([0, 0, 0, 0.5]);
         _state = {
             clock: 0,
@@ -90,6 +90,7 @@ Item {
             birth: [0, 0, 0, 0.5],
             live: [0.5, 0.5, 0.5, 0.5],
             history: history,
+            publishedHistory: [],
             bucket: 0,
             travel: [0, 0],
             events: [null, null, null],
@@ -107,6 +108,11 @@ Item {
         return value + clamp(delta, -0.005 * dt, 0.005 * dt);
     }
 
+    // 256 samples x 30 flow seconds = 7680 seconds. The far layer's longest
+    // padded corner-to-centre journey on the supported buffers is < 6300 s;
+    // its 7560 s safety lifetime leaves two sealed interpolation endpoints.
+    // Keep 30 s sampling for every layer: extending coverage must not delay
+    // the palette response of new middle/near stars or clamp a living palette.
     // Samples are sealed at flow boundaries. Interpolation in the shader uses
     // P[n-1] and P[n], both already sealed at a star's immutable birth phase.
     function advance(dt: real): void {
@@ -125,9 +131,9 @@ Item {
         const flowRate = (oldRate + 0.8 + 0.4 * s.live[2]) * 0.5;
         s.flow += dt * flowRate * clamp(radialSpeed, 0, 26) / 6;
         const bucket = Math.floor((s.flow + 1e-7) / 30);
-        for (let n = Math.max(s.bucket + 1, bucket - 31); n <= bucket; ++n) {
+        for (let n = Math.max(s.bucket + 1, bucket - 255); n <= bucket; ++n) {
             const f = clamp((n * 30 - oldFlow) / Math.max(1e-12, s.flow - oldFlow), 0, 1);
-            s.history[modulo(n, 32)] = before.map((x, i) => x + (s.birth[i] - x) * f);
+            s.history[modulo(n, 256)] = before.map((x, i) => x + (s.birth[i] - x) * f);
             ++s.historyWrites;
         }
         s.bucket = bucket;
@@ -301,7 +307,7 @@ Item {
         shader.resolution = Qt.vector2d(w, h);
         shader.radialMode = motionMode === "drift" ? 0 : 1;
         shader.phaseTime = modulo(s.clock, 4096);
-        shader.flowPhaseLocal = modulo(s.flow, 960);
+        shader.flowPhaseLocal = modulo(s.flow, 7680);
         shader.density = clamp(density, 0, 3);
         shader.twinkle = clamp(twinkle, 0, 1) * (0.6 + 0.8 * s.live[0]);
         shader.brightness = clamp(brightness, 0, 3) * (0.8 + 0.4 * s.live[1]);
@@ -350,8 +356,16 @@ Item {
             shader["driftSeeds" + layer] = Qt.matrix4x4(salts[0][0], salts[1][0], salts[2][0], salts[3][0], salts[0][1], salts[1][1], salts[2][1], salts[3][1], 0, 0, 0, 0, 0, 0, 0, 0);
         }
         shader.birthPadding = Qt.vector3d(padding[0], padding[1], padding[2]);
-        for (let i = 0; i < 8; ++i)
+        // advance() replaces sealed sample vectors. Compare those references
+        // so the larger ring rebuilds matrices only when a sample changes.
+        for (let i = 0; i < 64; ++i) {
+            const offset = i * 4;
+            if (s.history[offset] === s.publishedHistory[offset] && s.history[offset + 1] === s.publishedHistory[offset + 1] && s.history[offset + 2] === s.publishedHistory[offset + 2] && s.history[offset + 3] === s.publishedHistory[offset + 3])
+                continue;
             shader["birthHistory" + i] = historyMatrix(i);
+            for (let j = offset; j < offset + 4; ++j)
+                s.publishedHistory[j] = s.history[j];
+        }
         s.mood = moodState();
         shader.mood = Qt.vector4d(s.mood[0], s.mood[1], 0, 0);
         const moodTwinkle = [0.18, 0.16, 0.24, 0.22][s.mood[0]];
@@ -445,6 +459,62 @@ Item {
         property matrix4x4 birthHistory5
         property matrix4x4 birthHistory6
         property matrix4x4 birthHistory7
+        property matrix4x4 birthHistory8
+        property matrix4x4 birthHistory9
+        property matrix4x4 birthHistory10
+        property matrix4x4 birthHistory11
+        property matrix4x4 birthHistory12
+        property matrix4x4 birthHistory13
+        property matrix4x4 birthHistory14
+        property matrix4x4 birthHistory15
+        property matrix4x4 birthHistory16
+        property matrix4x4 birthHistory17
+        property matrix4x4 birthHistory18
+        property matrix4x4 birthHistory19
+        property matrix4x4 birthHistory20
+        property matrix4x4 birthHistory21
+        property matrix4x4 birthHistory22
+        property matrix4x4 birthHistory23
+        property matrix4x4 birthHistory24
+        property matrix4x4 birthHistory25
+        property matrix4x4 birthHistory26
+        property matrix4x4 birthHistory27
+        property matrix4x4 birthHistory28
+        property matrix4x4 birthHistory29
+        property matrix4x4 birthHistory30
+        property matrix4x4 birthHistory31
+        property matrix4x4 birthHistory32
+        property matrix4x4 birthHistory33
+        property matrix4x4 birthHistory34
+        property matrix4x4 birthHistory35
+        property matrix4x4 birthHistory36
+        property matrix4x4 birthHistory37
+        property matrix4x4 birthHistory38
+        property matrix4x4 birthHistory39
+        property matrix4x4 birthHistory40
+        property matrix4x4 birthHistory41
+        property matrix4x4 birthHistory42
+        property matrix4x4 birthHistory43
+        property matrix4x4 birthHistory44
+        property matrix4x4 birthHistory45
+        property matrix4x4 birthHistory46
+        property matrix4x4 birthHistory47
+        property matrix4x4 birthHistory48
+        property matrix4x4 birthHistory49
+        property matrix4x4 birthHistory50
+        property matrix4x4 birthHistory51
+        property matrix4x4 birthHistory52
+        property matrix4x4 birthHistory53
+        property matrix4x4 birthHistory54
+        property matrix4x4 birthHistory55
+        property matrix4x4 birthHistory56
+        property matrix4x4 birthHistory57
+        property matrix4x4 birthHistory58
+        property matrix4x4 birthHistory59
+        property matrix4x4 birthHistory60
+        property matrix4x4 birthHistory61
+        property matrix4x4 birthHistory62
+        property matrix4x4 birthHistory63
 
         fragmentShader: "shaders/starfield.frag.qsb"
     }
