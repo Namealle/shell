@@ -7,6 +7,8 @@ import Caelestia.Config
 import qs.components
 import qs.components.containers
 import qs.services
+import qs.services as Services
+import "." as BackgroundComponents
 
 Variants {
     model: Screens.screens.filter(s => GlobalConfig.forScreen(s.name).background.enabled)
@@ -15,12 +17,13 @@ Variants {
         id: win
 
         required property ShellScreen modelData
+        readonly property bool starfieldEnabled: Services.Starfield.enabledFor(modelData.name)
 
         screen: modelData
         name: "background"
         WlrLayershell.exclusionMode: ExclusionMode.Ignore
-        WlrLayershell.layer: contentItem.Config.background.wallpaperEnabled ? WlrLayer.Background : WlrLayer.Bottom
-        color: contentItem.Config.background.wallpaperEnabled ? "black" : "transparent"
+        WlrLayershell.layer: starfieldEnabled || contentItem.Config.background.wallpaperEnabled ? WlrLayer.Background : WlrLayer.Bottom
+        color: starfieldEnabled || contentItem.Config.background.wallpaperEnabled ? "black" : "transparent"
         surfaceFormat.opaque: false
 
         anchors.top: true
@@ -45,15 +48,44 @@ Variants {
                 asynchronous: true
 
                 anchors.fill: parent
-                active: Config.background.wallpaperEnabled
+                active: !win.starfieldEnabled && Config.background.wallpaperEnabled
 
                 sourceComponent: Wallpaper {}
+            }
+
+            Loader {
+                id: starfield
+
+                anchors.fill: parent
+                active: win.starfieldEnabled
+
+                sourceComponent: BackgroundComponents.Starfield {
+                    devicePixelRatio: behindClock.Screen.devicePixelRatio
+                    density: Services.Starfield.density
+                    driftSpeed: Services.Starfield.driftSpeed
+                    driftDirection: Services.Starfield.driftDirection
+                    twinkle: Services.Starfield.twinkle
+                    flareFraction: Services.Starfield.flareFraction
+                    brightness: Services.Starfield.brightness
+                    backgroundColor: Services.Starfield.backgroundColor
+                    edgeLift: Services.Starfield.edgeLift
+                    fps: Services.Starfield.fps
+                    motionWander: Services.Starfield.motion.wander
+                    motionZoom: Services.Starfield.motion.zoom
+                    motionRotation: Services.Starfield.motion.rotation
+                    meteorsEnabled: Services.Starfield.meteors.enabled
+                    meteorsInterval: Services.Starfield.meteors.interval
+                    cometEnabled: Services.Starfield.comet.enabled
+                    cometInterval: Services.Starfield.comet.interval
+                    satellitesEnabled: Services.Starfield.satellites.enabled
+                    satellitesInterval: Services.Starfield.satellites.interval
+                }
             }
 
             Visualiser {
                 anchors.fill: parent
                 screen: win.modelData
-                wallpaper: wallpaper
+                wallpaper: win.starfieldEnabled ? starfield : wallpaper
             }
         }
 
