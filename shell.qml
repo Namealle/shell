@@ -24,6 +24,12 @@ ShellRoot {
         value: root
     }
 
+    Binding {
+        target: Ambient
+        property: "locked"
+        value: lock.lock.locked
+    }
+
     GSFLoader {}
     ServiceLoader {}
 

@@ -22,6 +22,33 @@ layout(std140, binding = 0) uniform buf {
     vec4 cometHead;
     vec3 cometShape;
     vec4 satelliteHead;
+    float radialMode;
+    vec2 centreOffset;
+    vec3 flowZoom;
+    vec3 birthPadding;
+    vec4 flowGrid0;
+    vec4 flowGrid1;
+    vec4 flowGrid2;
+    vec4 flowSeeds0;
+    vec4 flowSeeds1;
+    vec4 flowSeeds2;
+    vec4 driftGrid0;
+    vec4 driftGrid1;
+    vec4 driftGrid2;
+    mat4 driftSeeds0;
+    mat4 driftSeeds1;
+    mat4 driftSeeds2;
+    float flowPhaseLocal;
+    float variableFraction;
+    vec4 mood;
+    mat4 birthHistory0;
+    mat4 birthHistory1;
+    mat4 birthHistory2;
+    mat4 birthHistory3;
+    mat4 birthHistory4;
+    mat4 birthHistory5;
+    mat4 birthHistory6;
+    mat4 birthHistory7;
 } ubuf;
 
 // No textures, sine hash or finite star catalogue. Each layer evaluates one cell.
@@ -35,62 +62,186 @@ vec2 rotate(vec2 p, float c, float s) {
     return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
 }
 
-vec3 stars(vec2 pixel, float scale, float layer) {
+
+// Literal column selection retains GLSL ES 100 / desktop 120 compatibility.
+vec4 columnAt(mat4 m, float column) {
+    if (column < 0.5) return m[0];
+    if (column < 1.5) return m[1];
+    if (column < 2.5) return m[2];
+    return m[3];
+}
+vec4 historyAt(float bucket) {
+    float slot = mod(bucket, 32.0);
+    float column = mod(slot, 4.0);
+    if (slot < 4.0) return columnAt(ubuf.birthHistory0, column);
+    if (slot < 8.0) return columnAt(ubuf.birthHistory1, column);
+    if (slot < 12.0) return columnAt(ubuf.birthHistory2, column);
+    if (slot < 16.0) return columnAt(ubuf.birthHistory3, column);
+    if (slot < 20.0) return columnAt(ubuf.birthHistory4, column);
+    if (slot < 24.0) return columnAt(ubuf.birthHistory5, column);
+    if (slot < 28.0) return columnAt(ubuf.birthHistory6, column);
+    return columnAt(ubuf.birthHistory7, column);
+}
+
+vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
     float nearLayer = step(1.5, layer);
     float middleLayer = step(0.5, layer);
     float displayScale = max(1.0, sqrt(ubuf.resolution.x * ubuf.resolution.y / (1024.0 * 576.0)));
     float optics = mix(1.0, displayScale, nearLayer);
-    float cellSize = mix(12.0, 30.0, middleLayer);
-    cellSize = mix(cellSize, 110.0, nearLayer) * scale;
-    float depth = mix(0.10, 0.42, middleLayer);
-    depth = mix(depth, 1.0, nearLayer);
-
-    // Independent, incommensurate grids; neither the grid nor stars tile on screen.
-    float angle = 0.37 + layer * 1.23;
-    float c = cos(angle), s = sin(angle);
-    vec2 centre = ubuf.cameraCentre * ubuf.resolution;
-    float zoom = exp(ubuf.camera.z * depth);
-    float turn = ubuf.camera.w * depth;
-    float cameraC = cos(turn), cameraS = sin(turn);
-    vec2 samplePoint = rotate(pixel - centre, cameraC, -cameraS) / zoom + centre;
-    samplePoint -= ubuf.camera.xy * displayScale * depth;
-    vec2 world = rotate(samplePoint, c, s) + vec2(137.2, 931.7) * (layer + 1.0);
-    vec2 cell = floor(world / cellSize);
-    vec4 h = hash4(cell + layer * vec2(173.17, 319.43));
-    if (h.w > mix(0.76, 0.68, nearLayer))
-        return vec3(0.0);
-
-    // Support stays INSIDE the owning cell: no neighbour loop and no seam popping.
-    float support = mix(3.5, 6.0, middleLayer);
-    support = min(mix(support, 42.0 * optics, nearLayer), cellSize * 0.46);
-    vec2 position = support + 1.0 + h.xy * (cellSize - 2.0 * (support + 1.0));
-    vec2 delta = world - (cell * cellSize + position);
-    delta *= zoom;
-    float r2 = dot(delta, delta);
-    support *= zoom;
-    if (r2 > support * support)
-        return vec3(0.0);
-
-    // Undo the grid rotation: diffraction crosses stay aligned to the display.
-    vec2 p = rotate(rotate(delta, c, -s), cameraC, cameraS);
+    float cellSize = mix(mix(12.0, 30.0, middleLayer), 110.0, nearLayer) * scale;
+    float depth = mix(mix(0.10, 0.42, middleLayer), 1.0, nearLayer);
+    float requestedSupport = mix(mix(3.5, 6.0, middleLayer), 42.0 * optics, nearLayer);
+    vec4 h;
+    vec2 p;
+    float support;
+    float life = 1.0;
+    float age = 0.0;
+    if (ubuf.radialMode > 0.5) {
+        vec4 grid = layer < 0.5 ? ubuf.flowGrid0 : layer < 1.5 ? ubuf.flowGrid1 : ubuf.flowGrid2;
+        vec4 seeds = layer < 0.5 ? ubuf.flowSeeds0 : layer < 1.5 ? ubuf.flowSeeds1 : ubuf.flowSeeds2;
+        float zoom = layer < 0.5 ? ubuf.flowZoom.x : layer < 1.5 ? ubuf.flowZoom.y : ubuf.flowZoom.z;
+        float shortSide = min(ubuf.resolution.x, ubuf.resolution.y);
+        float radius = shortSide * 0.5;
+        vec2 centre = ubuf.resolution * 0.5 + ubuf.centreOffset * depth;
+        vec2 q = (pixel - centre) / (radius * zoom);
+        float u = dot(q, q) * 0.5;
+        float padding = layer < 0.5 ? ubuf.birthPadding.x : layer < 1.5 ? ubuf.birthPadding.y : ubuf.birthPadding.z;
+        float fadeInner = mix(mix(0.008, 0.025, middleLayer), 0.070, nearLayer);
+        // A conservative lifetime bound rejects the empty central far field
+        // before hashing or reconstructing a candidate.
+        float minimumEdgeR = 1.0 + padding / radius;
+        float minimumStarR = max(2.0 * fadeInner, sqrt(max(0.0, minimumEdgeR * minimumEdgeR - 1200.0 * (6.0 / 1080.0) * depth)));
+        float minimumPixelR = max(0.0, minimumStarR - requestedSupport / (radius * zoom));
+        if (u < minimumPixelR * minimumPixelR * 0.5 || u < 1e-12) return vec3(0.0);
+        // One shared atan per pixel, with a small centre-offset correction.
+        // The central fades bound |t| < .3 at the allowed wander amplitude.
+        // Alternating atan series through t^9 errs by < 0.001 physical px.
+        vec2 base = pixel - ubuf.resolution * 0.5;
+        vec2 relative = pixel - centre;
+        float t = (base.x * relative.y - base.y * relative.x) / max(dot(base, relative), 0.0001);
+        float t2 = t * t;
+        float angle = baseAngle + t * (1.0 + t2 * (-1.0 / 3.0 + t2 * (1.0 / 5.0 + t2 * (-1.0 / 7.0 + t2 / 9.0))));
+        if (abs(t) > 0.25 || dot(base, relative) <= 0.0)
+            angle = atan(relative.y, relative.x);
+        // Integer sector count makes both sides of atan's branch cut identical.
+        float sectors = floor(grid.y * 6.28318530718 + 0.5);
+        float angleOffset = 0.37 + layer * 1.23;
+        float angularCell = mod((angle - angleOffset) * grid.y, sectors);
+        float sector = floor(angularCell);
+        float radialCell = u * grid.x + grid.z;
+        float row = floor(radialCell);
+        float rowId = row + grid.w;
+        vec2 salt = rowId < 256.0 ? seeds.xy : seeds.zw;
+        h = hash4(vec2(sector, mod(rowId, 256.0)) + salt + layer * vec2(173.17, 319.43));
+        if (h.w > mix(0.90, 0.68, nearLayer)) return vec3(0.0);
+        // Non-flare foreground halos are below one output code well before
+        // 18*optics. Reject their empty surroundings before the expensive work;
+        // the maximum birth flare multiplier (1.3) makes this test immutable.
+        if (nearLayer > 0.5 && fract(h.x * 71.31 + h.z * 23.17) >= ubuf.flareFraction * 65.0 * 1.3)
+            requestedSupport = min(requestedSupport, 18.0 * optics);
+        vec2 jitter = 0.18 + 0.64 * h.xy;
+        float starU = (row + jitter.y - grid.z) / grid.x;
+        if (starU <= 0.0) return vec3(0.0);
+        float r = sqrt(2.0 * starU);
+        float pixelR = sqrt(2.0 * u);
+        if (abs(pixelR - r) * radius * zoom > requestedSupport) return vec3(0.0);
+        float deltaAngle = (angularCell - sector - jitter.x) / grid.y;
+        float a2 = deltaAngle * deltaAngle;
+        // sin lower bound gives a conservative, cheap angular rejection.
+        if (abs(deltaAngle) * (1.0 - a2 / 6.0) * pixelR * radius * zoom > requestedSupport) return vec3(0.0);
+        float sinA = deltaAngle * (1.0 + a2 * (-1.0 / 6.0 + a2 * (1.0 / 120.0 + a2 * (-1.0 / 5040.0 + a2 / 362880.0))));
+        float cosA = 1.0 + a2 * (-1.0 / 2.0 + a2 * (1.0 / 24.0 + a2 * (-1.0 / 720.0 + a2 / 40320.0)));
+        vec2 direction = rotate(q / pixelR, cosA, -sinA);
+        vec2 starPosition = centre + radius * zoom * r * direction;
+        p = pixel - starPosition; // physical pixels: round cores, screen-aligned crosses
+        if (dot(p,p) >= requestedSupport * requestedSupport) return vec3(0.0);
+        float innerR = sqrt(max(0.0, 2.0 * (row - grid.z) / grid.x));
+        float outerR = sqrt(max(0.0, 2.0 * (row + 1.0 - grid.z) / grid.x));
+        float angularMargin = r * sin(min(jitter.x, 1.0 - jitter.x) / grid.y);
+        float radialMargin = min(r - innerR, outerR - r);
+        support = min(requestedSupport, 0.9 * max(0.0, radius * zoom * min(angularMargin, radialMargin) - 1.0));
+        if (support <= 0.0 || dot(p,p) >= support * support) return vec3(0.0);
+        // Entry is measured against an immutable expanded rectangle, including
+        // maximum camera excursion and optical support. Thus the palette was
+        // sealed before even an off-screen star's halo could become visible.
+        vec2 boundary = (ubuf.resolution * 0.5 + padding) / max(abs(direction), vec2(0.00001));
+        float edgeR = min(boundary.x, boundary.y) / radius;
+        age = (0.5 * edgeR * edgeR - starU) / ((6.0 / 1080.0) * depth);
+        float fadeOuter = mix(mix(0.020, 0.060, middleLayer), 0.140, nearLayer);
+        life = smoothstep(fadeInner, fadeOuter, r * 0.5);
+        // Slow far stars cannot reach the centre inside the 960-second ring.
+        // Stagger the terminal fade; no live star ever references an old slot.
+        float lifetime = 480.0 + 120.0 * fract(h.x * 13.71 + h.z * 19.13);
+        life *= smoothstep(0.0, 4.0, age) * (1.0 - smoothstep(lifetime - 90.0, lifetime, age));
+        if (life <= 0.0) return vec3(0.0);
+    } else {
+        float angle = 0.37 + layer * 1.23;
+        float c = cos(angle), s = sin(angle);
+        vec2 centre = ubuf.cameraCentre * ubuf.resolution;
+        float zoom = exp(ubuf.camera.z * depth);
+        float turn = ubuf.camera.w * depth;
+        float cameraC = cos(turn), cameraS = sin(turn);
+        vec2 samplePoint = rotate(pixel - centre, cameraC, -cameraS) / zoom + centre;
+        vec4 grid = layer < 0.5 ? ubuf.driftGrid0 : layer < 1.5 ? ubuf.driftGrid1 : ubuf.driftGrid2;
+        mat4 seeds = layer < 0.5 ? ubuf.driftSeeds0 : layer < 1.5 ? ubuf.driftSeeds1 : ubuf.driftSeeds2;
+        vec2 world = rotate(samplePoint - ubuf.resolution * 0.5, c, s) / cellSize + grid.xy;
+        vec2 cell = floor(world);
+        vec2 id = cell + grid.zw;
+        vec2 block = floor(id / 256.0);
+        vec2 salt = columnAt(seeds, block.x + 2.0 * block.y).xy;
+        h = hash4(mod(id, 256.0) + salt + layer * vec2(173.17, 319.43));
+        if (h.w > mix(0.76, 0.68, nearLayer)) return vec3(0.0);
+        support = min(requestedSupport, max(0.0, cellSize * 0.5 - 1.0));
+        vec2 position = support + 1.0 + h.xy * max(vec2(0.0), vec2(cellSize - 2.0 * (support + 1.0)));
+        vec2 delta = (fract(world) * cellSize - position) * zoom;
+        support *= zoom;
+        if (support <= 0.0 || dot(delta,delta) >= support * support) return vec3(0.0);
+        p = rotate(rotate(delta, c, -s), cameraC, cameraS);
+    }
+    float r2 = dot(p, p);
+    vec4 birth = vec4(0.0, 0.0, 0.0, 0.5);
+    if (ubuf.radialMode > 0.5) {
+        float birthBucket = (ubuf.flowPhaseLocal - age) / 30.0;
+        float n = floor(birthBucket);
+        birth = mix(historyAt(n - 1.0), historyAt(n), fract(birthBucket));
+    }
+    float calm = birth.w;
+    float acceptance = middleLayer > 0.5 ? mix(0.76, 0.68, nearLayer) : mix(0.90, 0.62, calm);
+    float moodTarget = acceptance;
+    if (ubuf.mood.x < 0.5) moodTarget -= mix(0.08, 0.06, middleLayer) * (1.0 - nearLayer);
+    else if (ubuf.mood.x < 1.5) moodTarget += mix(0.14, 0.02, middleLayer) * (1.0 - nearLayer);
+    // Two stable masks: reserve stars fade over 60 seconds, never grid reseeding
+    // or an animated threshold. Reactive acceptance itself is birth-frozen.
+    float population = mix(1.0 - step(acceptance, h.w), 1.0 - step(moodTarget, h.w), ubuf.mood.y);
+    if (population <= 0.0) return vec3(0.0);
+    life *= population;
     float variation = fract(h.z * 37.19);
     float phase = h.z * 6.28318530718;
     float tauTime = ubuf.phaseTime * (6.28318530718 / 4096.0);
     float cycles = floor(mix(370.0, 990.0, variation));
-    float slow = sin(tauTime * floor(mix(31.0, 83.0, h.z)) + phase * 2.3);
+    float flareDraw = fract(h.x * 71.31 + h.z * 23.17);
+    float flare = nearLayer * (1.0 - step(ubuf.flareFraction * 65.0 * mix(1.3, 0.7, calm), flareDraw));
+    float variableDraw = fract(h.y * 47.23 + h.z * 11.73);
+    float variable = middleLayer * (1.0 - flare) * (1.0 - step(ubuf.variableFraction, variableDraw));
+    float slowCycles = variable > 0.5 ? floor(mix(18.0, 46.0, variation)) : floor(mix(31.0, 83.0, h.z));
+    float slow = sin(tauTime * slowCycles + phase * 2.3);
     float pulse = sin(tauTime * cycles + phase + 0.55 * slow);
     float shimmer = 1.0 + ubuf.twinkle * (0.60 * pulse + 0.28 * sin(tauTime * floor(mix(193.0, 431.0, h.w)) + phase * 1.7));
     // Unsynchronised 0.5–1.5 s glints, with variable strength, on a minority.
     if (variation > 0.78) {
         float glint = pow(max(0.0, sin(tauTime * floor(mix(63.0, 181.0, h.z)) + phase * 3.7)), 48.0);
-        shimmer += ubuf.twinkle * glint * (0.8 + 0.6 * slow);
+        shimmer += ubuf.twinkle * glint * (0.8 + 0.6 * slow) * (1.0 + 0.35 * ubuf.mood.y * step(1.5, ubuf.mood.x) * (1.0 - step(2.5, ubuf.mood.x)));
     }
-    // A few background stars dissolve over tens of seconds; no frame randomness.
-    float visibility = variation > 0.96 && nearLayer == 0.0 ? smoothstep(0.03, 0.65, 0.5 + 0.5 * slow) : 1.0;
+    shimmer *= 1.0 + variable * 0.15 * slow;
+    float visibility = life;
+    if (ubuf.mood.x > 0.5 && ubuf.mood.x < 1.5 && middleLayer == 0.0)
+        visibility *= mix(1.0, 0.85, ubuf.mood.y);
 
     // Dust never scales with the screen: its faintest peaks remain perceptible.
     float sigma = mix(0.44, 0.56, h.z) + middleLayer * 0.12;
     sigma = mix(sigma, mix(1.0, 1.4, h.z) * optics, nearLayer);
+    sigma *= mix(0.92, 1.08, calm);
+    sigma = min(2.5, sigma);
     float energy = mix(0.32, 1.28, h.z * h.z);
     energy *= mix(1.0, 1.35, middleLayer);
     energy = mix(energy, mix(1.8, 2.8, h.z), nearLayer);
@@ -100,13 +251,11 @@ vec3 stars(vec2 pixel, float scale, float layer) {
     float halo = middleLayer * 0.024 * exp2(-r2 / (mix(3.5, 14.0, nearLayer) * optics * optics));
     float light = (core + halo) * energy * shimmer;
 
-    // Keep the foreground population fixed when increasing the dust population.
-    float flare = nearLayer * (1.0 - step(ubuf.flareFraction * 85.0, variation));
     if (nearLayer > 0.0 && flare == 0.0) {
         // A capped hot point plus redistributed light in a broad Gaussian halo.
         // The shoulder approaches white smoothly instead of clipping a wide core
         // into a flat disc. Sigma and convolution are in physical pixels.
-        float hotSigma = min(2.5, optics * mix(0.55, 0.68, h.z));
+        float hotSigma = min(2.5, optics * mix(0.55, 0.68, h.z) * mix(0.92, 1.08, calm));
         float hotVariance = hotSigma * hotSigma + 0.0833333;
         float hot = exp2(-0.7213475 * r2 / hotVariance) * hotSigma * hotSigma / hotVariance;
         float soft = exp2(-r2 / (26.0 * optics * optics));
@@ -129,6 +278,17 @@ vec3 stars(vec2 pixel, float scale, float layer) {
     // Compact support reaches zero smoothly before a cell boundary can clip it.
     light *= 1.0 - smoothstep(support * support * 0.64, support * support, r2);
     vec3 tint = mix(vec3(0.73, 0.84, 1.0), vec3(1.0, 0.98, 0.94), h.z);
+    vec3 probability = max(vec3(0.0), birth.xyz);
+    probability *= min(1.0, 0.45 / max(0.00001, probability.x + probability.y + probability.z));
+    float tintDraw = fract(h.x * 31.17 + h.y * 17.13 + h.z * 7.97);
+    vec3 target = tint;
+    if (tintDraw < probability.x) target = vec3(0.65, 1.0, 0.78);
+    else if (tintDraw < probability.x + probability.y) target = vec3(0.86, 0.80, 1.0);
+    else if (tintDraw < probability.x + probability.y + probability.z) target = vec3(1.0, 0.83, 0.67);
+    tint = mix(tint, target, 0.45);
+    // Foreground light stays near-white; whitening is an immutable layer trait,
+    // independent of twinkle/intensity, so normalized colour cannot cycle live.
+    tint = mix(tint, vec3(1.0), nearLayer * 0.65);
     return light * tint * visibility;
 }
 
@@ -180,9 +340,11 @@ void main() {
         // all distances are evaluated in physical pixels, independent of QML DPR.
         float scale = max(1.0, sqrt(ubuf.resolution.x * ubuf.resolution.y / (1024.0 * 576.0)));
         scale /= sqrt(max(0.0001, ubuf.density));
-        vec3 field = stars(pixel, scale, 0.0);
-        field += stars(pixel, scale, 1.0);
-        field += stars(pixel, scale, 2.0);
+        vec2 relative = pixel - ubuf.resolution * 0.5;
+        float baseAngle = ubuf.radialMode > 0.5 ? atan(relative.y, relative.x) : 0.0;
+        vec3 field = stars(pixel, baseAngle, scale, 0.0);
+        field += stars(pixel, baseAngle, scale, 1.0);
+        field += stars(pixel, baseAngle, scale, 2.0);
         colour += field * ubuf.brightness;
     }
     colour += streak(pixel, ubuf.meteorHead, ubuf.meteorShape, false);

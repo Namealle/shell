@@ -60,6 +60,10 @@ Variants {
                 active: win.starfieldEnabled
 
                 sourceComponent: BackgroundComponents.Starfield {
+                    running: Services.Ambient.forScreen(win.modelData.name).running
+                    screenSeed: Services.Ambient.seedFor(win.modelData.name)
+                    ambientBirth: Services.Ambient.forScreen(win.modelData.name).birth
+                    ambientLive: Services.Ambient.forScreen(win.modelData.name).live
                     devicePixelRatio: behindClock.Screen.devicePixelRatio
                     density: Services.Starfield.density
                     driftSpeed: Services.Starfield.driftSpeed
@@ -70,9 +74,19 @@ Variants {
                     backgroundColor: Services.Starfield.backgroundColor
                     edgeLift: Services.Starfield.edgeLift
                     fps: Services.Starfield.fps
+                    motionMode: Services.Starfield.motion.mode
+                    radialSpeed: Services.Starfield.motion.radialSpeed
+                    centreWander: Services.Starfield.motion.centreWander
+                    zoomBreath: Services.Starfield.motion.zoom
+                    reversals: Services.Starfield.motion.reversals
                     motionWander: Services.Starfield.motion.wander
                     motionZoom: Services.Starfield.motion.zoom
                     motionRotation: Services.Starfield.motion.rotation
+                    varietyEnabled: Services.Starfield.variety.enabled
+                    varietySeed: Services.Starfield.variety.seed
+                    variableFraction: Services.Starfield.variables.fraction
+                    companionChance: Services.Starfield.meteors.companionChance
+                    fireballChance: Services.Starfield.meteors.fireballChance
                     meteorsEnabled: Services.Starfield.meteors.enabled
                     meteorsInterval: Services.Starfield.meteors.interval
                     cometEnabled: Services.Starfield.comet.enabled

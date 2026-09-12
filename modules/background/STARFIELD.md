@@ -1,40 +1,65 @@
-# Starfield
-
-`~/.config/caelestia/starfield.json` is watched (`XDG_CONFIG_HOME` is respected).
-Missing/invalid file or missing `screens` disables the effect; removed keys use
-these defaults. The shell never writes this file. `background.enabled` still gates windows.
+# Starfield v2
+`~/.config/caelestia/starfield.json` is watched, with a 150 ms reload debounce; XDG_CONFIG_HOME is respected.
+Missing/invalid JSON, a non-object document or missing `screens` disables every output; removed keys restore defaults.
+One validated snapshot owns configuration; the shell never writes it. Defaults (exact output names, no wildcard):
 ```json
 {
-  "screens": [], "density": 1,
-  "driftSpeed": 3.5, "driftDirection": 165,
+  "screens": [], "density": 1, "driftSpeed": 3.5, "driftDirection": 165,
   "twinkle": 0.22, "flareFraction": 0.003, "brightness": 1,
   "backgroundColor": "#000000", "edgeLift": 0, "fps": 30,
-  "motion": { "wander": 0.8, "zoom": 0.025, "rotation": 0.5 },
-  "meteors": { "enabled": true, "interval": [10, 30] },
-  "comet": { "enabled": true, "interval": [180, 300] },
-  "satellites": { "enabled": true, "interval": [75, 140] }
+  "motion": {"mode": "radial", "radialSpeed": 6, "centreWander": 0.012, "zoom": 0.003,
+             "reversals": false, "wander": 0.8, "rotation": 0.5},
+  "variety": {"enabled": true, "seed": 1}, "variables": {"fraction": 0.006},
+  "meteors": {"enabled": true, "interval": [45, 120], "companionChance": 0.04, "fireballChance": 0.01},
+  "comet": {"enabled": true, "interval": [900, 1800]},
+  "satellites": {"enabled": true, "interval": [240, 480]},
+  "reactive": {
+    "enabled": true, "contextScope": "perScreen", "processPresenceWeight": 0.35, "paletteBudget": 0.45,
+    "birthTauSec": 60, "liveTauSec": 90, "maxChangePerSec": 0.005,
+    "matchers": [
+      {"id": "htb", "class": "^zen$", "title": "\\bHTB\\b|Hack\\s*The\\s*Box|hackthebox\\.(com|eu)", "flags": "i"},
+      {"id": "steam", "class": "^steam$", "flags": "i"},
+      {"id": "game", "class": "^steam_app_[0-9]+$", "flags": "i"},
+      {"id": "terminal", "class": "^(foot|footclient)$"},
+      {"id": "agentWindow", "class": "^(foot|footclient)$", "title": "^[✳◑]"}
+    ],
+    "rules": [
+      {"signal": "htb", "add": {"green": 0.32}},
+      {"signal": "agent", "add": {"violet": 0.14, "twinkle": 0.04}},
+      {"signal": "heat", "add": {"warm": 0.20}},
+      {"signal": "load", "add": {"warm": 0.10, "flow": 0.25}},
+      {"signal": "loadRising", "add": {"flow": 0.05}},
+      {"signal": "rain", "add": {"calm": 0.22, "brightness": -0.25, "twinkle": -0.15}},
+      {"signal": "wind", "add": {"flow": 0.04}},
+      {"signal": "night", "add": {"calm": 0.20, "flow": -0.15, "twinkle": -0.15, "meteor": -0.25}},
+      {"signal": "idle", "add": {"calm": 0.10, "flow": -0.10, "meteor": -0.10}},
+      {"signal": "media", "add": {"twinkle": 0.05}},
+      {"signal": "steam", "add": {"violet": 0.03}},
+      {"signal": "game", "add": {"warm": 0.06}},
+      {"signal": "terminal", "add": {"calm": 0.04}},
+      {"signal": "memoryPressure", "add": {"calm": 0.05}},
+      {"signal": "network", "enabled": false, "add": {"twinkle": 0.03}},
+      {"signal": "notifications", "enabled": false, "add": {"meteor": 0.04}}
+    ]
+  }
 }
 ```
-Set `screens` to exact names, e.g. `["DP-3"]`; there is no wildcard.
-`density`: 0–3 count multiplier; default roughly 3,500 device-pixel points at 4K.
-`driftSpeed`: 0–30 base px/s at 1024×576, scaled by sqrt(screen area/reference area).
-`driftDirection`: −360–360°, clockwise from right; 165 is down-left.
-`motion.wander`: 0–2 velocity variation; smooth waves with 23–88 s periods.
-`motion.zoom`: 0–0.15 fractional amplitude; default ±2.5%, 40/76 s breathing.
-`motion.rotation`: 0–3° amplitude; default ±0.5°, 33/88 s gentle turns.
-All camera components have depth factors 0.10/0.42/1.0; the zoom centre also wanders.
-`twinkle`: 0–1; irregular 4–11 s scintillation, sparse short glints and slow fades.
-`flareFraction`: 0–0.025 rarity control; default about 8 sky crosses.
-`brightness`: 0–3 star intensity; `backgroundColor`: opaque `#RRGGBB`.
-`edgeLift`: 0–1 optional blue-black edge light; default 0 keeps empty pixels #000000.
-`fps`: 1–60 timer cap; Qt/vsync quantisation can reduce the actual rate.
-Event `interval`: [minimum, maximum] seconds between starts, capped at 3600.
-Meteor intervals clamp to ≥3 s; 0.55–1.15 s streaks decelerate, 18% have a companion.
-Comet intervals clamp to ≥60 s; 20–35 s passages have a faint trailing fan.
-Satellite intervals clamp to ≥45 s; 30–45 s passages are tiny steady points, no trail.
-Each event has `enabled`; all positions, rates and companions are deterministic.
-The QtQuick-only renderer uses device pixels: dust 1–2 px, capped soft bright cores.
-`running: false` freezes the whole sky; writable `time` is seconds, independent of fps.
-Live camera velocity/amplitude changes preserve position. Events follow active time.
-Single shader pass; rebuild command is in `Starfield.qml`. Keep `.frag` and `.qsb`
-together. No runtime compiler or C++ plugin installation is needed.
+Finite numbers clamp to ranges; wrong types use defaults. Arrays replace defaults; empty arrays disable all their entries.
+Ranges: density/brightness 0–3, driftSpeed 0–30, driftDirection −360–360°, twinkle/edgeLift 0–1, flareFraction 0–0.025, fps 1–60 (rounded); color is opaque #RRGGBB.
+Motion mode is radial or drift; radialSpeed 0–26 device px/s at radius shortSide/2 on a 2160-short-side output, scaled by shortSide/2160; centreWander 0–0.05 short sides.
+Zoom is 0–0.15; radial default ±0.003 with 240–420 s periods, centre periods 1800–2700 s; reversals defaults off. Drift retains wander 0–2, rotation 0–3°, zoom default 0.025 and all old keys.
+Variety enables slow moods; seed is a rounded 0–2147483647 integer. Variable fraction 0–0.05; meteor companion/fireball chances 0–1. All event intervals are ordered pairs in seconds, ≤3600; minima: meteor 3, comet 60, satellite 45.
+Reactive scope is perScreen; process weight 0–1 and palette budget 0–0.45. Filter timing fields are fixed to the shown contract constants; other values normalize to those defaults.
+Matchers/rules default enabled; at most 32 of each are considered. Matcher IDs are unique 1–48 character identifiers; built-in signal names are reserved except agentWindow.
+Class is required, title optional; regexes compile on config changes, max 256 characters, flags only i/m (no duplicates); backreferences, lookarounds and repeated groups are rejected.
+Invalid matchers and unknown-signal rules disable only those entries. Rules are data only: signal plus add coefficients −1–1 on green/violet/warm/calm/twinkle/brightness/flow/meteor, optional enabled.
+Each target = clamp(neutral + sum(signal × add), 0, 1); neutral birth is (0,0,0,0.5), live is (0.5,0.5,0.5,0.5). Green/violet/warm scale proportionally if their sum exceeds the palette budget.
+Signals include cpuLoad/cpuHeat/gpuLoad/gpuHeat/ram/vram/network/rain/wind/humidity/temperature/weatherNight/night/media/idle/agentProcess and matcher IDs; load/heat are CPU/GPU maxima.
+loadRising is the maximum positive load slope; memoryPressure=max(smoothstep(.70,.95,ram),smoothstep(.75,.95,vram)); agent=max(agentWindow,processPresenceWeight×agentProcess). RAM temperature is unavailable; notifications have no source in this version.
+Inputs have source-specific smoothing; stale sources lose rule weight over 120 s, weather after 3 h without receipt. Network is activity, not saturation; agent process presence includes waiting sessions.
+Context counts mapped windows on that output's active or open special workspace, plus pinned windows; active weight 1, other visible 0.6, hidden/minimized 0 (occlusion is approximate).
+Ambient sends targets; renderer filtering uses 60 s birth, 90 s live and 120 s meteor time constants with a 0.005/s step cap in active time.
+New stars freeze their birth tint and traits, so opening/closing HTB changes future birth probabilities while existing stars finish their lives unchanged.
+Privacy: match class before at most 512 title characters locally; never log, persist, transmit or hash titles, and retain only category strengths. Only selected-tab titles are exposed, not background tabs or verified URLs; no media metadata or notification content is read.
+Pause: locked or a visible fullscreen>1 window freezes that output through running, retaining its Loader and history; other outputs continue. When no enabled output runs, Ambient stops polling and releases ServiceRefs; event subscriptions/config watching remain.
+Suspend resets CPU baselines and derivatives without catch-up. Background.enabled still gates windows; density is static configuration and may rebuild the star composition, never a reactive control; empty pixels retain backgroundColor.
