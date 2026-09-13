@@ -10,22 +10,27 @@ QtObject {
     readonly property var presets: ({
             target: {
                 size: 0.11,
-                tilt: 28,
+                tilt: 15,
                 intensity: 1,
                 haloUpper: 1,
                 haloLower: 0.9,
-                footprintCap: 0.11,
+                diskOuterRs: 10.5,
+                lensReach: 8,
+                lensStretch: 1.6,
+                footprintCap: 0.2,
                 diskCap: 0.6,
                 photonCap: 0.7,
                 disk: {
-                    exposure: 2,
+                    exposure: 1.7,
                     detail: 0.8,
+                    falloff: 2.4,
                     streaks: {
                         octaves: 3,
                         radialScale: 1.4,
-                        innerCyclesPer4096: 32,
+                        innerPeriodSec: 12,
                         warp: 0.25,
-                        grain: 0.08
+                        grain: 0.08,
+                        smear: 0.85
                     },
                     hue: {
                         innerTemperature: 7000,
@@ -37,16 +42,25 @@ QtObject {
                         gain: 0.008,
                         radiusPx: 2.5
                     },
+                    rim: {
+                        skirt: 0.8,
+                        fray: 0.7,
+                        clump: 0.65
+                    },
+                    depth: {
+                        foreground: 0.45,
+                        lane: 0.35
+                    },
                     arcs: {
                         gain: 0.013,
-                        radiusRh: 1.7,
-                        spacingRh: 0.6,
-                        count: 2
+                        radiusRh: 1.6,
+                        spacingRh: 0.55,
+                        count: 4
                     }
                 },
                 photon: {
                     mode: "shared-field",
-                    widthPx: 0.6,
+                    widthPx: 0.5,
                     gain: 1.35,
                     textureStrength: 0.8
                 }
@@ -70,11 +84,15 @@ QtObject {
     property real transitionSec: 30
     // Declared luminous-footprint budget, checked by verification, not clamped
     // in the shader: raising it is the owner saying a larger disk is wanted.
-    property real footprintCap: pick("footprintCap", 0.03)
+    property real footprintCap: pick("footprintCap", 0.04)
     // Output limiters the shader actually enforces. Raising them is the owner
     // asking for a brighter core; a change is discrete config, it does not slew.
     property real diskCap: pick("diskCap", 0.25)
     property real photonCap: pick("photonCap", 0.3)
+    // Lensing reach in Rh. The C2 taper now runs over .8*RL..RL, so RL=4 is the
+    // v4 envelope exactly; wider values bend the star field further out.
+    property real lensReach: pick("lensReach", 8)
+    property real lensStretch: pick("lensStretch", 1.5)
     // Objects map directly to blackHole.disk / blackHole.photon in JSON.
     // An explicit object REPLACES the preset's; the two are not merged.
     property var disk: ({})
@@ -94,7 +112,7 @@ QtObject {
     property real _phase: 0
     property real _wanderPhase: 0
     property real _detailPhase: 0
-    property var _strengths: [0.75, 0.25, 0.06, 0.35, 0.06, 0.22, 0.5, 0.008, 0.45, 1.18, 0.8, 1, 0, 0]
+    property var _strengths: [0.75, 0.25, 0.06, 0.35, 0.06, 0.22, 0.5, 0.008, 0.45, 1.18, 0.8, 1, 0, 0, 0.7, 0.6, 0.6, 0.6, 0.35, 0.3]
     property real _enablePosition: 0
     property vector4d _ambient: Qt.vector4d(0.5, 0.5, 0.5, 0.5)
     property bool _ready: false
@@ -102,23 +120,28 @@ QtObject {
     readonly property real _tilt: clamp(clamp(tilt, 1, 80) + clamp(tiltWander, 0, 1) * Math.sin(_wanderPhase), 1, 80) * Math.PI / 180
 
     readonly property vector2d bhCentre: centre
-    readonly property vector4d bhGeometry: Qt.vector4d(_rh, 4 * _rh, Math.sin(_tilt), Math.cos(_tilt))
-    readonly property vector4d bhDisk: Qt.vector4d(clamp(diskInnerRs, 3, 7), Math.max(clamp(diskInnerRs, 3, 7) + 0.5, clamp(diskOuterRs, 3.5, 9)), 0, Math.max(1, clamp(photonWidth, 0.001, 0.02) * _rh))
+    readonly property vector4d bhGeometry: Qt.vector4d(_rh, clamp(lensReach, 4, 12) * _rh, Math.sin(_tilt), Math.cos(_tilt))
+    readonly property vector4d bhDisk: Qt.vector4d(clamp(diskInnerRs, 3, 7), Math.max(clamp(diskInnerRs, 3, 7) + 0.5, clamp(diskOuterRs, 3.5, 11)), 0, Math.max(1, clamp(photonWidth, 0.001, 0.02) * _rh))
     // Exposure only widens the x ceiling; at the default exposure 1 it is <=1.
     readonly property vector4d bhLook: Qt.vector4d(clamp(intensity * _strengths[11] * (0.8 + 0.4 * _ambient.z), 0, 2), clamp(warmth + 0.3 * (_ambient.y - 0.5), 0, 1), clamp(beamStrength, 0, 0.2), clamp(structure * (0.8 + 0.4 * _ambient.w), 0, 0.08))
     readonly property vector4d bhHalo: Qt.vector4d(clamp(haloUpper, 0, 1), clamp(haloLower, 0, 1), 0.6, ease(_enablePosition))
     readonly property vector4d bhPhase: Qt.vector4d(_phase, modulo(4 * _phase, 2 * Math.PI), _wanderPhase, _ambient.x)
-    readonly property vector4d bhCaps: Qt.vector4d(clamp(diskCap, 0.1, 1), clamp(photonCap, 0.1, 1), clamp(footprintCap, 0.01, 0.12), 0.08)
+    readonly property vector4d bhCaps: Qt.vector4d(clamp(diskCap, 0.1, 1), clamp(photonCap, 0.1, 1), clamp(footprintCap, 0.01, 0.5), 0.08)
     readonly property vector4d bhDetail: Qt.vector4d(_strengths[0], Math.round(value(_diskAll, "seed", 457, 0, 65535)), value(_diskAll, "rotationSign", 1, -1, 1) < 0 ? -1 : 1, Math.round(value(_diskAll.streaks, "octaves", 2, 1, 3)))
-    readonly property vector4d bhStreaks: Qt.vector4d(value(_diskAll.streaks, "radialScale", 1, 0.5, 2), Math.round(value(_diskAll.streaks, "innerCyclesPer4096", 32, 16, 128)), _strengths[1], _strengths[2])
+    readonly property vector4d bhStreaks: Qt.vector4d(value(_diskAll.streaks, "radialScale", 1, 0.5, 2), _innerCycles, _strengths[1], _strengths[2])
     readonly property vector4d bhKnots: Qt.vector4d(value(_diskAll.knots, "density", 0.03, 0, 0.06), _strengths[3], 16, 48)
-    readonly property vector4d bhEmbers: Qt.vector4d(2 * Math.min(bhStreaks.y - 1, Math.floor(value(_diskAll.embers, "count", 24, 0, 32) / 2)), value(_diskAll.embers, "radiusRs", 0.012, 0.004, 0.025), value(_diskAll.embers, "trailSec", 0.35, 0, 0.6), _strengths[4])
+    readonly property vector4d bhEmbers: Qt.vector4d(2 * Math.floor(value(_diskAll.embers, "count", 24, 0, 32) / 2), value(_diskAll.embers, "radiusRs", 0.012, 0.004, 0.025), value(_diskAll.embers, "trailSec", 0.35, 0, 0.6), _strengths[4])
     readonly property vector4d bhDoppler: Qt.vector4d(_physical ? 1 : 0, _strengths[5], 0, 0)
     readonly property vector4d bhHue: Qt.vector4d(Math.log(value(_diskAll.hue, "innerTemperature", 6500, 4200, 10000)), Math.log(value(_diskAll.hue, "outerTemperature", 1700, 1000, 2800)), _strengths[6], _strengths[13])
     readonly property vector4d bhGlow: Qt.vector4d(_strengths[7], value(_diskAll.glow, "radiusPx", 1.5, 0.25, 2.5), 0, 0)
     readonly property vector4d bhPhoton: Qt.vector4d(_strengths[8], _strengths[9], _strengths[10], _photonAll.mode === "off" ? 0 : 1)
     readonly property vector4d bhDetailPhase: Qt.vector4d(_detailPhase, 1 / 30, 0, 0)
-    readonly property vector4d bhArcs: Qt.vector4d(_strengths[12], value(_diskAll.arcs, "radiusRh", 1.75, 1.2, 2.6), value(_diskAll.arcs, "spacingRh", 0.6, 0.2, 1), Math.round(value(_diskAll.arcs, "count", 2, 0, 2)))
+    readonly property vector4d bhRim: Qt.vector4d(_strengths[14], _strengths[15], _strengths[16], _strengths[17])
+    readonly property vector4d bhDepth: Qt.vector4d(_strengths[18], _strengths[19], value(_diskAll, "falloff", 1, 1, 3), clamp(lensStretch, 1, 3))
+    readonly property vector4d bhArcs: Qt.vector4d(_strengths[12], value(_diskAll.arcs, "radiusRh", 1.75, 1.2, 2.6), value(_diskAll.arcs, "spacingRh", 0.6, 0.2, 1), Math.round(value(_diskAll.arcs, "count", 2, 0, 4)))
+    // innerPeriodSec is the friendly spelling; the integer cycle count is what
+    // keeps every row's turn count whole and the 4096-s repeat exact.
+    readonly property real _innerCycles: Number.isFinite(_diskAll.streaks && _diskAll.streaks.innerCyclesPer4096) ? Math.round(clamp(_diskAll.streaks.innerCyclesPer4096, 16, 1024)) : Math.round(4096 / value(_diskAll.streaks, "innerPeriodSec", 12, 4, 256))
     readonly property bool _physical: !!_diskAll.doppler && _diskAll.doppler.preset === "physical"
     // Qt's supportsAtlasTextures belongs to the CONSUMING ShaderEffect, where
     // it must be false. Leave colorSpace unset (invalid), preserving RG bytes.
@@ -156,7 +179,7 @@ QtObject {
     }
 
     function strengthTargets(): var {
-        return [value(_diskAll, "detail", 0.75, 0, 0.85), value(_diskAll.streaks, "warp", 0.25, 0, 0.25), value(_diskAll.streaks, "grain", 0.06, 0, 0.08), value(_diskAll.knots, "gain", 0.35, 0, 0.5), value(_diskAll.embers, "gain", 0.06, 0, 0.06), value(_diskAll.doppler, "strength", _physical ? 1 : 0.22, 0, 1), value(_diskAll.hue, "warmth", 0.5, 0, 1), value(_diskAll.glow, "gain", 0.008, 0, 0.008), value(_photonAll, "widthPx", 0.45, 0.1, 0.75), value(_photonAll, "gain", 1.18, 0, 1.5), value(_photonAll, "textureStrength", 0.8, 0, 1), value(_diskAll, "exposure", 1, 0.5, 2), value(_diskAll.arcs, "gain", 0, 0, 0.02), value(_diskAll.hue, "whiteness", 0, 0, 1)];
+        return [value(_diskAll, "detail", 0.75, 0, 0.85), value(_diskAll.streaks, "warp", 0.25, 0, 0.25), value(_diskAll.streaks, "grain", 0.06, 0, 0.08), value(_diskAll.knots, "gain", 0.35, 0, 0.5), value(_diskAll.embers, "gain", 0.06, 0, 0.06), value(_diskAll.doppler, "strength", _physical ? 1 : 0.22, 0, 1), value(_diskAll.hue, "warmth", 0.5, 0, 1), value(_diskAll.glow, "gain", 0.008, 0, 0.008), value(_photonAll, "widthPx", 0.45, 0.1, 0.75), value(_photonAll, "gain", 1.18, 0, 1.5), value(_photonAll, "textureStrength", 0.8, 0, 1), value(_diskAll, "exposure", 1, 0.5, 2), value(_diskAll.arcs, "gain", 0, 0, 0.02), value(_diskAll.hue, "whiteness", 0, 0, 1), value(_diskAll.rim, "skirt", 0.7, 0, 1), value(_diskAll.rim, "fray", 0.6, 0, 1), value(_diskAll.rim, "clump", 0.6, 0, 1), value(_diskAll.streaks, "smear", 0.6, 0, 1), value(_diskAll.depth, "foreground", 0.35, 0, 1), value(_diskAll.depth, "lane", 0.3, 0, 1)];
     }
 
     function pick(key: string, fallback: real): real {

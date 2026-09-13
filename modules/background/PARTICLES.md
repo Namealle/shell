@@ -26,21 +26,52 @@ Service schema (closed object; reject unknown keys, booleans must be booleans):
 | capture.spiralSec | [20,60] | ordered pair, each 5..240 active seconds |
 | epsilonRh | .05 | finite 0.01..0.20 |
 | substeps | 4 | integer 4..32 per 1/30 s; adaptive refinement may add steps |
-| streak.exposureSec | .02 | finite 0..0.10 seconds |
-| streak.maxPx | 12 | finite 0..32 physical px |
-| sizes.nearPx | [2.4,4.4] | ordered pair, each .25..12 physical px FWHM |
-| sizes.middlePx | [1,2] | ordered pair, each .25..12 physical px FWHM |
-| sizes.capturedPx | [1.0,1.8] | ordered pair, each .25..12 physical px FWHM |
+| streak.exposureSec | .035 | finite 0..0.10 seconds |
+| streak.maxPx | 20 | finite 0..32 physical px |
+| streak.bendExposureSec | .26 | finite 0..1 s, used inside bendRadiusRh |
+| streak.bendMaxPx | 64 | finite 0..120 physical px |
+| streak.bendMaxAlive | 200 | integer 0..3200 curved instances; the excess renders straight |
+| streak.bendRadiusRh | 2.4 | finite 0..12 Rh; inside it trails curve along the orbit |
+| sizes.nearPx | [2.4,4.8] | ordered pair, each .25..12 physical px FWHM |
+| sizes.middlePx | [0.9,1.7] | ordered pair, each .25..12 physical px FWHM |
+| sizes.capturedPx | [1.2,2.2] | ordered pair, each .25..12 physical px FWHM |
 | safetyLifeSec | [180,240] | ordered pair, each 30..600 active seconds |
 | flare.share | .085 | finite 0..0.5 of near births drawn as flared |
 | flare.maxAlive | 10 | integer 0..64; render() caps the live flared instances |
-| flare.capturedLight | .5 | finite 0..1; captured light = 1 - value*captured |
+| flare.capturedLight | .7 | finite 0..1; captured light = 1 - value*captured |
 | publishHz | 30 | integer 10..30; effective rate is the largest 30/n not above it |
+| mass | 1 | finite 0.5..3; also read from `blackHole.mass`, which this overrides |
+| depth.frontShare | .12 | finite 0..0.5 of near births composited in FRONT of the disk |
+| depth.binaryMaxAlive | 40 | integer 0..3200 extra binary instances; the excess renders single |
+| clustering.share | .72 | finite 0..1 of births that join a stream instead of arriving uniformly |
+| clustering.streams | 5 | integer 1..12 drifting birth streams |
+| clustering.streamLifeSec | 150 | finite 20..600 active seconds before a stream is re-rolled |
+| clustering.burstDepth | .55 | finite 0..1; arrival-rate modulation, long-run mean unchanged |
+| dust.farFlow | 24 | finite 1..64; far-dust inflow multiplier, also scaled by sqrt(mass) |
+| dust.parallaxPx | 250 | finite 0..800; bounded 4096-safe parallax sway of the far field |
+| dust.clusterGain | 1 | finite 0..1; 0 restores the uniform far-dust occupancy |
+| dust.clusterCells | 16 | integer 2..64 far-dust cells per cluster |
+| dust.voidCells | 44 | integer 4..192 far-dust cells per void/stream cell |
+| dust.cellScale | .77 | finite 0.4..2; far-dust cell size, <1 puts back the count clustering removes |
 
 Only those keys exist. Preserve missing population keys until stress defaults
 are resolved. Renderer validation clamps, sorts pairs, rounds integer fields and
 proportionally reduces totals over3200; the service should reject malformed
 values instead. Normalization: `particles/Physics.js` defaults()/validate().
+
+`blackHole.mass` (0.5..3, default 1) scales mu for the particles and, as its
+square root, the far-dust inflow, so one number moves every layer's speeds
+together; `particles.mass` overrides it. The hole's own visibility envelope
+(`bhHalo.w`) scales the swallow radius and the central render fade, so disabling
+the hole leaves the particles streaming through a soft centre instead of
+vanishing into an invisible point.
+
+Far dust flows inward on the existing radial cell grid, which advances at a
+constant rate in u = r^2/2 and therefore moves at dr/dt proportional to 1/r:
+about 100 px/s at 1 Rh, 14 px/s at mid-screen and 7 px/s in the corner of a
+2160x3840 output at farFlow 24. The bounded parallax sway adds a floor so no
+region is frozen. Occupancy is a two-level Neyman-Scott process: cluster cells
+inside much coarser void/stream cells, both advected with the flow.
 
 Integration subdivides per particle: the outer step is the publish interval, and
 each particle takes one to `substeps` inner kick-drift-kicks, chosen so
@@ -67,15 +98,20 @@ barycentre; wanderer offsets affect rendering only. Decayer lifetime starts at
 swept first viewport entry and never resets. DPR-only edits convert units once;
 ordinary resize retains physical x/v. Pericentre hue styling is omitted.
 
-Render instances are one flat Float64Array, stride 18: x y vx vy core support
-streak r g b lum flags phase p0 age captured id generation; flags is the
-archetype in the low three bits, bit 3 flare, bit 4 near layer. Atlas: binding3, opaque nearest RGBA8, width256. Four metadata texels precede
+Render instances are one flat Float64Array, stride 20: x y vx vy core support
+streak r g b lum flags phase p0 age captured id generation halfMajor halfMinor;
+flags is the archetype in the low three bits, bit 3 flare, bit 4 near layer,
+bit 5 in front of the disk, bit 6 curved trail. The binner walks the streak's
+capsule (half-extents at 18/19) rather than its bounding box; the packer turns
+the same two numbers into the axis-aligned box the shader rejects against, which
+a long thin trail fills about ten times more densely than the disc of its
+half-length. Atlas: binding3, opaque nearest RGBA8, width256. Four metadata texels precede
 32px-bin headers; each header packs list offset16 and count/flags8. Count uses
 six low bits (0..16); bit6 extends offsets by65536; bit7 links another page.
 Full pages carry16 indices followed by a continuation header. No occupant drops;
 512 shader pages cover all6400 possible binary render instances. Eight data
 texels hold position16+support(0.5px)/core, velocity16, RGB8, energy16, flags/phase,
-period, age, streak and capture blend. The last texel is an upload sentinel.
+period/streak and the reject box + capture blend. The last texel is a sentinel.
 Position domain includes padding plus40px optical guard. All touched bins receive
 an index. Empty bins fetch one header; appearance is fetched only after support
 rejection. Compact anisotropic Gaussian kernels normalize integrated energy.

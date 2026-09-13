@@ -21,7 +21,7 @@ function range(value, fallback, lo, hi, u) {
 }
 function ensure(s) {
     if (s.exposure) return;
-    for (var k of ["exposure", "maxStreak", "entryStamp", "altR", "altG", "altB", "flare", "shimmerRate"])
+    for (var k of ["exposure", "maxStreak", "entryStamp", "altR", "altG", "altB", "flare", "shimmerRate", "front"])
         s[k] = new Float64Array(s.capacity);
     s.entryStamp.fill(-1);
 }
@@ -33,6 +33,8 @@ function birth(s, i, input) {
     // render() caps how many of them may actually be flared at once.
     var flared = near && draw(seed, 83) < s.config.flare.share;
     s.flare[i] = flared ? 1 : 0;
+    // A near particle in front of the disk is composited after it. Birth-frozen.
+    s.front[i] = near && draw(seed, 89) < s.config.depth.frontShare ? 1 : 0;
     var v = draw(seed, 11), rgb = [0.73 + 0.27 * v, 0.84 + 0.14 * v, 1 - 0.06 * v];
     // A flared near star always takes a palette colour and keeps far more of it:
     // these are the handful of stars the eye reads as coloured.
@@ -112,15 +114,18 @@ function birth(s, i, input) {
 }
 // The four-point flare reuses the shader's v3 cross. Its optical scale is
 // FLARE_OPTICS core radii; spikes taper to zero at 22 of those and the residual
-// glow is under a quarter code by FLARE_SUPPORT of them. FLARE_CORE_MAX keeps
+// glow is under a quarter code by FLARE_SUPPORT of them (the box reject makes
+// that cut visible on the diagonal, so it sits well past the spikes).
+// FLARE_CORE_MAX keeps
 // the bin radius inside the support byte.
-var FLARE_SUPPORT = 25.0, FLARE_OPTICS = 0.55, FLARE_CORE_MAX = 4.8;
+var FLARE_SUPPORT = 30.0, FLARE_OPTICS = 0.55, FLARE_CORE_MAX = 4.8;
 // Bin radius of an already-quantized core/streak pair, in 0.5 px steps. The
 // quantization and the packed position's reconstruction error are inside the
 // 0.20 px margin.
 function supportFor(core, streak, flare) {
     var sigma = core / 2.354820045;
     var radius = 3.5 * Math.sqrt(sigma * sigma + 1 / 12 + streak * streak / 12) + 0.20;
+    if (streak > 0) radius += 6;   // the curved kernel's sagitta headroom
     if (flare) radius = Math.max(radius, FLARE_SUPPORT * FLARE_OPTICS * Math.min(core, FLARE_CORE_MAX));
     return Math.ceil(radius * 2) / 2;
 }
@@ -133,17 +138,25 @@ function bounds(s) {
     var core = Math.round(clamp(Math.max(z.nearPx[1], z.middlePx[1], z.capturedPx[1]), 0.25, 12) * 16) / 16;
     var streak = Math.round(clamp(s.config.streak.maxPx, 0, 32) * 255 / 32) * 32 / 255;
     var nearCore = Math.round(clamp(z.nearPx[1], 0.25, 12) * 16) / 16;
-    return {maxItems: 2 * s.targetPopulation, maxSupport: supportFor(core, streak, false),
-        maxFlares: s.config.flare.maxAlive, flareSupport: supportFor(nearCore, streak, true)};
+    var minor = supportFor(core, 0, false);
+    // The binner uses the streak's oriented box; its worst case is the 45 degree
+    // diagonal, which is what the atlas ceiling must cover. Plain instances are
+    // bounded by streak.maxPx; only the capped bend and flare sets are wider.
+    var plain = (supportFor(core, streak, false) + minor) * Math.SQRT1_2;
+    var bent = (supportFor(core, s.config.streak.bendMaxPx, false) + minor) * Math.SQRT1_2;
+    return {maxItems: s.targetPopulation + s.config.depth.binaryMaxAlive,
+        maxSupport: Math.max(plain, minor),
+        maxFlares: s.config.flare.maxAlive, flareSupport: supportFor(nearCore, streak, true),
+        maxBends: s.config.streak.bendMaxAlive, bendSupport: Math.max(bent, minor)};
 }
 // Render instances are one flat Float64Array, not an array of objects: writing
 // eighteen properties per instance per frame is the single most expensive thing
 // this file can do in QML's JS engine. The field order is the contract shared
 // with Binning.js and Packing.js (and documented in PARTICLES.md).
-var STRIDE = 18;
+var STRIDE = 20;
 var IX = 0, IY = 1, IVX = 2, IVY = 3, ICORE = 4, ISUPPORT = 5, ISTREAK = 6, IR = 7,
     IG = 8, IB = 9, ILUM = 10, IFLAGS = 11, IPHASE = 12, IP0 = 13, IAGE = 14,
-    ICAPTURED = 15, IID = 16, IGENERATION = 17;
+    ICAPTURED = 15, IID = 16, IGENERATION = 17, IBOXX = 18, IBOXY = 19;   // 18/19: half-extents along and across the streak
 // Test and fixture helper: the same flat form from an array of plain objects.
 function instances(list) {
     if (list && list.data) return list;
@@ -160,6 +173,8 @@ function instances(list) {
         out.data[b + IPHASE] = p.phase || 0; out.data[b + IP0] = p.p0 || 0;
         out.data[b + IAGE] = p.age || 0; out.data[b + ICAPTURED] = p.captured || 0;
         out.data[b + IID] = p.id || 0; out.data[b + IGENERATION] = p.generation || 0;
+        out.data[b + IBOXX] = p.halfMajor === undefined ? (p.support || 0) : p.halfMajor;
+        out.data[b + IBOXY] = p.halfMinor === undefined ? (p.support || 0) : p.halfMinor;
     }
     return out;
 }
@@ -174,13 +189,21 @@ function render(previous, s, style) {
     // object costs more than the arithmetic around it in QML's JS engine.
     var X = s.x, Y = s.y, VX = s.vx, VY = s.vy, AGE = s.age, SEED = s.seed;
     var KIND = s.archetype, PHASE = s.phase, P0 = s.p0, P1 = s.p1, P2 = s.p2;
-    var SIZE = s.size, CAPSIZE = s.capturedSize, LUM = s.luminosity, FLARE = s.flare, DEPTH = s.depth;
+    var SIZE = s.size, CAPSIZE = s.capturedSize, LUM = s.luminosity, FLARE = s.flare, DEPTH = s.depth, FRONT = s.front;
     var RCAP = s.radiusAtCapture, CTIME = s.captureTime, ENTRY = s.entryTime, STAMP = s.entryStamp;
     var EXPOSURE = s.exposure, MAXSTREAK = s.maxStreak, GEN = s.generation, SHIMMER = s.shimmerRate;
     var R = s.r, G = s.g, B = s.b, ALTR = s.altR, ALTG = s.altG, ALTB = s.altB;
-    var live = s.live, n = s.liveCount, cx = s.centreX, cy = s.centreY, rh = s.rh;
+    var live = s.live, n = s.liveCount, cx = s.centreX, cy = s.centreY;
+    // Central fade radius follows the same envelope as the swallow radius; with
+    // the hole off it is a small soft centre, not a hole-sized hole.
+    var rh = s.rh * (s.absorb === undefined ? 1 : Math.max(0.12, s.absorb));
     var width = s.width, height = s.height, clock = s.clock, dim = s.config.flare.capturedLight;
     var flareCap = s.config.flare.maxAlive, flares = 0;
+    var st = s.config.streak;
+    var bendRadius = st.bendRadiusRh * rh, bendExposure = st.bendExposureSec;
+    var bendMaxPx = st.bendMaxPx, bendSag = 6;
+    var bendCap = st.bendMaxAlive, bends = 0;
+    var binaryCap = s.config.depth.binaryMaxAlive, binaries = 0;
     for (var k = 0; k < n; ++k) {
         var i = live[k];
         var kind = KIND[i], phase = PHASE[i];
@@ -204,19 +227,38 @@ function render(previous, s, style) {
         var captured = RCAP[i] > 0 ? smooth(0, 4, clock - CTIME[i]) : 0;
         var core = SIZE[i] + captured * (CAPSIZE[i] - SIZE[i]);
         var vx = VX[i], vy = VY[i];
-        var streak = Math.min(MAXSTREAK[i], Math.sqrt(vx * vx + vy * vy) * EXPOSURE[i]);
+        var speed = Math.sqrt(vx * vx + vy * vy);
+        var dx = X[i] - cx, dy = Y[i] - cy;
+        var radius = Math.sqrt(dx * dx + dy * dy);
+        // Inside the bending radius the exposure is longer, so the trail spans a
+        // visible arc of the orbit instead of a sub-pixel chord.
+        // Both caps are enforced here, like the flare cap, so the atlas ceiling
+        // stays a hard bound: the excess renders straight, or as a single star.
+        var bend = radius < bendRadius && bends < bendCap ? 1 : 0;
+        bends += bend;
+        var exposure = bend ? bendExposure : EXPOSURE[i];
+        var cap = bend ? bendMaxPx : MAXSTREAK[i];
+        var streak = Math.min(cap, speed * exposure);
         // Round the rendered geometry first; the bin radius includes its
         // quantization and position reconstruction error, not just source math.
         core = (((core > 12 ? 12 : (core > 0.25 ? core : 0.25)) * 16 + 0.5) | 0) / 16;
-        streak = (((streak > 32 ? 32 : (streak > 0 ? streak : 0)) * (255 / 32) + 0.5) | 0) * (32 / 255);
+        streak = (((streak > 120 ? 120 : (streak > 0 ? streak : 0)) * (255 / 120) + 0.5) | 0) * (120 / 255);
         // The flare cap is enforced here, not at birth, so the atlas allocation
         // ceiling is a hard bound: the excess simply renders as a plain core.
-        var components = kind === 5 ? 2 : 1;
+        var components = kind === 5 && binaries < binaryCap ? 2 : 1;
+        binaries += components - 1;
         var flare = FLARE[i] > 0.5 && flares + components <= flareCap ? 1 : 0;
         flares += flare * components;
         var support = supportFor(core, streak, flare);
-        var dx = X[i] - cx, dy = Y[i] - cy;
-        var radius = Math.sqrt(dx * dx + dy * dy);
+        // The bin footprint is the streak's own capsule, not the box around it:
+        // a long diagonal trail passes through a handful of bins, while its
+        // bounding box covers five times as many. The binner walks the capsule;
+        // the packer turns the same two half-extents into the shader's reject.
+        var halfMajor = support, halfMinor = support;
+        if (streak > 2 * core && speed > 0.01)
+            // The minor extent carries the curved kernel's transverse sagitta,
+            // which supportFor already reserved, so it stays inside the support.
+            halfMinor = Math.min(support, supportFor(core, 0, flare) + (bend ? bendSag : 0));
         // Both fades are inlined smoothsteps and both are 1 almost everywhere:
         // a particle is only inside the rim fade or younger than 0.35 s rarely.
         var span = core * 2 > 6 ? core * 2 : 6, fade = 1;
@@ -230,16 +272,19 @@ function render(previous, s, style) {
         var light = LUM[i] * (1 - dim * captured) * behavior * fade * shimmer;
         var mix = kind === 6 ? 0.5 - 0.5 * Math.cos(oscillation) : 0;
         // kind 0..6, bit 3 = four-point flare, bit 4 = near layer (saturating core)
-        var flags = kind + 8 * flare + (DEPTH[i] > 0.5 ? 16 : 0);
+        // kind 0..6 low three bits, bit 3 flare, bit 4 near layer, bit 5 in front
+        // of the disk, bit 6 close enough to the hole to render a curved streak.
+        var flags = kind + 8 * flare + (DEPTH[i] > 0.5 ? 16 : 0) + (FRONT[i] > 0.5 ? 32 : 0)
+            + (radius < bendRadius ? 64 : 0);
         for (var component = 0; component < components; ++component) {
-            if ((count + 1) * 18 > out.length) {
-                var grown = new Float64Array(Math.max((count + 1) * 18, out.length * 2));
+            if ((count + 1) * 20 > out.length) {
+                var grown = new Float64Array(Math.max((count + 1) * 20, out.length * 2));
                 grown.set(out);
                 out = items.data = grown;
             }
             // Literal offsets: a module-scope name costs a dictionary lookup
             // per write in QML's JS engine. Order is the STRIDE contract above.
-            var b = count * 18, sign = component === 0 ? 1 : -1;
+            var b = count * 20, sign = component === 0 ? 1 : -1;
             out[b] = X[i] + sign * ox; out[b + 1] = Y[i] + sign * oy;
             out[b + 2] = vx; out[b + 3] = vy; out[b + 4] = core;
             out[b + 5] = support; out[b + 6] = streak;
@@ -249,6 +294,7 @@ function render(previous, s, style) {
             out[b + 10] = light / components; out[b + 11] = flags;
             out[b + 12] = phase; out[b + 13] = P0[i]; out[b + 14] = AGE[i];
             out[b + 15] = captured; out[b + 16] = i; out[b + 17] = GEN[i];
+            out[b + 18] = halfMajor; out[b + 19] = halfMinor;
             ++count;
         }
     }

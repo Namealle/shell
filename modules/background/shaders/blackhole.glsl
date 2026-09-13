@@ -22,6 +22,8 @@
     vec4 bhPhoton;
     vec4 bhDetailPhase;
     vec4 bhArcs;
+    vec4 bhRim;
+    vec4 bhDepth;
 #else
 #ifndef BH_FUNCTIONS
 #define BH_FUNCTIONS
@@ -37,8 +39,10 @@ float bhEase(float x) {
     x = clamp(x, 0.0, 1.0);
     return clamp(x*x*x*(10.0+x*(-15.0+6.0*x)),0.0,1.0);
 }
+// Lensing envelope, now expressed against the configured reach bhGeometry.y
+// instead of a fixed 3.2-4 Rh. At lensReach 4 these are the original constants.
 float bhTaper(float r) {
-    return 1.0-bhEase((r/ubuf.bhGeometry.x-3.2)/0.8);
+    return 1.0-bhEase((r-0.8*ubuf.bhGeometry.y)/(0.2*ubuf.bhGeometry.y));
 }
 float bhWord(vec2 texel) {
     vec2 bytes = floor(texture(bhTransfer, (texel+0.5)/vec2(1024.0,262.0)).rg*255.0+0.5);
@@ -119,7 +123,10 @@ mat2 bhJacobian(vec2 pixel) {
     float b = dot(bhWarpBackground(ubuf.bhCentre+e*(r+h),w)-ubuf.bhCentre,e);
     float f = dot(bhWarpBackground(pixel,w)-ubuf.bhCentre,e);
     float tangential = f/r, radial = (b-a)/(2.0*h);
-    return mat2(tangential,0.0,0.0,tangential)+(radial-tangential)*mat2(e.x*e.x,e.x*e.y,e.x*e.y,e.y*e.y);
+    mat2 j = mat2(tangential,0.0,0.0,tangential)+(radial-tangential)*mat2(e.x*e.x,e.x*e.y,e.x*e.y,e.y*e.y);
+    // Art direction: exaggerate the departure from identity so the star arcs
+    // read at wallpaper scale. lensStretch 1 leaves the measured Jacobian.
+    return mat2(1.0)+(j-mat2(1.0))*ubuf.bhDepth.w;
 }
 float bhShadowMask(vec2 pixel) {
     float r = length(pixel-ubuf.bhCentre);
@@ -148,9 +155,6 @@ float bhProfile(float r) {
     float x = clamp(ubuf.bhDisk.x/r,0.0,1.0);
     return x*x*x*(1.0-sqrt(x))/0.0566527795;
 }
-float bhEdge(float r) {
-    return bhEase((r-ubuf.bhDisk.x)/0.18)*(1.0-bhEase((r-(bhOuter()-0.9))/0.9));
-}
 // Physical-pixel footprints; unit-circle differentiation is continuous at +/-pi.
 // Call before divergent validity/brightness exits, including on the photon path.
 vec2 bhFootprint(vec4 hit) {
@@ -166,10 +170,38 @@ float bhCycles(float r) {
 float bhChannel(vec3 v, float octave) {
     return octave < 0.5 ? v.r : (octave < 1.5 ? v.g : v.b);
 }
-float bhNoiseRow(float j, float phi, float radial, float angular, float octave) {
+// One rotating lattice read for rim/skirt/arc shaping. Same clock and the same
+// integer-per-row rates as the filaments, so the rim shears with the material.
+float bhRimField(float r, float phi, float cells, float row) {
+    float a = cells*mod(phi/(2.0*BH_PI)-ubuf.bhDetail.z*bhCycles(r)*ubuf.bhDetailPhase.x,1.0);
+    float k = floor(a), t = bhEase(fract(a));
+    float x = mod(k+ubuf.bhDetail.y*13.0,cells);
+    float y = mod(row+ubuf.bhDetail.y*7.0,127.0);
+    return texture(bhNoise,vec2(x+t+0.5,y+0.5)/128.0).b;
+}
+// The skirt occupies re..ro: emission ends at re, then sparse clumpy dust.
+float bhSkirtEnd() {
+    return ubuf.bhRim.x > 0.0 ? max(bhOuter(),ubuf.bhDisk.y-0.05) : bhOuter();
+}
+// Rim coverage. The inner boundary radius itself wobbles with azimuth and the
+// outer boundary dissolves into sparse clumps: no drawn circle at either end.
+float bhEdge(float r, float phi) {
+    float ri = ubuf.bhDisk.x, re = bhOuter(), fray = ubuf.bhRim.y;
+    float inner = ri+fray*0.5*(bhRimField(ri,phi,24.0,3.0)-0.3);
+    float edge = bhEase((r-inner)/mix(0.18,0.5,fray));
+    float body = 1.0-bhEase((r-(re-0.9))/0.9);
+    if (ubuf.bhRim.x <= 0.0) return edge*body;
+    float end = bhSkirtEnd();
+    float t = clamp((r-(re-0.9))/max(end-(re-0.9),0.001),0.0,1.0);
+    float density = (1.0-t)*(1.0-t)*(1.0-t);
+    float clump = bhRimField(r,phi,20.0,29.0);
+    float skirt = ubuf.bhRim.x*density*bhEase((clump-mix(0.3,0.6,ubuf.bhRim.z))/0.2);
+    return edge*max(body,skirt);
+}
+float bhNoiseRow(float j, float phi, float radial, float angular, float octave, float lag) {
     float r = ubuf.bhDisk.x+j*(bhOuter()-ubuf.bhDisk.x)/radial;
     float phase = mod(ubuf.bhDetail.z*bhCycles(r)*ubuf.bhDetailPhase.x,1.0);
-    float a = angular*mod(phi/(2.0*BH_PI)-phase,1.0);
+    float a = angular*mod(phi/(2.0*BH_PI)-phase+lag,1.0);
     float k = floor(a), t = bhEase(fract(a));
     float x = mod(k+ubuf.bhDetail.y*(octave*7.0+3.0),angular);
     float y = mod(j+ubuf.bhDetail.y*(octave*5.0+1.0),127.0);
@@ -183,11 +215,32 @@ vec2 bhNoiseOctave(float v, float phi, vec2 footprint, float octave) {
     float r = ubuf.bhDisk.x+j*(bhOuter()-ubuf.bhDisk.x)/radial;
     float rowStep = (bhOuter()-ubuf.bhDisk.x)/radial;
     float motion = mix(bhCycles(r),bhCycles(r+rowStep),bhEase(fract(y)))*ubuf.bhDetailPhase.y/4096.0;
-    float width = max(radial*footprint.x/(bhOuter()-ubuf.bhDisk.x),angular*(footprint.y/(2.0*BH_PI)+motion));
-    float lod = 1.0-bhEase((width-0.5)/0.85);
+    // Anisotropic: the radial and angular footprints are filtered separately.
+    // A strongly demagnified lensed image has a huge RADIAL footprint and a
+    // small angular one, so its row structure washes out while the azimuthal
+    // filaments survive - the arc then reads as stretched material instead of
+    // a painted band. lensStretch retains extra radial structure on purpose.
+    float wr = radial*footprint.x/(bhOuter()-ubuf.bhDisk.x);
+    float wa = angular*(footprint.y/(2.0*BH_PI)+motion);
+    float lod = 1.0-bhEase((wa-0.5)/0.85);
+    float lodR = clamp((1.0-bhEase((wr-0.5)/0.85))*ubuf.bhDepth.w,0.0,1.0);
     if (lod <= 0.0) return vec2(0.5,0.0);
-    return vec2(mix(bhNoiseRow(j,phi,radial,angular,octave),
-        bhNoiseRow(j+1.0,phi,radial,angular,octave),bhEase(fract(y))),lod);
+    float w = bhEase(fract(y));
+    float value = mix(bhNoiseRow(j,phi,radial,angular,octave,0.0),
+        bhNoiseRow(j+1.0,phi,radial,angular,octave,0.0),w);
+    // Motion blur: average taps one third of an exposure ahead and behind along
+    // the row's own travel. Only where the material actually moves that far, so
+    // the outer disk keeps its cost and the inner disk reads as momentum.
+    float smear = ubuf.bhRim.w*motion;
+    if (angular*smear > 0.3) {
+        float lag = smear/3.0;
+        float back = mix(bhNoiseRow(j,phi,radial,angular,octave,-lag),
+            bhNoiseRow(j+1.0,phi,radial,angular,octave,-lag),w);
+        float ahead = mix(bhNoiseRow(j,phi,radial,angular,octave,lag),
+            bhNoiseRow(j+1.0,phi,radial,angular,octave,lag),w);
+        value = (back+value+ahead)/3.0;
+    }
+    return vec2(mix(0.5,value,lodR),lod);
 }
 float bhRidge(float n) {
     float ridge = smoothstep(0.38,0.76,n);
@@ -238,10 +291,16 @@ vec2 bhKnot(float r, float phi, vec2 footprint) {
 vec2 bhEmber(float r, float phi, vec2 footprint) {
     float innerCycles = ubuf.bhStreaks.y;
     float orbitCount = floor(0.5*ubuf.bhEmbers.x);
-    float n = bhCycles(r);
-    if (n < innerCycles-orbitCount || n >= innerCycles || orbitCount < 1.0) return vec2(0.0);
-    float orbitR = ubuf.bhDisk.x*pow(innerCycles/n,2.0/3.0);
-    float gap = orbitR*2.0/(3.0*n);
+    if (orbitCount < 1.0 || r < ubuf.bhDisk.x) return vec2(0.0);
+    // Orbits spread geometrically over the whole emitting range, not packed
+    // against the ISCO: at short inner periods consecutive integer rates crowd
+    // into the innermost cells and every ember lands on the same ring.
+    float span = log(bhSkirtEnd()/ubuf.bhDisk.x);
+    float m = clamp(floor(orbitCount*log(r/ubuf.bhDisk.x)/span),0.0,orbitCount-1.0);
+    float orbitR = ubuf.bhDisk.x*exp(span*(m+0.5)/orbitCount);
+    float n = floor(innerCycles*pow(ubuf.bhDisk.x/orbitR,1.5)+0.5);
+    if (n < 1.0) return vec2(0.0);
+    float gap = orbitR*(exp(span/orbitCount)-1.0)*0.5;
     float support = min(ubuf.bhEmbers.y,0.24*gap);
     // Cubic compact kernel FWHM = .9084*support. Bound the resolved head
     // axes to .60–1.20 px; subpixel broadening conserves radial energy.
@@ -249,7 +308,7 @@ vec2 bhEmber(float r, float phi, vec2 footprint) {
     float radial = bhKernel((r-orbitR)/wr)*min(1.0,support/wr);
     float lod = 1.0-bhEase((footprint.x/support-1.5)/3.0);
     if (radial*lod <= 0.0) return vec2(0.0);
-    float orbitId = n-(innerCycles-orbitCount);
+    float orbitId = m;
     vec3 rnd = bhRandom(orbitId+31.0,17.0);
     float head = mod(phi/(2.0*BH_PI)-ubuf.bhDetail.z*n*ubuf.bhDetailPhase.x-rnd.b,1.0);
     float id = floor(mod(head+0.25,1.0)*2.0);
@@ -281,7 +340,10 @@ vec3 bhTemperature(float logT) {
     return c/max(dot(c,vec3(0.2126,0.7152,0.0722)),0.000001);
 }
 vec3 bhShadeField(vec4 hit, vec2 e, float impact, vec2 footprint, float octaves, float textureStrength) {
-    float profile = bhProfile(hit.x);
+    // falloff 1 is the frozen zero-torque profile; >1 narrows the hot band and
+    // steepens the decline into the dust, which is what the owner's still shows.
+    float raw = bhProfile(hit.x);
+    float profile = pow(raw,max(ubuf.bhDepth.z,0.001));
     float detailWork = bhEase((0.13*ubuf.bhLook.x*profile-0.001)/0.002);
     float filaments = 1.0, knot = 0.0, ember = 0.0;
     if (detailWork > 0.0) {
@@ -307,29 +369,49 @@ vec3 bhShadeField(vec4 hit, vec2 e, float impact, vec2 footprint, float octaves,
     // Highlight desaturation: material near the cap burns toward white while dim
     // material keeps its temperature colour. Both ends carry luminance 1, so this
     // never changes emitted energy, and whiteness 0 leaves the four anchors exact.
+    // Only the top of the range whitens; mid-brightness material must stay tan
+    // rather than drift grey (the v4.1 live complaint).
+    // Whitening follows the RADIAL profile, not the instantaneous filament
+    // brightness: the owner's still has one coherent white band, not white
+    // speckle scattered through tan material.
+    // White only where the RADIAL band and the local brightness agree: the band
+    // keeps it coherent, the brightness gate keeps mid material tan, not grey.
     if (ubuf.bhHue.w > 0.0)
-        tint = mix(tint,vec3(1.0),ubuf.bhHue.w*bhEase(light/max(ubuf.bhCaps.x,0.000001)));
+        tint = mix(tint,vec3(1.0),ubuf.bhHue.w*bhEase((raw-0.4)/0.45)
+            *bhEase((light/max(ubuf.bhCaps.x,0.000001)-0.3)/0.45));
     return tint*light;
 }
-vec4 bhEmissionAt(vec4 hit, vec2 e, float order, float impact, vec2 footprint) {
+// across = signed screen distance from the disk's projected major axis, in
+// physical px: the only quantity that tells a midplane-only trace where the
+// slab would be seen edge-on, which is where its dust lane runs.
+vec4 bhEmissionAt(vec4 hit, vec2 e, float order, float impact, vec2 footprint, float across) {
     float glowRadius = min(ubuf.bhGlow.y,2.5)*footprint.x;
-    if (hit.z < 0.5 || hit.x >= bhOuter()+glowRadius) return vec4(0.0);
-    float edge = bhEdge(hit.x);
+    if (hit.z < 0.5 || hit.x >= bhSkirtEnd()+glowRadius) return vec4(0.0);
+    float edge = bhEdge(hit.x,hit.y);
     float haloGain = e.y < 0.0 ? ubuf.bhHalo.x : ubuf.bhHalo.y;
-    float gain = order < 0.5 ? mix(haloGain,1.0,bhEase((cos(hit.w)+0.2)/0.4)) : haloGain;
+    float front = order < 0.5 ? bhEase((cos(hit.w)+0.2)/0.4) : 0.0;
+    // Depth: the near strip is brighter and more opaque than the lensed arcs,
+    // so it reads as the closer surface and occludes the thread behind it.
+    float gain = order < 0.5 ? mix(haloGain,1.0+ubuf.bhDepth.x,front) : haloGain;
+    float cover = 0.88+0.11*ubuf.bhDepth.x*front;
     float octaves = e.y > 0.0 && order > 0.5 ? 1.0 : ubuf.bhDetail.w;
-    vec3 colour = bhShadeField(hit,e,impact,footprint,octaves,1.0)*(0.88*edge*gain);
+    vec3 colour = bhShadeField(hit,e,impact,footprint,octaves,1.0)*(cover*edge*gain);
+    // Equatorial dust lane of the slab, strongest on the near side.
+    if (ubuf.bhDepth.y > 0.0) {
+        float laneHalf = max(0.03*ubuf.bhGeometry.x,1.0);
+        colour *= 1.0-ubuf.bhDepth.y*(0.35+0.65*front)*bhKernel(across/laneHalf);
+    }
     float d = min(abs(hit.x-(ubuf.bhDisk.x+0.18)),abs(hit.x-(bhOuter()-0.9)))/max(glowRadius,0.00001);
     float glow = min(ubuf.bhGlow.x,0.008)*bhProfile(hit.x)*bhKernel(d)*edge;
     colour += bhTemperature(ubuf.bhHue.y)*glow;
-    return vec4(bhLimit(colour,ubuf.bhCaps.x),0.88*edge);
+    return vec4(bhLimit(colour,ubuf.bhCaps.x),cover*edge);
 }
 // Preview compatibility helper. Production supplies impact and footprints once.
 vec4 bhEmission(vec4 hit, vec2 e, float order) {
-    return bhEmissionAt(hit,e,order,BH_BC,bhFootprint(hit));
+    return bhEmissionAt(hit,e,order,BH_BC,bhFootprint(hit),0.0);
 }
 float bhDiskBound() {
-    float outer = bhOuter();
+    float outer = bhSkirtEnd();
     float maxImpact = outer/sqrt(1.0-1.0/outer);
     float sine = maxImpact*sqrt(0.95)/20.0;
     return BH_FOCAL*ubuf.bhGeometry.x*sine/sqrt(1.0-sine*sine)+3.0;
@@ -344,11 +426,17 @@ float bhArcReach() {
     return ubuf.bhGeometry.x*outer*1.2;
 }
 vec3 bhOuterArcs(float r, vec4 hit, vec2 footprint) {
-    float support = 0.0;
-    for (float i = 0.0; i < 2.0; i += 1.0) {
+    float support = 0.0, weight = 0.0;
+    for (float i = 0.0; i < 4.0; i += 1.0) {
         if (i >= ubuf.bhArcs.w) break;
         float centre = ubuf.bhGeometry.x*(ubuf.bhArcs.y+i*ubuf.bhArcs.z);
-        support += bhKernel((r-centre)/max(0.05*centre,1.0))/(1.0+i);
+        // Razor-thin bands, and each ring broken independently in azimuth so
+        // none of them reads as a drawn circle.
+        float band = bhKernel((r-centre)/max(0.022*centre,1.0))/(1.0+0.7*i);
+        if (band <= 0.0) continue;
+        float gate = bhRimField(mix(ubuf.bhDisk.x,bhOuter(),0.3+0.2*i),hit.y,14.0+5.0*i,53.0+11.0*i);
+        support += band*mix(0.12,1.0,bhEase((gate-mix(0.22,0.5,ubuf.bhRim.z))/0.3));
+        weight += band;
     }
     if (support <= 0.0) return vec3(0.0);
     // Same source field, same clock: the bands shear with the disk material.
@@ -365,8 +453,8 @@ float bhDiskAbsorb(vec2 pixel) {
     if (ubuf.bhHalo.w <= 0.0 || r > bhDiskBound() || r < 0.001) return 0.0;
     float col = bhColumn(bhImpact(r));
     vec4 a = bhCrossing(col,p/r,0.0), b = bhCrossing(col,p/r,1.0);
-    float nearA = a.z*bhEdge(a.x)*bhEase(bhProfile(a.x)/0.85);
-    float farA = b.z*bhEdge(b.x)*bhEase(bhProfile(b.x)/0.85);
+    float nearA = a.z*bhEdge(a.x,a.y)*bhEase(bhProfile(a.x)/0.85);
+    float farA = b.z*bhEdge(b.x,b.y)*bhEase(bhProfile(b.x)/0.85);
     return (nearA+(1.0-nearA)*farA)*ubuf.bhHalo.w*bhTaper(r);
 }
 vec4 bhDisk(vec2 pixel) {
@@ -376,10 +464,12 @@ vec4 bhDisk(vec2 pixel) {
         || r > max(bhDiskBound(),bhArcReach())) return vec4(0.0);
     float impact = bhImpact(r), col = bhColumn(impact);
     vec2 e = p/r;
+    // Signed screen distance from the disk's projected major axis.
+    float across = r*(-sin(ubuf.bhDisk.z)*e.x-cos(ubuf.bhDisk.z)*e.y);
     vec4 hit0 = bhCrossing(col,e,0.0), hit1 = bhCrossing(col,e,1.0);
     vec2 fp0 = bhFootprint(hit0), fp1 = bhFootprint(hit1);
-    vec4 nearHit = bhEmissionAt(hit0,e,0.0,impact,fp0);
-    vec4 farHit = bhEmissionAt(hit1,e,1.0,impact,fp1);
+    vec4 nearHit = bhEmissionAt(hit0,e,0.0,impact,fp0,across);
+    vec4 farHit = bhEmissionAt(hit1,e,1.0,impact,fp1,across);
     vec4 disk = nearHit+(1.0-nearHit.a)*farHit;
     // Faint bands sit behind the material and never reach the thread's radius.
     if (bhArcReach() > 0.0)
@@ -393,6 +483,10 @@ vec4 bhDisk(vec2 pixel) {
         vec4 ringHit = vec4(49.0*ubuf.bhDisk.x/36.0,hit0.y,1.0,hit0.w);
         vec2 ringFootprint = vec2(0.018*162.0/rh,fp0.y);
         vec3 ring = bhShadeField(ringHit,e,impact,ringFootprint,ubuf.bhDetail.w,ubuf.bhPhoton.z);
+        // Razor-thin but locally interrupted: gaps come from the same rotating
+        // field, so the breaks travel with the material instead of flickering.
+        float gate = bhRimField(49.0*ubuf.bhDisk.x/36.0,hit0.y,36.0,71.0);
+        ring *= mix(1.0,mix(0.1,1.35,bhEase((gate-0.3)/0.45)),ubuf.bhRim.z);
         ring *= coverage*ubuf.bhPhoton.y*(1.0-nearHit.a)*(1.0-farHit.a);
         disk.rgb = bhLimit(disk.rgb+ring,ubuf.bhCaps.y);
         disk.a = max(disk.a,coverage*0.3);

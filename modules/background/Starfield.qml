@@ -1062,16 +1062,31 @@ Item {
         // Depth-scaled wander stays subordinate even for the farthest stars.
         // 2048 s is the only 4096-compatible period in [1800,2700].
         shader.centreOffset = Qt.vector2d(shortSide * clamp(centreWander, 0, 0.012) * wave(s.clock, 2, tauPhase), shortSide * clamp(centreWander, 0, 0.012) * wave(s.clock, 2, tauPhase + 1.7));
+        // Bounded, 4096-safe parallax of the far field. The 1/r inflow leaves the
+        // corners nearly still; this is the floor that keeps every region moving.
+        const parallax = _particles && particlesEnabled ? _particles.config.dust.parallaxPx : 0;
+        shader.dustParallax = Qt.vector2d(parallax * wave(s.clock, 16, tauPhase), parallax * wave(s.clock, 12, tauPhase + 2.3));
+        const clustered = _particles && particlesEnabled ? _particles.config.dust : null;
+        shader.dustCluster = Qt.vector4d(clustered ? clustered.clusterCells : 16, clustered ? clustered.voidCells : 44, clustered ? clustered.clusterGain : 0, clustered ? clustered.cellScale : 1);
+        shader.particleMu = _particles && particlesEnabled ? _particles.mu : 0;
         const breath = clamp(zoomBreath, 0, 0.003) * (0.65 * wave(s.clock, 10, 0.4) + 0.35 * wave(s.clock, 14, 2.1));
         shader.flowZoom = Qt.vector3d(Math.exp(0.10 * breath), Math.exp(0.42 * breath), Math.exp(breath));
         const padding = [], capturePadding = [];
+        // With particles on, the far layer is the only procedural one left and its
+        // depth-0.10 flow reads as frozen: 0.6 px/s at mid-screen on a 4K output.
+        // The cell grid advances at a constant rate in u = r^2/2, so the radial
+        // speed is already proportional to 1/r; the multiplier just makes it
+        // visible, and sqrt(mass) ties it to the same mass the particles feel.
+        const dust = _particles ? _particles.config.dust : null;
+        const farBoost = particlesEnabled && dust ? dust.farFlow * Math.sqrt(_particles.config.mass) : 1;
+        const farCellScale = particlesEnabled && dust ? dust.cellScale : 1;
         for (let layer = 0; layer < 3; ++layer) {
             const depth = [0.10, 0.42, 1][layer];
-            const cellSize = [12, 30, 110][layer] * scale;
+            const cellSize = [12, 30, 110][layer] * scale * (layer === 0 ? farCellScale : 1);
             const sectors = Math.max(4, Math.round(2 * Math.PI * radius / cellSize));
             const invAngle = sectors / (2 * Math.PI);
             const invU = radius * radius / (cellSize * cellSize * invAngle);
-            const advanceCells = s.flow * (6 / 1080) * depth * invU;
+            const advanceCells = s.flow * (6 / 1080) * depth * invU * (layer === 0 ? farBoost : 1);
             const row = Math.floor(advanceCells);
             const block = Math.floor(row / 256);
             shader["flowGrid" + layer] = Qt.vector4d(invU, invAngle, modulo(advanceCells, 1), modulo(row, 256));
@@ -1119,7 +1134,7 @@ Item {
         shader.twinkle *= 1 + (moodTwinkle / 0.22 - 1) * s.mood[1];
         for (const name of ["bhCentre", "bhGeometry", "bhDisk", "bhLook", "bhHalo", "bhPhase", "bhCaps"])
             shader[name] = _hole[name];
-        for (const name of ["bhDetail", "bhStreaks", "bhKnots", "bhEmbers", "bhDoppler", "bhHue", "bhGlow", "bhPhoton", "bhDetailPhase", "bhArcs"])
+        for (const name of ["bhDetail", "bhStreaks", "bhKnots", "bhEmbers", "bhDoppler", "bhHue", "bhGlow", "bhPhoton", "bhDetailPhase", "bhArcs", "bhRim", "bhDepth"])
             if (_hole[name] !== undefined)
                 shader[name] = _hole[name];
         publishEvents();
@@ -1154,6 +1169,8 @@ Item {
     property var _particleBirth: null
     property var _particlePaletteRef: null
     property var _particleSettingsRef: undefined
+    property var _particleMassRef: undefined
+    property var _particleSettings: ({})
     property string _particleSettingsText: ""
     property int _particleAtlasHeight: 0
     property int _particleRevision: 0
@@ -1166,15 +1183,22 @@ Item {
             return false;
         const w = width * devicePixelRatio, h = height * devicePixelRatio;
         const rh = _hole.bhGeometry.x;
-        // Serializing the settings object twice a frame was pure garbage: the
-        // property is replaced wholesale on an edit, so identity is the test.
-        if (particles !== _particleSettingsRef) {
+        // Serializing the settings twice a frame was pure garbage: both property
+        // objects are replaced wholesale on an edit, so identity is the test.
+        // blackHole.mass is the canonical key; particles.mass overrides it, so
+        // one number scales the particle potential and the far-dust flow alike.
+        const mass = blackHole && blackHole.mass !== undefined ? blackHole.mass : undefined;
+        if (particles !== _particleSettingsRef || mass !== _particleMassRef) {
             _particleSettingsRef = particles;
-            _particleSettingsText = JSON.stringify(particles);
+            _particleMassRef = mass;
+            _particleSettings = Object.assign({}, particles);
+            if (mass !== undefined && _particleSettings.mass === undefined)
+                _particleSettings.mass = mass;
+            _particleSettingsText = JSON.stringify(_particleSettings);
         }
         const signature = _particleSettingsText + ":" + w + ":" + h + ":" + rh;
         if (!_particles) {
-            _particles = ParticlePhysics.create(w, h, rh, screenSeed ^ varietySeed, particles);
+            _particles = ParticlePhysics.create(w, h, rh, screenSeed ^ varietySeed, _particleSettings);
             _particleConfiguration = signature;
         } else if (signature !== _particleConfiguration) {
             // DPR converts units only; ordinary resize and reactive edits leave
@@ -1189,7 +1213,7 @@ Item {
                         _particles.maxStreak[i] *= factor;
                     }
             }
-            ParticlePhysics.configure(_particles, w, h, rh, particles);
+            ParticlePhysics.configure(_particles, w, h, rh, _particleSettings);
             _particleConfiguration = signature;
             // A new bin grid can need a different number of texels; recompute
             // the shared allocation instead of keeping the old one forever.
@@ -1236,6 +1260,10 @@ Item {
         input.params = archetypeParams;
         input.legacy = s.birth;
         input.seed = screenSeed ^ varietySeed;
+        // With the hole disabled the envelope fades to 0 over 30 s; the swallow
+        // radius and the central render fade follow it, so particles keep moving
+        // through the centre instead of vanishing into an invisible point.
+        _particles.absorb = _hole.bhHalo.w;
         ParticlePhysics.advance(_particles, dt, radialSpeed, s.live[2], cx, cy, blackHole && blackHole.disk && blackHole.disk.rotationSign < 0 ? -1 : 1, _particleBirth);
     }
 
@@ -1267,7 +1295,7 @@ Item {
         // scene-graph submission on llvmpipe and did not recover.
         if (!_particleAtlasHeight) {
             const ceiling = ParticleAppearance.bounds(pool);
-            _particleAtlasHeight = ParticlePacking.capacity(_particleBins, ceiling.maxItems, ceiling.maxSupport, ceiling.maxFlares, ceiling.flareSupport);
+            _particleAtlasHeight = ParticlePacking.capacity(_particleBins, ceiling.maxItems, ceiling.maxSupport, ceiling.maxFlares, ceiling.flareSupport, ceiling.maxBends, ceiling.bendSupport);
         }
         const layout = ParticlePacking.layout(canvas.packet, _particleBins, _particleItems.count, _particleAtlasHeight);
         _particleAtlasHeight = layout.height;
@@ -1378,6 +1406,8 @@ Item {
         property vector4d bhPhoton: Qt.vector4d(0, 0, 0, 0)
         property vector4d bhDetailPhase: Qt.vector4d(0, 0, 0, 0)
         property vector4d bhArcs: Qt.vector4d(0, 0, 0, 0)
+        property vector4d bhRim: Qt.vector4d(0, 0, 0, 0)
+        property vector4d bhDepth: Qt.vector4d(0, 0, 0, 0)
         property real captureHistory: 0
         property real legacyMaterialAlive: 1
         property vector2d bhCentre: Qt.vector2d(0, 0)
@@ -1394,6 +1424,9 @@ Item {
         property vector2d particleGrid: Qt.vector2d(1, 1)
         property real particlesEnabled: 1
         property real particleReady: 0
+        property vector4d dustCluster: Qt.vector4d(6, 19, 0, 0)
+        property vector2d dustParallax: Qt.vector2d(0, 0)
+        property real particleMu: 0
         property var descriptorAtlas: descriptorImage
         property real radialMode: 1
         property vector2d centreOffset: Qt.vector2d(0, 0)
@@ -1489,12 +1522,27 @@ Item {
         objectName: "starfieldParticleBack"
     }
 
-    FrameAnimation {
+    // A running FrameAnimation keeps Qt's animation driver alive, and the render
+    // loop then repaints every vsync whether or not anything changed: three
+    // outputs at 144 Hz is 4.8x the work this renderer actually publishes. A
+    // Timer drives the same 30 Hz tick without holding the driver open, so the
+    // scene graph renders once per publication instead of once per refresh.
+    Timer {
+        id: driver
+        interval: Math.round(1000 / root.clamp(root.fps, 1, 60))
+        repeat: true
         running: root.running && root.visible && root.width > 0 && root.height > 0
+        property real stamp: 0
         onRunningChanged: {
             root._pending = 0;
             root._firstFrame = true;
+            stamp = Date.now() / 1000;
         }
-        onTriggered: root.frame(frameTime)
+        onTriggered: {
+            const now = Date.now() / 1000;
+            const dt = now - stamp;
+            stamp = now;
+            root.frame(dt);
+        }
     }
 }

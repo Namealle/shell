@@ -26,9 +26,13 @@ function layout(previous, bins, count, minHeight) {
 // sampled texture is allocated once and never resized. A single resize of the
 // sampled texture cost 13 ms -> 6700 ms per frame of scene-graph submission on
 // llvmpipe, and it did not recover; a pre-sized texture never pays it.
-function capacity(bins, maxItems, maxSupport, maxFlares, flareSupport) {
+function capacity(bins, maxItems, maxSupport, maxFlares, flareSupport, maxBends, bendSupport) {
     var perAxis = Math.floor(2 * maxSupport / 32) + 2;
     var references = maxItems * perAxis * perAxis;
+    if (maxBends > 0) {
+        var bendAxis = Math.floor(2 * bendSupport / 32) + 2;
+        references += maxBends * (bendAxis * bendAxis - perAxis * perAxis);
+    }
     if (maxFlares > 0) {
         // render() caps the flared instances, so their much larger footprint is
         // a bounded addition rather than a ceiling on every instance.
@@ -115,7 +119,22 @@ function pack(previous, bins, items, meta, allocate) {
         var phase = (raw < 0 ? raw + 6.283185307179586 : raw) * (65535 / 6.283185307179586);
         phase = phase > 65535 ? 65535 : (phase > 0 ? (phase + 0.5) | 0 : 0);
         var param = src[f + 13]; param = param > 65535 ? 65535 : (param > 0 ? (param + 0.5) | 0 : 0);
-        var age = src[f + 14] * 128; age = age > 65535 ? 65535 : (age > 0 ? (age + 0.5) | 0 : 0);
+        // Texel +7 carries the oriented half-extents the binner used, so the
+        // shader can reject on the streak's box instead of a disc of its
+        // half-length: a long thin trail fills a tenth of that disc.
+        var major = src[f + 18], minor = src[f + 19];
+        var sp = Math.sqrt(src[f + 2] * src[f + 2] + src[f + 3] * src[f + 3]);
+        var ex = 1, ey = 0;
+        if (sp > 0.01) { ex = src[f + 2] / sp; ey = src[f + 3] / sp; }
+        var m2 = major * major, n2 = minor * minor;
+        var bx = Math.sqrt(m2 * ex * ex + n2 * ey * ey) * 2;
+        var by = Math.sqrt(m2 * ey * ey + n2 * ex * ex) * 2;
+        // A curved trail is displaced transversely by up to the sagitta the bin
+        // radius reserved; at a diagonal the ellipse box would clip that, and the
+        // capsule the binner used already covers it.
+        if (src[f + 11] >= 64) { bx += 12; by += 12; }
+        bx = bx > 255 ? 255 : (bx > 0 ? Math.ceil(bx) : 0);
+        by = by > 255 ? 255 : (by > 0 ? Math.ceil(by) : 0);
         var core = src[f + 4], support = src[f + 5], streak = src[f + 6], captured = src[f + 15];
         var xh = (x / 256) | 0, yh = (y / 256) | 0, vxh = (vx / 256) | 0, vyh = (vy / 256) | 0;
         bytes[j] = x - xh * 256; bytes[j + 1] = xh; bytes[j + 2] = y - yh * 256;
@@ -132,12 +151,12 @@ function pack(previous, bins, items, meta, allocate) {
         var lumh = (lum / 256) | 0;
         bytes[j + 17] = lum - lumh * 256; bytes[j + 18] = lumh;
         // kind 0..6 in the low three bits, bit 3 = four-point flare, bit 4 = near
-        var phaseh = (phase / 256) | 0, paramh = (param / 256) | 0, ageh = (age / 256) | 0;
+        var phaseh = (phase / 256) | 0, paramh = (param / 256) | 0;
         bytes[j + 20] = src[f + 11];
         bytes[j + 21] = phase - phaseh * 256; bytes[j + 22] = phaseh;
         bytes[j + 24] = param - paramh * 256; bytes[j + 25] = paramh;
-        bytes[j + 26] = ((streak > 32 ? 32 : (streak > 0 ? streak : 0)) * (255 / 32) + 0.5) | 0;
-        bytes[j + 28] = age - ageh * 256; bytes[j + 29] = ageh;
+        bytes[j + 26] = ((streak > 120 ? 120 : (streak > 0 ? streak : 0)) * (255 / 120) + 0.5) | 0;
+        bytes[j + 28] = bx; bytes[j + 29] = by;
         bytes[j + 30] = ((captured > 1 ? 1 : (captured > 0 ? captured : 0)) * 255 + 0.5) | 0;
     }
     rgb(out.texelsUsed - 1, 251, 127, 19);

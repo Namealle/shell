@@ -21,9 +21,13 @@ function defaults() {
         launch: {plunge: 0.35, miss: 0.55, wide: 0.10, betaBound: [0.65, 0.90],
             unboundShare: 0.2, betaUnbound: [1.02, 1.12], handedness: 0.85},
         capture: {radius: [3.3, 4.0], gamma: 0.25, spiralSec: [20, 60]},
-        epsilonRh: 0.05, substeps: 4, streak: {exposureSec: 0.02, maxPx: 12},
-        sizes: {nearPx: [2.4, 4.4], middlePx: [1, 2], capturedPx: [1.0, 1.8]},
-        flare: {share: 0.085, maxAlive: 10, capturedLight: 0.5}, publishHz: 30,
+        epsilonRh: 0.05, substeps: 4,
+        streak: {exposureSec: 0.035, maxPx: 20, bendExposureSec: 0.26, bendMaxPx: 64, bendRadiusRh: 2.4, bendMaxAlive: 200},
+        sizes: {nearPx: [2.4, 4.8], middlePx: [0.9, 1.7], capturedPx: [1.2, 2.2]},
+        flare: {share: 0.085, maxAlive: 10, capturedLight: 0.7}, publishHz: 30, mass: 1,
+        depth: {frontShare: 0.12, binaryMaxAlive: 40},
+        clustering: {share: 0.72, streams: 5, streamLifeSec: 150, burstDepth: 0.55},
+        dust: {farFlow: 24, parallaxPx: 250, clusterGain: 1, clusterCells: 16, voidCells: 44, cellScale: 0.77},
         safetyLifeSec: [180, 240]};
 }
 function validate(raw) {
@@ -53,14 +57,32 @@ function validate(raw) {
     d.capture.spiralSec = range(c.spiralSec, d.capture.spiralSec, BOUNDS.spiralSec);
     d.epsilonRh = number(r.epsilonRh, 0.05, 0.01, 0.2);
     d.substeps = Math.round(number(r.substeps, 4, 4, 32));
-    d.streak.exposureSec = number(t.exposureSec, 0.02, 0, 0.1);
-    d.streak.maxPx = number(t.maxPx, 12, 0, 32);
+    d.streak.exposureSec = number(t.exposureSec, 0.035, 0, 0.1);
+    d.streak.maxPx = number(t.maxPx, 20, 0, 32);
+    d.streak.bendExposureSec = number(t.bendExposureSec, 0.26, 0, 1);
+    d.streak.bendMaxPx = number(t.bendMaxPx, 64, 0, 120);
+    d.streak.bendRadiusRh = number(t.bendRadiusRh, 2.4, 0, 12);
+    d.streak.bendMaxAlive = Math.round(number(t.bendMaxAlive, 200, 0, 3200));
     d.sizes.nearPx = range(z.nearPx, d.sizes.nearPx, BOUNDS.sizePx);
     d.sizes.middlePx = range(z.middlePx, d.sizes.middlePx, BOUNDS.sizePx);
     d.sizes.capturedPx = range(z.capturedPx, d.sizes.capturedPx, BOUNDS.sizePx);
     d.flare.share = number(fl.share, 0.085, 0, 0.5);
     d.flare.maxAlive = Math.round(number(fl.maxAlive, 10, 0, 64));
-    d.flare.capturedLight = number(fl.capturedLight, 0.5, 0, 1);
+    d.flare.capturedLight = number(fl.capturedLight, 0.7, 0, 1);
+    d.mass = number(r.mass, 1, 0.5, 3);
+    var dp = r.depth || {}, cl = r.clustering || {}, du = r.dust || {};
+    d.depth.frontShare = number(dp.frontShare, 0.12, 0, 0.5);
+    d.depth.binaryMaxAlive = Math.round(number(dp.binaryMaxAlive, 40, 0, 3200));
+    d.clustering.share = number(cl.share, 0.72, 0, 1);
+    d.clustering.streams = Math.round(number(cl.streams, 5, 1, 12));
+    d.clustering.streamLifeSec = number(cl.streamLifeSec, 150, 20, 600);
+    d.clustering.burstDepth = number(cl.burstDepth, 0.55, 0, 1);
+    d.dust.farFlow = number(du.farFlow, 24, 1, 64);
+    d.dust.parallaxPx = number(du.parallaxPx, 250, 0, 800);
+    d.dust.clusterGain = number(du.clusterGain, 1, 0, 1);
+    d.dust.clusterCells = Math.round(number(du.clusterCells, 16, 2, 64));
+    d.dust.voidCells = Math.round(number(du.voidCells, 44, 4, 192));
+    d.dust.cellScale = number(du.cellScale, 0.77, 0.4, 2);
     d.publishHz = Math.round(number(r.publishHz, 30, 10, 30));
     d.safetyLifeSec = range(r.safetyLifeSec, d.safetyLifeSec, BOUNDS.safetyLifeSec);
     return d;
@@ -79,7 +101,7 @@ function configure(s, width, height, rh, raw) {
     s.rh = Math.max(0.1, rh); s.padding = Math.max(32, 0.25 * s.rh);
     s.epsilon = s.config.epsilonRh * s.rh;
     var v = s.config.vref * s.rh / 162;
-    s.muBase = v * v * (20 / 3) * s.rh;
+    s.muBase = v * v * (20 / 3) * s.rh * s.config.mass;
     s.muTarget = s.muBase * s.k * s.k;
     s.targetPopulation = s.config.population.near + s.config.population.middle;
     s.birthRate = s.targetPopulation / s.meanLifetime;
@@ -87,8 +109,8 @@ function configure(s, width, height, rh, raw) {
 function create(width, height, rh, seed, raw, birthCallback) {
     var s = {capacity: BOUNDS.capacity, aliveCount: 0, randomState: (seed >>> 0) || 1,
         clock: 0, accumulator: 0, birthAccumulator: 0, nextSlot: 0, k: 1,
-        centreX: width / 2, centreY: height / 2, rotationSign: 1,
-        meanLifetime: 30, lifetimeSamples: 0, lifetimeSum: 0,
+        centreX: width / 2, centreY: height / 2, rotationSign: 1, absorb: 1,
+        meanLifetime: 30, lifetimeSamples: 0, lifetimeSum: 0, burstPhase: ((seed >>> 0) % 6283)/1000,
         birthCallback: birthCallback, counters: {births: 0, deaths: 0, absorbed: 0,
             escapes: 0, safety: 0, captures: 0, steps: 0}};
     s.alive = new Uint8Array(s.capacity); s.generation = new Uint32Array(s.capacity);
@@ -127,7 +149,21 @@ function launch(s, i, options) {
     var q = o.q === undefined ? between(s, cls === 0 ? [0.05,0.60] : cls === 1 ? [1.15,1.80] : [2.5,4.5])*s.rh : o.q;
     var beta = o.beta === undefined ? between(s, cls === 1 && random(s) < l.unboundShare ? l.betaUnbound : l.betaBound) : o.beta;
     var w = s.width+2*s.padding, h = s.height+2*s.padding;
-    var edge = random(s)*2*(w+h), x, y;
+    var perimeter = 2*(w+h);
+    // Births arrive along a few slowly drifting streams rather than as uniform
+    // rain, so the infall reads as tributaries. Stream identity is re-rolled on
+    // its own lifetime; the draw order is unchanged when clustering is off.
+    var edge = random(s)*perimeter;
+    if (o.edge !== undefined) edge = o.edge;
+    else if (s.config.clustering.share > 0 && random(s) < s.config.clustering.share) {
+        var streams = streamTable(s, perimeter);
+        var pickRaw = random(s)*streams.weight, pick = 0, acc = 0;
+        for (var t = 0; t < streams.count; ++t) { acc += streams.w[t]; if (pickRaw < acc) { pick = t; break; } pick = t; }
+        // Triangular scatter around the stream centre: dense core, finite tails.
+        var jitter = (random(s)+random(s)-1)*streams.width[pick];
+        edge = ((streams.at[pick]+jitter) % perimeter + perimeter) % perimeter;
+    }
+    var x, y;
     if (edge < w) { x = edge-s.padding; y = -s.padding; }
     else if (edge < w+h) { x = s.width+s.padding; y = edge-w-s.padding; }
     else if (edge < 2*w+h) { x = edge-w-h-s.padding; y = s.height+s.padding; }
@@ -162,6 +198,33 @@ function launch(s, i, options) {
     s.r[i]=1; s.g[i]=1; s.b[i]=1; s.luminosity[i]=1;
     s.archetype[i]=0; s.p0[i]=0; s.p1[i]=0; s.p2[i]=0; s.p3[i]=0;
     return true;
+}
+// Stream table for clustered births. Each stream is a birth-frozen edge position
+// with its own drift and width, re-rolled on its own lifetime, so the preferred
+// directions wander over minutes instead of being fixed forever.
+function streamTable(s, perimeter) {
+    var c = s.config.clustering, n = c.streams;
+    var table = s.streamState;
+    if (!table || table.count !== n) {
+        table = s.streamState = {count: n, at: new Float64Array(n), w: new Float64Array(n),
+            width: new Float64Array(n), drift: new Float64Array(n), until: new Float64Array(n),
+            weight: 0};
+        for (var j = 0; j < n; ++j) table.until[j] = -1;
+    }
+    var total = 0;
+    for (var i = 0; i < n; ++i) {
+        if (s.clock >= table.until[i]) {
+            table.at[i] = random(s)*perimeter;
+            table.w[i] = 0.35+random(s)*random(s)*2.2;
+            table.width[i] = perimeter*(0.012+0.05*random(s));
+            table.drift[i] = (random(s)-0.5)*perimeter/600;
+            table.until[i] = s.clock+c.streamLifeSec*(0.6+0.8*random(s));
+        } else table.at[i] += table.drift[i]*(s.clock-table.stamp);
+        total += table.w[i];
+    }
+    table.stamp = s.clock;
+    table.weight = total;
+    return table;
 }
 function damp(s, i, dt, gamma, nu) {
     var x=s.x[i]-s.centreX,y=s.y[i]-s.centreY,r=Math.sqrt(x*x+y*y);
@@ -212,6 +275,9 @@ function step(s, dt, options) {
     var alive=s.alive, live=s.live, n=s.liveCount;
     var cx=s.centreX, cy=s.centreY, mu=s.mu, rh=s.rh, clock=s.clock;
     var width=s.width, height=s.height, pad=s.padding;
+    // The swallow radius follows the hole's visibility envelope: at 0 there is
+    // no hole to fall into, so particles pass through the softened centre.
+    var deathR=rh*(s.absorb === undefined ? 1 : s.absorb);
     var inner=c.radius[0]*rh, outer=c.radius[1]*rh, outer2=outer*outer, drag=c.gamma;
     var doDrag=o.drag !== false, doTorque=o.torque !== false, doDeaths=o.deaths !== false;
     // Per-particle subdivision. The design criterion is dt*sqrt(mu/r^3) < 0.03;
@@ -258,7 +324,7 @@ function step(s, dt, options) {
                 if (entry>=0) ENTRY[i]=t+h*entry;
             }
             X[i]=cx+nx; Y[i]=cy+ny; AGE[i]+=h;
-            if (doDeaths && swept(x,y,nx,ny,rh)) { VX[i]=vx; VY[i]=vy; kill(s,i,'absorbed'); dead=true; break; }
+            if (doDeaths && deathR>0 && swept(x,y,nx,ny,deathR)) { VX[i]=vx; VY[i]=vy; kill(s,i,'absorbed'); dead=true; break; }
             var nr2=nx*nx+ny*ny;
             softened=nr2+eps2;
             f=-mu/(softened*Math.sqrt(softened));
@@ -312,7 +378,13 @@ function step(s, dt, options) {
 }
 function replenish(s, dt, callback) {
     if (s.aliveCount>=s.targetPopulation) { s.birthAccumulator=0;return; }
-    s.birthAccumulator+=dt*s.birthRate;
+    // Burst modulation: two incommensurate 4096-safe cycles with mean 1, so the
+    // population target is unchanged but arrivals come in waves.
+    var depth = s.config.clustering.burstDepth;
+    var burst = depth > 0
+        ? 1+depth*0.5*(Math.sin(s.clock*(2*Math.PI/23)+s.burstPhase)+Math.sin(s.clock*(2*Math.PI/71)+s.burstPhase*1.7))
+        : 1;
+    s.birthAccumulator+=dt*s.birthRate*(burst>0 ? burst : 0);
     while (s.birthAccumulator>=1-1e-12 && s.aliveCount<s.targetPopulation) {
         var searched=0;
         while (s.alive[s.nextSlot] && searched<s.capacity) { s.nextSlot=(s.nextSlot+1)%s.capacity;++searched; }

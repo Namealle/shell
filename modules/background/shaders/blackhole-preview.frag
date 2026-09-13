@@ -52,15 +52,15 @@ void main() {
                 (pixel.x/ubuf.resolution.x*2.0-1.0)*BH_PI,1.0,0.0);
         vec2 footprint = bhFootprint(hit);
         vec3 colour;
-        if (mode < 15.0) colour = bhShadeField(hit,e,BH_BC,footprint,ubuf.bhDetail.w,1.0)*bhEdge(hit.x);
-        else if (mode < 16.0) colour = bhEmissionAt(hit,e,ubuf.fixtureOrder,bhImpact(r),footprint).rgb;
+        if (mode < 15.0) colour = bhShadeField(hit,e,BH_BC,footprint,ubuf.bhDetail.w,1.0)*bhEdge(hit.x,hit.y);
+        else if (mode < 16.0) colour = bhEmissionAt(hit,e,ubuf.fixtureOrder,bhImpact(r),footprint,0.0).rgb;
         else if (mode < 17.0) colour = vec3(bhDiskAbsorb(pixel));
         else if (mode < 18.0 || mode >= 20.0) {
             vec2 knot = bhKnot(hit.x,hit.y,footprint);
-            colour = vec3(knot.x,knot.y/768.0,hit.z*bhEdge(hit.x));
+            colour = vec3(knot.x,knot.y/768.0,hit.z*bhEdge(hit.x,hit.y));
         } else {
             vec2 ember = bhEmber(hit.x,hit.y,footprint);
-            colour = vec3(ember.x,ember.y/32.0,hit.z*bhEdge(hit.x));
+            colour = vec3(ember.x,ember.y/32.0,hit.z*bhEdge(hit.x,hit.y));
         }
         if (ubuf.fixtureLinear < 0.5) colour = mix(12.92*colour,1.055*pow(max(colour,vec3(0.0)),vec3(1.0/2.4))-0.055,step(vec3(0.0031308),colour));
         fragColor = vec4(colour,1.0);
