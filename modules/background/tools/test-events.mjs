@@ -399,6 +399,12 @@ function tests() {
             if (p && Math.hypot(p[0] - out.width / 2, p[1] - out.height / 2) < reach) inside++;
         }
         check("no placement lands on the drawn hole on " + out.name, inside === 0, inside + " inside " + reach.toFixed(0) + " px");
+        // v9's supernova asks for a 0.12 short-side margin so a 0.20 short-side
+        // shell is not half off the screen. With his hole on that is a much
+        // smaller acceptance region, so it is measured rather than assumed.
+        let wide = 0;
+        for (let i = 0; i < 400; ++i) if (h2.radialPlacement(i, 777, 0.12)) wide++;
+        check("a supernova can be placed on " + out.name, wide >= 396, wide + "/400 captures found a spot at a 0.12 margin");
     }
     // v9 WARM START. v8 scheduled every family's FIRST episode a full random
     // interval after the shell started, so a restart put the supernova 21-48
@@ -571,6 +577,33 @@ function tests() {
             const back = h2.radialState(e).head.slice(0, 2);
             check("with no camera the site does not move at all",
                 back[0] === still[0] && back[1] === still[1], "fixed at " + back.map(x => x.toFixed(1)).join(", "));
+        }
+        // The extras reach the shader through publishPhenomena, and are zeroed
+        // when no supernova is live: a stale snShell would leave a nebula's
+        // filament field switched on under another family's slot.
+        {
+            const h3 = makeHost(validateDocument(null), { width: 2880, height: 1800, screenSeed: 20260913, hole: false });
+            let sn = null;
+            for (let a2 = 0; a2 < 40 && !sn; ++a2) sn = h3.captureRadial(8, a2, 0);
+            sn.start = 0;
+            h3._state.events[8] = sn;
+            h3._state.clock = 0.5;
+            h3.publishPhenomena();
+            h3._state.clock = sn.precursor + sn.rise + sn.hold + 20;
+            h3.publishPhenomena();
+            const live = ["snFlash", "snTone", "snShell", "snExtra"].map(k => h3.shader[k]);
+            check("publishPhenomena publishes the supernova's four extra vectors",
+                live.every(v => !!v) && live[2].z > 0 && h3.shader.event3Colour.w === 6,
+                "style " + h3.shader.event3Colour.w + ", nebula unit " + live[2].z.toFixed(1) + " px");
+            h3._state.events[8] = null;
+            h3._state.phenomenonSlots = [null, null, null];
+            h3._state.clock += 1;
+            h3.publishPhenomena();
+            check("and zeroes them when no supernova is live",
+                ["snFlash", "snTone", "snShell", "snExtra"].every(k => {
+                    const v = h3.shader[k];
+                    return v.x === 0 && v.y === 0 && v.z === 0 && v.w === 0;
+                }), "all four cleared");
         }
         // The episode ends dark: no residue, no ring left on the screen.
         h2._state.clock = e.start + e.duration - 0.05;

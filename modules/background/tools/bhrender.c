@@ -19,6 +19,7 @@
 #include <GL/glext.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <string.h>
 
 #define GLFN(r, n, a) typedef r(*PFN_##n) a; static PFN_##n p_##n;
@@ -213,6 +214,22 @@ int main(int argc, char **argv) {
     glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glFinish();
+    // BHRENDER_REPEAT=N times the same draw, fenced, and prints ms/frame. The
+    // absolute number is llvmpipe's, not a GPU's; what it is for is the RATIO
+    // between two frames of the same shader, which is the same on both.
+    {
+        const char *rep = getenv("BHRENDER_REPEAT");
+        int n = rep ? atoi(rep) : 0;
+        if (n > 0) {
+            struct timespec t0, t1;
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            for (int i = 0; i < n; i++) glDrawArrays(GL_TRIANGLES, 0, 3);
+            glFinish();
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            double ms = ((t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6) / n;
+            fprintf(stderr, "frame %.3f ms (%d draws, %dx%d)\n", ms, n, W, H);
+        }
+    }
 
     float *px = malloc((size_t)W * H * 4 * sizeof(float));
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
