@@ -65,16 +65,16 @@ Item {
     // Targets are filtered once, inside BlackHole (120 s, .002/s).
     property BlackHole _hole: BlackHole {
         enabled: root.blackHole && root.blackHole.enabled !== undefined ? root.blackHole.enabled : false
-        size: root.blackHole && root.blackHole.size !== undefined ? root.blackHole.size : 0.075
-        tilt: root.blackHole && root.blackHole.tilt !== undefined ? root.blackHole.tilt : 14
-        intensity: root.blackHole && root.blackHole.intensity !== undefined ? root.blackHole.intensity : 0.85
+        size: root.blackHole && root.blackHole.size !== undefined ? root.blackHole.size : pick("size", 0.075)
+        tilt: root.blackHole && root.blackHole.tilt !== undefined ? root.blackHole.tilt : pick("tilt", 14)
+        intensity: root.blackHole && root.blackHole.intensity !== undefined ? root.blackHole.intensity : pick("intensity", 0.85)
         warmth: root.blackHole && root.blackHole.warmth !== undefined ? root.blackHole.warmth : 0.5
         spin: root.blackHole && root.blackHole.spin !== undefined ? root.blackHole.spin : 1
         diskInnerRs: root.blackHole && root.blackHole.diskInnerRs !== undefined ? root.blackHole.diskInnerRs : 3
-        diskOuterRs: root.blackHole && root.blackHole.diskOuterRs !== undefined ? root.blackHole.diskOuterRs : 8
+        diskOuterRs: root.blackHole && root.blackHole.diskOuterRs !== undefined ? root.blackHole.diskOuterRs : pick("diskOuterRs", 8)
         beamStrength: root.blackHole && root.blackHole.beamStrength !== undefined ? root.blackHole.beamStrength : 0.15
-        haloUpper: root.blackHole && root.blackHole.haloUpper !== undefined ? root.blackHole.haloUpper : 0.55
-        haloLower: root.blackHole && root.blackHole.haloLower !== undefined ? root.blackHole.haloLower : 0.35
+        haloUpper: root.blackHole && root.blackHole.haloUpper !== undefined ? root.blackHole.haloUpper : pick("haloUpper", 0.55)
+        haloLower: root.blackHole && root.blackHole.haloLower !== undefined ? root.blackHole.haloLower : pick("haloLower", 0.35)
         photonWidth: root.blackHole && root.blackHole.photonWidth !== undefined ? root.blackHole.photonWidth : 0.006
         structure: root.blackHole && root.blackHole.structure !== undefined ? root.blackHole.structure : 0.05
         tiltWander: root.blackHole && root.blackHole.tiltWander !== undefined ? root.blackHole.tiltWander : 0
@@ -215,11 +215,6 @@ Item {
         s.archetypes = archetypeWeights(s.archetypes.map((x, i) => filtered(x, archetypes[i], dt, 60)));
         s.mix = filtered(s.mix, clamp(paletteMixTarget, 0, 0.45), dt, 60);
         s.calm = filtered(s.calm, colors.length ? calmTarget : ambientBirth.w, dt, 60);
-        // D's detail provider may land after this renderer. Only bind fields
-        // that exist, then feed the frozen uniform names below after the merge.
-        for (const key of ["disk", "photon"])
-            if (_hole[key] !== undefined)
-                _hole[key] = blackHole && blackHole[key] ? blackHole[key] : ({});
         _hole.advance(dt);
         // Flow seconds include the user speed. Changing it never changes an
         // inferred birth phase. Zero speed freezes the ring as well as motion.
@@ -1146,7 +1141,7 @@ Item {
     // The inactive Canvas owns its reusable ImageData; a late paint retains the
     // previous texture AND metadata. No simulation arrays are read by onPaint.
     property var _particles: null
-    property var _particleItems: []
+    property var _particleItems: null
     property var _particleBins: null
     property var _particlePending: null
     property string _particleConfiguration: ""
@@ -1155,6 +1150,11 @@ Item {
     property real _particleLogicalHeight: 0
     property real _particlePublishedClock: -1
     property string _particlePublishedConfiguration: ""
+    property var _particleBirthInput: null
+    property var _particleBirth: null
+    property var _particlePaletteRef: null
+    property var _particleSettingsRef: undefined
+    property string _particleSettingsText: ""
     property int _particleAtlasHeight: 0
     property int _particleRevision: 0
     property int _particlePublications: 0
@@ -1166,7 +1166,13 @@ Item {
             return false;
         const w = width * devicePixelRatio, h = height * devicePixelRatio;
         const rh = _hole.bhGeometry.x;
-        const signature = JSON.stringify(particles) + ":" + w + ":" + h + ":" + rh;
+        // Serializing the settings object twice a frame was pure garbage: the
+        // property is replaced wholesale on an edit, so identity is the test.
+        if (particles !== _particleSettingsRef) {
+            _particleSettingsRef = particles;
+            _particleSettingsText = JSON.stringify(particles);
+        }
+        const signature = _particleSettingsText + ":" + w + ":" + h + ":" + rh;
         if (!_particles) {
             _particles = ParticlePhysics.create(w, h, rh, screenSeed ^ varietySeed, particles);
             _particleConfiguration = signature;
@@ -1202,16 +1208,35 @@ Item {
         const m = Math.min(_particles.width, _particles.height);
         const cx = _particles.width / 2 + m * clamp(centreWander, 0, 0.012) * wave(s.clock, 2, phase);
         const cy = _particles.height / 2 + m * clamp(centreWander, 0, 0.012) * wave(s.clock, 2, phase + 1.7);
-        const input = {
-            colors: paletteSnapshot(),
-            weights: s.palette,
-            mix: s.mix,
-            archetypes: s.archetypes,
-            params: archetypeParams,
-            legacy: s.birth,
-            seed: screenSeed ^ varietySeed
-        };
-        ParticlePhysics.advance(_particles, dt, radialSpeed, s.live[2], cx, cy, blackHole && blackHole.disk && blackHole.disk.rotationSign < 0 ? -1 : 1, (pool, i) => ParticleAppearance.birth(pool, i, input));
+        // The birth input and its callback are retained: rebuilding the palette
+        // snapshot and the closure every frame allocated for roughly one birth.
+        // Only the resolved colours are re-snapshotted, and only when they move.
+        if (!_particleBirthInput) {
+            _particleBirthInput = {
+                colors: [],
+                weights: null,
+                mix: 0,
+                archetypes: null,
+                params: null,
+                legacy: null,
+                seed: 0
+            };
+            _particleBirth = (pool, i) => ParticleAppearance.birth(pool, i, _particleBirthInput);
+        }
+        const input = _particleBirthInput;
+        // A palette edit replaces the property's array; QML never mutates it in
+        // place, so identity is enough and costs nothing per frame.
+        if (paletteColors !== _particlePaletteRef) {
+            input.colors = paletteSnapshot();
+            _particlePaletteRef = paletteColors;
+        }
+        input.weights = s.palette;
+        input.mix = s.mix;
+        input.archetypes = s.archetypes;
+        input.params = archetypeParams;
+        input.legacy = s.birth;
+        input.seed = screenSeed ^ varietySeed;
+        ParticlePhysics.advance(_particles, dt, radialSpeed, s.live[2], cx, cy, blackHole && blackHole.disk && blackHole.disk.rotationSign < 0 ? -1 : 1, _particleBirth);
     }
 
     function publishParticles(): void {
@@ -1224,6 +1249,13 @@ Item {
         const pool = _particles;
         if (shader.particleReady > 0 && _particlePublishedClock === pool.clock && _particlePublishedConfiguration === _particleConfiguration && radialSpeed === 0)
             return;
+        // Optional lower publication rate: the atlas is rebuilt less often while
+        // integration keeps its own cadence. The achievable rates are 30/n, so a
+        // request of 20 publishes every second frame (15 Hz). The shader
+        // interpolates nothing, so particles visibly step below 30. Default 30.
+        const hz = pool.config.publishHz;
+        if (hz < 30 && shader.particleReady > 0 && _particlePublishedConfiguration === _particleConfiguration && pool.clock - _particlePublishedClock + 1e-9 < 1 / hz)
+            return;
         _particleItems = ParticleAppearance.render(_particleItems, pool, {
             twinkle: shader.twinkle
         });
@@ -1235,9 +1267,9 @@ Item {
         // scene-graph submission on llvmpipe and did not recover.
         if (!_particleAtlasHeight) {
             const ceiling = ParticleAppearance.bounds(pool);
-            _particleAtlasHeight = ParticlePacking.capacity(_particleBins, ceiling.maxItems, ceiling.maxSupport);
+            _particleAtlasHeight = ParticlePacking.capacity(_particleBins, ceiling.maxItems, ceiling.maxSupport, ceiling.maxFlares, ceiling.flareSupport);
         }
-        const layout = ParticlePacking.layout(canvas.packet, _particleBins, _particleItems.length, _particleAtlasHeight);
+        const layout = ParticlePacking.layout(canvas.packet, _particleBins, _particleItems.count, _particleAtlasHeight);
         _particleAtlasHeight = layout.height;
         canvas.width = layout.width;
         canvas.height = layout.height;

@@ -3,7 +3,8 @@ var BOUNDS = {
     capacity: 3200, population: [0, 3200], radialSpeed: [0, 26], vref: [10, 600], epsilonRh: [0.01, 0.2],
     substeps: [4, 32], betaBound: [0.1, 0.99], betaUnbound: [1.001, 2],
     captureRadius: [1.05, 8], gamma: [0, 2], spiralSec: [5, 240],
-    safetyLifeSec: [30, 600], sizePx: [0.25, 12], exposureSec: [0, 0.1], maxPx: [0, 32]
+    safetyLifeSec: [30, 600], sizePx: [0.25, 12], exposureSec: [0, 0.1], maxPx: [0, 32], publishHz: [10, 30],
+    flareShare: [0, 0.5], flareMaxAlive: [0, 64], capturedLight: [0, 1]
 };
 
 function number(value, fallback, lo, hi) {
@@ -21,12 +22,13 @@ function defaults() {
             unboundShare: 0.2, betaUnbound: [1.02, 1.12], handedness: 0.85},
         capture: {radius: [3.3, 4.0], gamma: 0.25, spiralSec: [20, 60]},
         epsilonRh: 0.05, substeps: 4, streak: {exposureSec: 0.02, maxPx: 12},
-        sizes: {nearPx: [2, 4], middlePx: [1, 2], capturedPx: [0.8, 1.4]},
+        sizes: {nearPx: [2.4, 4.4], middlePx: [1, 2], capturedPx: [1.0, 1.8]},
+        flare: {share: 0.085, maxAlive: 10, capturedLight: 0.5}, publishHz: 30,
         safetyLifeSec: [180, 240]};
 }
 function validate(raw) {
     var d = defaults(), r = raw || {}, p = r.population || {}, l = r.launch || {};
-    var c = r.capture || {}, z = r.sizes || {}, t = r.streak || {};
+    var c = r.capture || {}, z = r.sizes || {}, t = r.streak || {}, fl = r.flare || {};
     d.stressPreset = r.stressPreset === true;
     d.population.near = Math.round(number(p.near, d.stressPreset ? 600 : 120, 0, 3200));
     d.population.middle = Math.round(number(p.middle, d.stressPreset ? 1500 : 480, 0, 3200));
@@ -56,6 +58,10 @@ function validate(raw) {
     d.sizes.nearPx = range(z.nearPx, d.sizes.nearPx, BOUNDS.sizePx);
     d.sizes.middlePx = range(z.middlePx, d.sizes.middlePx, BOUNDS.sizePx);
     d.sizes.capturedPx = range(z.capturedPx, d.sizes.capturedPx, BOUNDS.sizePx);
+    d.flare.share = number(fl.share, 0.085, 0, 0.5);
+    d.flare.maxAlive = Math.round(number(fl.maxAlive, 10, 0, 64));
+    d.flare.capturedLight = number(fl.capturedLight, 0.5, 0, 1);
+    d.publishHz = Math.round(number(r.publishHz, 30, 10, 30));
     d.safetyLifeSec = range(r.safetyLifeSec, d.safetyLifeSec, BOUNDS.safetyLifeSec);
     return d;
 }
@@ -86,6 +92,9 @@ function create(width, height, rh, seed, raw, birthCallback) {
         birthCallback: birthCallback, counters: {births: 0, deaths: 0, absorbed: 0,
             escapes: 0, safety: 0, captures: 0, steps: 0}};
     s.alive = new Uint8Array(s.capacity); s.generation = new Uint32Array(s.capacity);
+    // Dense list of occupied slots. step() compacts it, launch() appends to it,
+    // so no consumer ever walks the 3200 capacity slots to find 600 particles.
+    s.live = new Int32Array(s.capacity); s.liveCount = 0;
     var fields = ['x','y','vx','vy','age','entryTime','circularSince','captureExposure','spiralRate',
         'radiusAtCapture','captureTime','launchClass','pericentre','safetyLife','spiralSec','depth',
         'r','g','b','size','capturedSize','luminosity','archetype','p0','p1','p2','p3','phase','seed'];
@@ -139,7 +148,7 @@ function launch(s, i, options) {
     var sign = o.handedness === undefined ? (random(s) < l.handedness ? s.rotationSign : -s.rotationSign) : o.handedness;
     var vt = sign*Math.sqrt(h2)/r, vr = -Math.sqrt(Math.max(0,v2-vt*vt));
     s.x[i]=x; s.y[i]=y; s.vx[i]=(vr*dx-vt*dy)/r; s.vy[i]=(vr*dy+vt*dx)/r;
-    if (!s.alive[i]) ++s.aliveCount;
+    if (!s.alive[i]) { ++s.aliveCount; s.live[s.liveCount++]=i; }
     s.alive[i]=1; ++s.generation[i]; ++s.counters.births;
     s.age[i]=0; s.circularSince[i]=-1; s.captureExposure[i]=0;
     s.entryTime[i]=x>=0 && x<=s.width && y>=0 && y<=s.height ? s.clock : -1;
@@ -188,52 +197,117 @@ function viewportEntry(x, y, nx, ny, width, height) {
     }
     return enter<=leave ? enter : -1;
 }
+// Hot loop. Everything it touches is hoisted into locals (a property lookup on
+// the state object costs more than the arithmetic in QML's JS engine), it walks
+// the dense live list instead of the capacity, and every square root past the
+// force evaluation is computed only on the branch that needs it: outside the
+// capture radius there is no drag, no torque and no circularisation test, and
+// inside the padded rectangle there is no escape test.
 function step(s, dt, options) {
     if (!(dt > 0) || !isFinite(dt)) return;
-    var o=options || {}, c=s.config.capture, half=dt/2, eps2=s.epsilon*s.epsilon;
-    for (var i=0;i<s.capacity;++i) {
-        if (!s.alive[i]) continue;
-        var x=s.x[i]-s.centreX,y=s.y[i]-s.centreY,r=Math.sqrt(x*x+y*y);
-        var g=1-smooth(c.radius[0]*s.rh,c.radius[1]*s.rh,r);
-        var gamma=o.drag === false ? 0 : c.gamma*g;
-        var nu=o.torque === false ? 0 : s.spiralRate[i]*smooth(0,3,s.clock-s.captureTime[i]);
-        if (gamma !== 0 || nu !== 0) damp(s,i,half,gamma,nu);
-        var softened=x*x+y*y+eps2;
-        var f=-s.mu/(softened*Math.sqrt(softened));
-        s.vx[i]+=half*f*x;s.vy[i]+=half*f*y;
-        var nx=x+dt*s.vx[i],ny=y+dt*s.vy[i];
-        if (s.entryTime[i]<0) {
-            var entry=viewportEntry(s.x[i],s.y[i],s.centreX+nx,s.centreY+ny,s.width,s.height);
-            if (entry>=0) s.entryTime[i]=s.clock+dt*entry;
+    var o=options || {}, c=s.config.capture, eps2=s.epsilon*s.epsilon;
+    var X=s.x, Y=s.y, VX=s.vx, VY=s.vy, AGE=s.age, ENTRY=s.entryTime;
+    var SINCE=s.circularSince, EXPOSURE=s.captureExposure, RATE=s.spiralRate;
+    var RCAP=s.radiusAtCapture, CTIME=s.captureTime, LIFE=s.safetyLife, SPIRAL=s.spiralSec;
+    var alive=s.alive, live=s.live, n=s.liveCount;
+    var cx=s.centreX, cy=s.centreY, mu=s.mu, rh=s.rh, clock=s.clock;
+    var width=s.width, height=s.height, pad=s.padding;
+    var inner=c.radius[0]*rh, outer=c.radius[1]*rh, outer2=outer*outer, drag=c.gamma;
+    var doDrag=o.drag !== false, doTorque=o.torque !== false, doDeaths=o.deaths !== false;
+    // Per-particle subdivision. The design criterion is dt*sqrt(mu/r^3) < 0.03;
+    // it binds only near the hole, so a particle out in the field integrates the
+    // whole publish interval in one kick-drift-kick while one skimming the
+    // shadow still gets the full 1/120 s. Thresholds are squared radii, computed
+    // once per call by advance(); without them the step is uniform, which is
+    // what the numerics and behaviour fixtures exercise.
+    var limits=o.limits, subs=limits ? o.substeps : 1;
+    var t1=limits ? limits[0] : 0, t2=limits ? limits[1] : 0, t3=limits ? limits[2] : 0;
+    var travel2=dt*dt;   // (speed*dt)^2 vs (0.08*r)^2: never cross a big fraction of r in one step
+    var write=0;
+    for (var q=0;q<n;++q) {
+        var i=live[q];
+        if (!alive[i]) continue;
+        var x=X[i]-cx, y=Y[i]-cy, vx=VX[i], vy=VY[i];
+        var count=1;
+        if (limits) {
+            var s2=x*x+y*y;
+            if (s2<t1) count = s2<t3 ? 4 : (s2<t2 ? 3 : 2);
+            if (count<subs && (vx*vx+vy*vy)*travel2>0.0064*s2) count=subs;
+            if (count>subs) count=subs;
         }
-        s.x[i]=s.centreX+nx;s.y[i]=s.centreY+ny;s.age[i]+=dt;
-        if (o.deaths !== false && swept(x,y,nx,ny,s.rh)) { kill(s,i,'absorbed');continue; }
-        softened=nx*nx+ny*ny+eps2;
-        f=-s.mu/(softened*Math.sqrt(softened));
-        s.vx[i]+=half*f*nx;s.vy[i]+=half*f*ny;
-        r=Math.sqrt(nx*nx+ny*ny);g=1-smooth(c.radius[0]*s.rh,c.radius[1]*s.rh,r);
-        gamma=o.drag === false ? 0 : c.gamma*g;
-        if (gamma !== 0 || nu !== 0) damp(s,i,half,gamma,nu);
-        if (o.drag !== false) s.captureExposure[i]+=dt*g;
-        var e=energy(s,i), radial=(nx*s.vx[i]+ny*s.vy[i])/r;
-        if (s.radiusAtCapture[i] === 0 && o.torque !== false) {
-            var h=nx*s.vy[i]-ny*s.vx[i];
-            var ecc=Math.sqrt(Math.max(0,1+2*e*h*h/(s.mu*s.mu)));
-            var vc=Math.sqrt(s.mu*r*r/(softened*Math.sqrt(softened)));
-            if (g>0 && e<0 && ecc<0.2 && Math.abs(radial)<0.18*vc) {
-                if (s.circularSince[i]<0) s.circularSince[i]=s.clock;
-                if (s.clock+dt-s.circularSince[i]>=3) {
-                    s.radiusAtCapture[i]=r;s.captureTime[i]=s.clock+dt;
-                    s.spiralRate[i]=Math.max(0,Math.log(r/s.rh)/(2*s.spiralSec[i]));
-                    ++s.counters.captures;
+        var h=dt/count, half=h/2, t=clock, dead=false;
+        for (var m=0;m<count;++m) {
+            var r2=x*x+y*y, g=0, r=0;
+            if (r2<outer2) { r=Math.sqrt(r2); g=1-smooth(inner,outer,r); }
+            var gamma=doDrag ? drag*g : 0;
+            var nu=doTorque ? RATE[i]*smooth(0,3,t-CTIME[i]) : 0;
+            if (gamma !== 0 || nu !== 0) {
+                if (r === 0) r=Math.sqrt(r2);
+                if (r > 0) {
+                    var ex=x/r, ey=y/r, vr=vx*ex+vy*ey, vt=-vx*ey+vy*ex;
+                    vr*=Math.exp(-gamma*half); vt*=Math.exp(-nu*half);
+                    vx=vr*ex-vt*ey; vy=vr*ey+vt*ex;
                 }
-            } else s.circularSince[i]=-1;
+            }
+            var softened=r2+eps2;
+            var f=-mu/(softened*Math.sqrt(softened));
+            vx+=half*f*x; vy+=half*f*y;
+            var nx=x+h*vx, ny=y+h*vy;
+            if (ENTRY[i]<0) {
+                var entry=viewportEntry(cx+x,cy+y,cx+nx,cy+ny,width,height);
+                if (entry>=0) ENTRY[i]=t+h*entry;
+            }
+            X[i]=cx+nx; Y[i]=cy+ny; AGE[i]+=h;
+            if (doDeaths && swept(x,y,nx,ny,rh)) { VX[i]=vx; VY[i]=vy; kill(s,i,'absorbed'); dead=true; break; }
+            var nr2=nx*nx+ny*ny;
+            softened=nr2+eps2;
+            f=-mu/(softened*Math.sqrt(softened));
+            vx+=half*f*nx; vy+=half*f*ny;
+            g=0; r=0;
+            if (nr2<outer2) { r=Math.sqrt(nr2); g=1-smooth(inner,outer,r); }
+            gamma=doDrag ? drag*g : 0;
+            if (gamma !== 0 || nu !== 0) {
+                if (r === 0) r=Math.sqrt(nr2);
+                if (r > 0) {
+                    var ex2=nx/r, ey2=ny/r, vr2=vx*ex2+vy*ey2, vt2=-vx*ey2+vy*ex2;
+                    vr2*=Math.exp(-gamma*half); vt2*=Math.exp(-nu*half);
+                    vx=vr2*ex2-vt2*ey2; vy=vr2*ey2+vt2*ex2;
+                }
+            }
+            if (doDrag && g !== 0) EXPOSURE[i]+=h*g;
+            // Circularisation can only happen inside the capture region, so the
+            // eccentricity and circular-speed roots stay off the common path.
+            if (g>0 && RCAP[i] === 0 && doTorque) {
+                var e=0.5*(vx*vx+vy*vy)-mu/Math.sqrt(softened);
+                var hh=nx*vy-ny*vx;
+                var ecc=Math.sqrt(Math.max(0,1+2*e*hh*hh/(mu*mu)));
+                var vc=Math.sqrt(mu*nr2/(softened*Math.sqrt(softened)));
+                if (e<0 && ecc<0.2 && Math.abs((nx*vx+ny*vy)/r)<0.18*vc) {
+                    if (SINCE[i]<0) SINCE[i]=t;
+                    if (t+h-SINCE[i]>=3) {
+                        RCAP[i]=r; CTIME[i]=t+h;
+                        RATE[i]=Math.max(0,Math.log(r/rh)/(2*SPIRAL[i]));
+                        ++s.counters.captures;
+                    }
+                } else SINCE[i]=-1;
+            } else if (RCAP[i] === 0 && doTorque) SINCE[i]=-1;
+            x=nx; y=ny; t+=h;
+            if (doDeaths) {
+                if (AGE[i]>=LIFE[i]) { VX[i]=vx; VY[i]=vy; kill(s,i,'safety'); dead=true; break; }
+                // The cheap rectangle test gates the energy root, not the reverse.
+                var px=cx+nx, py=cy+ny;
+                if ((px<-pad || px>width+pad || py<-pad || py>height+pad)
+                    && (nx*vx+ny*vy)>0
+                    && 0.5*(vx*vx+vy*vy)-mu/Math.sqrt(softened)>=0) {
+                    VX[i]=vx; VY[i]=vy; kill(s,i,'escapes'); dead=true; break;
+                }
+            }
         }
-        if (o.deaths !== false) {
-            if (s.age[i]>=s.safetyLife[i]) kill(s,i,'safety');
-            else if (e>=0 && radial>0 && (s.x[i]<-s.padding || s.x[i]>s.width+s.padding || s.y[i]<-s.padding || s.y[i]>s.height+s.padding)) kill(s,i,'escapes');
-        }
+        if (dead) continue;
+        VX[i]=vx; VY[i]=vy;
+        live[write++]=i;
     }
+    s.liveCount=write;
     s.clock+=dt;++s.counters.steps;
 }
 function replenish(s, dt, callback) {
@@ -252,10 +326,15 @@ function advance(s, dt, radialSpeed, filteredFlow, centreX, centreY, rotationSig
     if (!(radialSpeed>0) || !isFinite(radialSpeed) || !(dt>=0) || !isFinite(dt)) return 0;
     // Match the existing v3 public speed domain before squaring the reactive gain.
     var k=Math.min(radialSpeed,BOUNDS.radialSpeed[1])/6*(0.8+0.4*number(filteredFlow,0.5,0,1));
-    var muTarget=s.muBase*k*k, nominal=1/(30*s.config.substeps);
+    var subs=s.config.substeps;
+    var muTarget=s.muBase*k*k, nominal=1/30;
     if (!isFinite(muTarget) || muTarget<0 || !isFinite(s.mu) || s.mu<0) return 0;
-    // 0.029 provides strict headroom under the specified 0.03 stability limit.
-    var fixed=Math.min(nominal,0.029/Math.sqrt(Math.max(s.mu,muTarget)/Math.pow(s.rh,3)));
+    // The outer step is the publish interval; the inner subdivision is chosen
+    // per particle. 0.029 provides strict headroom under the specified 0.03
+    // stability limit, and the outer step is still capped so that even the
+    // finest subdivision satisfies it at the innermost surviving radius.
+    var finest=0.029/Math.sqrt(Math.max(s.mu,muTarget)/Math.pow(s.rh,3));
+    var fixed=Math.min(nominal,finest*subs);
     var accumulator=s.accumulator+dt;
     if (!(fixed>0) || !isFinite(fixed) || !isFinite(accumulator)) return 0;
     s.k=k;s.muTarget=muTarget;
@@ -264,9 +343,18 @@ function advance(s, dt, radialSpeed, filteredFlow, centreX, centreY, rotationSig
     s.rotationSign=rotationSign<0 ? -1 : 1;
     s.accumulator=accumulator;
     var count=0;
+    // Squared radii where one, two, three or four inner steps satisfy
+    // fixed/j * sqrt(mu/r^3) < 0.0145 (half the stability limit). Recomputed
+    // per call because mu tracks the reactive target.
+    var options=s.stepOptions || (s.stepOptions={limits:[0,0,0],substeps:subs});
+    var base=Math.pow(Math.max(s.mu,muTarget)*fixed*fixed/(0.0145*0.0145),1/3);
+    options.substeps=subs;
+    options.limits[0]=base*base;
+    options.limits[1]=Math.pow(base/Math.pow(2,2/3),2);
+    options.limits[2]=Math.pow(base/Math.pow(3,2/3),2);
     while (s.accumulator>=fixed*(1-1e-10)) {
         s.mu+=(s.muTarget-s.mu)*(1-Math.exp(-fixed/60));
-        step(s,fixed);replenish(s,fixed,birthCallback || s.birthCallback);
+        step(s,fixed,options);replenish(s,fixed,birthCallback || s.birthCallback);
         s.accumulator=Math.max(0,s.accumulator-fixed);++count;
     }
     return count;

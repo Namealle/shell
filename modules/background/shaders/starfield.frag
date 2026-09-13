@@ -630,10 +630,13 @@ vec3 particleHit(vec2 pixel, float index, float absorb) {
     vec2 p = vec2(g0.r+256.0*g0.g,g0.b+256.0*g1.r)/65535.0;
     p = ubuf.particleDomain.xy+p*ubuf.particleDomain.zw;
     vec2 d = pixel-p;
-    float support = g1.g*0.25;
+    float support = g1.g*0.5;
     if (dot(d,d)>=support*support) return vec3(0.0);
     vec3 v0 = particleTexel(base+2.0), v1 = particleTexel(base+3.0);
     vec3 light = particleTexel(base+4.0), optical = particleTexel(base+6.0);
+    // kind 0..6 in the low three bits, bit 3 = four-point flare, bit 4 = near.
+    float flags = particleTexel(base+5.0).r;
+    float flared = step(8.0,mod(flags,16.0)), nearLayer = step(16.0,flags);
     vec2 velocity = vec2(v0.r+256.0*v0.g,v0.b+256.0*v1.r)*(65536.0/65535.0)-32768.0;
     float speed = length(velocity);
     vec2 direction = speed>0.01 ? velocity/speed : vec2(1.0,0.0);
@@ -644,13 +647,36 @@ vec3 particleHit(vec2 pixel, float index, float absorb) {
     float majorVariance = minorVariance+streak*streak/12.0;
     vec2 q = vec2(dot(d,direction),dot(d,vec2(-direction.y,direction.x)));
     float distance = q.x*q.x/majorVariance+q.y*q.y/minorVariance;
-    if (distance>=12.25) return vec3(0.0);
-    float kernel = exp2(-0.7213475204*distance)*(1.0-smoothstep(9.0,12.25,distance));
-    kernel /= 6.28318530718*sqrt(minorVariance*majorVariance);
     float energy = (light.g+256.0*light.b)*(4.0/65535.0);
+    float value = 0.0;
+    if (distance<12.25) {
+        float kernel = exp2(-0.7213475204*distance)*(1.0-smoothstep(9.0,12.25,distance));
+        // Near particles use v3's saturating near-star core: a hot point that
+        // approaches white instead of an energy-normalized bump that cannot.
+        // Middle particles keep the normalized kernel, so a streak spreads its
+        // light rather than gaining brightness.
+        value = nearLayer>0.5
+            ? 1.0-exp2(-1.442695041*energy*kernel)
+            : energy*kernel/(6.28318530718*sqrt(minorVariance*majorVariance));
+    }
+    if (flared>0.5) {
+        // v3's four-point cross, in particle space. Spikes taper to zero at
+        // PARTICLE_FLARE_SPAN core radii; particles/Appearance.js sizes the bin
+        // support from the same constants.
+        float optics = min(core,4.8)*0.55;
+        vec2 a = abs(d)/optics;
+        vec2 taper = max(vec2(0.0),1.0-a/22.0);
+        taper *= taper;
+        vec2 thin = exp2(-a*a/0.38), skirt = exp2(-a*a/2.0);
+        float cross = dot(thin,taper.yx)*0.48+dot(skirt,taper.yx)*0.10;
+        float glowR2 = dot(a,a);
+        float glow = 0.10*exp2(-glowR2/12.0)+0.030*exp2(-glowR2/125.0);
+        value += (cross+glow)*0.55*clamp(energy/3.0,0.0,1.0);
+    }
+    if (value<=0.0) return vec3(0.0);
     float captured = particleTexel(base+7.0).b/255.0;
     vec3 rgb = decodeDisplay(vec3(v1.g,v1.b,light.r)/255.0);
-    return rgb*energy*kernel*(1.0-captured*absorb);
+    return rgb*value*(1.0-captured*absorb);
 }
 vec3 particlePage(vec2 pixel, vec3 header, float absorb) {
     float offset = particleOffset(header), count = mod(header.b,64.0);

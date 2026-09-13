@@ -54,9 +54,16 @@ which the service may send instead if it prefers not to know preset names:
  "photon": {"mode": "shared-field", "widthPx": 0.6, "gain": 1.35, "textureStrength": 0.8}}}
 ```
 
-A preset only provides binding fallbacks: assigning size/tilt/disk/photon from
-JSON replaces that binding and the preset stops affecting it. An explicit
-`disk` object REPLACES the preset's object; the two are never merged.
+`disk`/`photon` are LAYERED: the preset sits beneath whatever object is
+assigned, and explicit keys win key by key, one nested level deep. Assigning
+`disk = {}` therefore cannot erase the preset (a consumer doing exactly that
+every frame is what produced the 2026-09-12 live regression).
+The FLAT properties (size, tilt, intensity, haloUpper, haloLower, diskOuterRs,
+diskCap, photonCap, footprintCap) are preset-aware BINDINGS instead: a consumer
+that assigns them unconditionally replaces the binding and the preset can no
+longer reach them. Bind them as
+`x: cfg.x !== undefined ? cfg.x : pick("x", <default>)`, never as
+`x: cfg.x !== undefined ? cfg.x : <default>`.
 Measured 2880x1800: peak .5302 linear (sRGB 193/255), disk mean .1037, q99 .4929,
 footprint 9.82% (3440x1440: peak .5285, mean .1038, footprint 6.58%);
 default preset renders bit-identically to the pre-Phase-2 shader.

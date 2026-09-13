@@ -26,14 +26,20 @@ function layout(previous, bins, count, minHeight) {
 // sampled texture is allocated once and never resized. A single resize of the
 // sampled texture cost 13 ms -> 6700 ms per frame of scene-graph submission on
 // llvmpipe, and it did not recover; a pre-sized texture never pays it.
-function capacity(bins, maxItems, maxSupport) {
+function capacity(bins, maxItems, maxSupport, maxFlares, flareSupport) {
     var perAxis = Math.floor(2 * maxSupport / 32) + 2;
     var references = maxItems * perAxis * perAxis;
+    if (maxFlares > 0) {
+        // render() caps the flared instances, so their much larger footprint is
+        // a bounded addition rather than a ceiling on every instance.
+        var flareAxis = Math.floor(2 * flareSupport / 32) + 2;
+        references += maxFlares * (flareAxis * flareAxis - perAxis * perAxis);
+    }
     var needed = 4 + bins.nx * bins.ny + references + Math.ceil(references / 16) + 8 * maxItems + 1;
     return Math.max(16, Math.ceil(needed / (256 * 16)) * 16);
 }
 function pack(previous, bins, items, meta, allocate) {
-    var out = layout(previous, bins, items.length, meta.minHeight);
+    var out = layout(previous, bins, items.count, meta.minHeight);
     var length = out.width * out.height * 4;
     var fresh = !previous || !previous.bytes || previous.bytes.length !== length;
     var bytes = fresh ? (allocate ? allocate(out.width, out.height) : new Uint8ClampedArray(length)) : previous.bytes;
@@ -54,11 +60,29 @@ function pack(previous, bins, items, meta, allocate) {
     number24(1, out.revision);
     number24(2, Math.floor(((meta.clock % 86400) + 86400) % 86400 * 128));
     rgb(3, 17, 129, 253); // detects channel swaps / color conversion.
+    // Clear only the headers this buffer wrote last time. Sweeping all of them
+    // costs three byte writes per bin per frame on a grid that is mostly empty.
+    var occupied = previous && previous.occupied && !fresh ? previous.occupied : null;
+    var counts = bins.counts, binCount = counts.length, headersBase = out.headersBase;
+    if (occupied) {
+        for (var q = 0; q < occupied.length; ++q) {
+            var j0 = (headersBase + occupied[q]) * 4;
+            bytes[j0] = 0; bytes[j0 + 1] = 0; bytes[j0 + 2] = 0;
+        }
+    } else {
+        for (var b0 = 0; b0 < binCount; ++b0) {
+            var j1 = (headersBase + b0) * 4;
+            bytes[j1] = 0; bytes[j1 + 1] = 0; bytes[j1 + 2] = 0;
+        }
+    }
+    var written = previous && previous.occupied ? previous.occupied : [];
+    var writtenCount = 0;
     var used = 0;
-    for (var bin = 0; bin < bins.counts.length; ++bin) {
-        var remaining = bins.counts[bin], cursor = bins.offsets[bin];
-        var target = out.headersBase + bin;
-        if (!remaining) { rgb(target, 0, 0, 0); continue; }
+    for (var bin = 0; bin < binCount; ++bin) {
+        var remaining = counts[bin], cursor = bins.offsets[bin];
+        var target = headersBase + bin;
+        if (!remaining) continue;
+        written[writtenCount++] = bin;
         while (remaining) {
             var take = Math.min(16, remaining);
             header(target, used, take, remaining > take);
@@ -70,24 +94,51 @@ function pack(previous, bins, items, meta, allocate) {
             if (remaining) target = out.listBase + used++;
         }
     }
-    var domain = out.domain;
-    for (var i = 0; i < items.length; ++i) {
-        var p = items[i], base = out.dataBase + 8 * i;
-        var x = word((p.x - domain[0]) * 65535 / domain[2]);
-        var y = word((p.y - domain[1]) * 65535 / domain[3]);
-        var vx = word((p.vx + 32768) * (65535 / 65536));
-        var vy = word((p.vy + 32768) * (65535 / 65536));
-        var lum = word(p.lum * (65535 / 4));
-        var phase = word((((p.phase % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) * (65535 / (2 * Math.PI)));
-        var param = word(p.p0 || 0), age = word(p.age * 128);
-        rgb(base, x % 256, Math.floor(x / 256), y % 256);
-        rgb(base + 1, Math.floor(y / 256), Math.ceil(clamp(p.support, 0, 40) * 4), Math.round(clamp(p.core, 0.25, 12) * 16));
-        rgb(base + 2, vx % 256, Math.floor(vx / 256), vy % 256);
-        rgb(base + 3, Math.floor(vy / 256), Math.round(clamp(p.r, 0, 1) * 255), Math.round(clamp(p.g, 0, 1) * 255));
-        rgb(base + 4, Math.round(clamp(p.b, 0, 1) * 255), lum % 256, Math.floor(lum / 256));
-        rgb(base + 5, p.kind, phase % 256, Math.floor(phase / 256));
-        rgb(base + 6, param % 256, Math.floor(param / 256), Math.round(clamp(p.streak, 0, 32) * (255 / 32)));
-        rgb(base + 7, age % 256, Math.floor(age / 256), Math.round(clamp(p.captured, 0, 1) * 255));
+    out.occupied = written;
+    written.length = writtenCount;
+    // The instance loop is the hot one: byte offsets are computed once per texel
+    // and written directly instead of through a closure.
+    // Flat render instances (particles/Appearance.js): stride 18, field order
+    // x y vx vy core support streak r g b lum flags phase p0 age captured id gen.
+    var domain = out.domain, dx = domain[0], dy = domain[1];
+    var sx = 65535 / domain[2], sy = 65535 / domain[3];
+    var src = items.data, stride = items.stride;
+    var count = items.count, j = out.dataBase * 4;
+    for (var i = 0, f = 0; i < count; ++i, j += 32, f += stride) {
+        // word()/clamp() inlined: seven calls per instance per frame is real cost.
+        var x = (src[f] - dx) * sx; x = x > 65535 ? 65535 : (x > 0 ? (x + 0.5) | 0 : 0);
+        var y = (src[f + 1] - dy) * sy; y = y > 65535 ? 65535 : (y > 0 ? (y + 0.5) | 0 : 0);
+        var vx = (src[f + 2] + 32768) * (65535 / 65536); vx = vx > 65535 ? 65535 : (vx > 0 ? (vx + 0.5) | 0 : 0);
+        var vy = (src[f + 3] + 32768) * (65535 / 65536); vy = vy > 65535 ? 65535 : (vy > 0 ? (vy + 0.5) | 0 : 0);
+        var lum = src[f + 10] * (65535 / 4); lum = lum > 65535 ? 65535 : (lum > 0 ? (lum + 0.5) | 0 : 0);
+        var raw = src[f + 12] % 6.283185307179586;
+        var phase = (raw < 0 ? raw + 6.283185307179586 : raw) * (65535 / 6.283185307179586);
+        phase = phase > 65535 ? 65535 : (phase > 0 ? (phase + 0.5) | 0 : 0);
+        var param = src[f + 13]; param = param > 65535 ? 65535 : (param > 0 ? (param + 0.5) | 0 : 0);
+        var age = src[f + 14] * 128; age = age > 65535 ? 65535 : (age > 0 ? (age + 0.5) | 0 : 0);
+        var core = src[f + 4], support = src[f + 5], streak = src[f + 6], captured = src[f + 15];
+        var xh = (x / 256) | 0, yh = (y / 256) | 0, vxh = (vx / 256) | 0, vyh = (vy / 256) | 0;
+        bytes[j] = x - xh * 256; bytes[j + 1] = xh; bytes[j + 2] = y - yh * 256;
+        bytes[j + 4] = yh;
+        bytes[j + 5] = Math.ceil((support > 127.5 ? 127.5 : (support > 0 ? support : 0)) * 2);
+        bytes[j + 6] = ((core > 12 ? 12 : (core > 0.25 ? core : 0.25)) * 16 + 0.5) | 0;
+        bytes[j + 8] = vx - vxh * 256; bytes[j + 9] = vxh; bytes[j + 10] = vy - vyh * 256;
+        bytes[j + 12] = vyh;
+        var cr = src[f + 7], cg = src[f + 8];
+        bytes[j + 13] = ((cr > 1 ? 1 : (cr > 0 ? cr : 0)) * 255 + 0.5) | 0;
+        bytes[j + 14] = ((cg > 1 ? 1 : (cg > 0 ? cg : 0)) * 255 + 0.5) | 0;
+        var cb = src[f + 9];
+        bytes[j + 16] = ((cb > 1 ? 1 : (cb > 0 ? cb : 0)) * 255 + 0.5) | 0;
+        var lumh = (lum / 256) | 0;
+        bytes[j + 17] = lum - lumh * 256; bytes[j + 18] = lumh;
+        // kind 0..6 in the low three bits, bit 3 = four-point flare, bit 4 = near
+        var phaseh = (phase / 256) | 0, paramh = (param / 256) | 0, ageh = (age / 256) | 0;
+        bytes[j + 20] = src[f + 11];
+        bytes[j + 21] = phase - phaseh * 256; bytes[j + 22] = phaseh;
+        bytes[j + 24] = param - paramh * 256; bytes[j + 25] = paramh;
+        bytes[j + 26] = ((streak > 32 ? 32 : (streak > 0 ? streak : 0)) * (255 / 32) + 0.5) | 0;
+        bytes[j + 28] = age - ageh * 256; bytes[j + 29] = ageh;
+        bytes[j + 30] = ((captured > 1 ? 1 : (captured > 0 ? captured : 0)) * 255 + 0.5) | 0;
     }
     rgb(out.texelsUsed - 1, 251, 127, 19);
     return out;
