@@ -205,7 +205,12 @@ Bounds: `everyMinutes` 1–1440, `durationSec` 60–1800 (a crossing that reache
 0.15–1.2, `gain` 0–0.35, `dustOpacity` 0–0.9, `stars` 0–3 (the renderer rounds), `starGain` 0–0.8, `paletteMix` 0–0.45, `driftScale` 0.05–2. Measured through the shipped
 kernel offscreen (`tools/nebula_sheet.py`, llvmpipe, the real noise texture, his palette): q99 0.21–0.30 linear at the shipped gain, q999 0.34, peak 229/255 in the star
 cores alone, extent 45–68 % of the short side on the tablet and 27–53 % on DP-3, mean dust opacity 0.15–0.27. `tools/nebula_harness.qml` drives the real QML headlessly
-through a passage in both regimes.
+through a passage in both regimes. LIVE on his tablet (2880x1800, `caelestia shell starfield fire nebula tablet`, `grim -o tablet` every 5 s): a camera passage takes
+the lit pixels (>= 8/255) from a 25 836 px sky to 553 246 px at peak — 10.7 % of the buffer against 0.5 %, a 21x rise — over 24 captured frames that rise and fall
+without a step, and an infall passage adds up to 50 % on top of a sky that already has the hole in it. `qs` CPU and `nvidia-smi` over 30 s during a passage: GPU 4 %
+in the camera regime and 6 % with the hole on, against v8's documented 2 % and 3 % — measured with two other agents running heavy offscreen renders on the same box,
+so treat it as an upper bound rather than a number. Captures: `starfield-v2/evidence/v9-nebula-live-tablet-{camera,holeon}.png`, the `-sheet.png` contact sheets and
+`v9-nebula-live-tablet-camera-trails.png`, a 51-frame maximum composite in which the embedded stars trace the cloud's own track across the sky.
 
 **A comet is style 5 (`cometField`), not a wider meteor.** v6 drew it as one Gaussian polyline behind the nucleus: measured on DP-3, a slow comet peaked at 116/255 with
 2566 lit pixels — the same shape as a meteor, only slower (his report, ledger 2283). It is now a nucleus inside a two-stage coma, a straight narrow bluish **ion tail**
