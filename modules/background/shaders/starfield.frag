@@ -72,6 +72,19 @@ layout(std140, binding = 0) uniform buf {
     float particleMu;
     // Microlensing flux ceiling (phenomena.microlensing). 1 disables it.
     float lensFlux;
+    // Phenomenon slots 3-4: long, faint, low-gain radial events only, so they
+    // carry five vectors rather than a transient slot's seven. Neither class
+    // spills into the other. 160 B, against 224 B for two full slots.
+    vec4 event3Head;
+    vec4 event3Colour;
+    vec4 event3Tail01;
+    vec4 event3Shape;
+    vec4 event3Bounds;
+    vec4 event4Head;
+    vec4 event4Colour;
+    vec4 event4Tail01;
+    vec4 event4Shape;
+    vec4 event4Bounds;
 #define BH_UNIFORMS
 #include "blackhole.glsl"
 #undef BH_UNIFORMS
@@ -632,8 +645,43 @@ float tailSegment(vec2 pixel, vec2 a, vec2 b, float travelled, vec4 head, vec4 s
     light *= pow(1.0 - u, style > 0.5 ? 1.6 : 2.0);
     return light * (1.0 - smoothstep(0.64 * support * support, support * support, r2));
 }
+// Style 3, radial: core + halo + ring + echo ring. One kernel draws nova,
+// supernova, hypernova, star birth, red giant, a pulsar's point and a light
+// echo; they differ only in the CPU envelope, colour, size and schedule. Three
+// exp2 and about twenty-five ALU inside the bounds, one compare outside.
+//   head   = (x, y, coreSigmaPx, gain)
+//   shape  = (haloSigmaPx, ringGain, ringWidthPx, ringRadiusPx)
+//   tail01 = (echoRadiusPx, echoGain, haloGain, coreGain)
+// The colour is already resolved and whitened on the CPU, so nothing here
+// re-tints it and a family can be as warm or as neutral as its envelope wants.
+vec3 radialField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 shape, vec4 bounds) {
+    if (head.w <= 0.0 || pixel.x < bounds.x || pixel.y < bounds.y || pixel.x > bounds.z || pixel.y > bounds.w) return vec3(0.0);
+    vec2 p = pixel - head.xy;
+    float r2 = dot(p, p);
+    float sigma2 = head.z * head.z;
+    float variance = sigma2 + 0.0833333;
+    float value = tail01.w * exp2(-0.7213475 * r2 / variance) * sigma2 / variance;
+    if (tail01.z > 0.0 && shape.x > 0.0)
+        value += tail01.z * exp2(-0.7213475 * r2 / (shape.x * shape.x));
+    if (shape.z > 0.0 && (shape.y > 0.0 || tail01.y > 0.0)) {
+        float d = sqrt(r2);
+        if (shape.y > 0.0) {
+            float t = (d - shape.w) / shape.z;
+            value += shape.y * exp2(-1.4426950 * t * t);
+        }
+        // The echo is the same ring further out and twice as soft. It is its
+        // own branch, not nested in the shell's: a light echo outlives the
+        // shell that threw it.
+        if (tail01.y > 0.0) {
+            float e = (d - tail01.x) / (shape.z * 2.0);
+            value += tail01.y * exp2(-1.4426950 * e * e);
+        }
+    }
+    return head.w * max(value, 0.0) * colour.rgb;
+}
 vec3 eventSlot(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec2 tail4, vec4 shape, vec4 bounds) {
     if (head.w <= 0.0 || pixel.x < bounds.x || pixel.y < bounds.y || pixel.x > bounds.z || pixel.y > bounds.w) return vec3(0.0);
+    if (colour.w > 2.5) return radialField(pixel, head, colour, tail01, shape, bounds);
     vec2 p = pixel - head.xy;
     float r2 = dot(p, p);
     float sigma2 = head.z * head.z;
@@ -864,6 +912,8 @@ void legacyMain() {
     vec3 e0 = eventSlot(pixel,ubuf.event0Head,ubuf.event0Colour,ubuf.event0Tail01,ubuf.event0Tail23,ubuf.event0Tail4,ubuf.event0Shape,ubuf.event0Bounds);
     vec3 e1 = eventSlot(pixel,ubuf.event1Head,ubuf.event1Colour,ubuf.event1Tail01,ubuf.event1Tail23,ubuf.event1Tail4,ubuf.event1Shape,ubuf.event1Bounds);
     vec3 e2 = eventSlot(pixel,ubuf.event2Head,ubuf.event2Colour,ubuf.event2Tail01,ubuf.event2Tail23,ubuf.event2Tail4,ubuf.event2Shape,ubuf.event2Bounds);
+    e2 += radialField(pixel,ubuf.event3Head,ubuf.event3Colour,ubuf.event3Tail01,ubuf.event3Shape,ubuf.event3Bounds);
+    e2 += radialField(pixel,ubuf.event4Head,ubuf.event4Colour,ubuf.event4Tail01,ubuf.event4Shape,ubuf.event4Bounds);
     if (hole) {
         vec3 events = decodeDisplay(e0+e1+e2);
         if (max(events.r,max(events.g,events.b))>0.0 && localEnvelope<1.0) {
@@ -913,6 +963,8 @@ void main() {
     vec3 events = eventSlot(pixel,ubuf.event0Head,ubuf.event0Colour,ubuf.event0Tail01,ubuf.event0Tail23,ubuf.event0Tail4,ubuf.event0Shape,ubuf.event0Bounds);
     events += eventSlot(pixel,ubuf.event1Head,ubuf.event1Colour,ubuf.event1Tail01,ubuf.event1Tail23,ubuf.event1Tail4,ubuf.event1Shape,ubuf.event1Bounds);
     events += eventSlot(pixel,ubuf.event2Head,ubuf.event2Colour,ubuf.event2Tail01,ubuf.event2Tail23,ubuf.event2Tail4,ubuf.event2Shape,ubuf.event2Bounds);
+    events += radialField(pixel,ubuf.event3Head,ubuf.event3Colour,ubuf.event3Tail01,ubuf.event3Shape,ubuf.event3Bounds);
+    events += radialField(pixel,ubuf.event4Head,ubuf.event4Colour,ubuf.event4Tail01,ubuf.event4Shape,ubuf.event4Bounds);
     vec3 colour = encodeDisplay(linearColour+decodeDisplay(events));
     float dither = fract(52.9829189*fract(dot(floor(pixel),vec2(0.06711056,0.00583715))))-0.5;
     float lit = step(1.0/255.0,max(colour.r,max(colour.g,colour.b)));

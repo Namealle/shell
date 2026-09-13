@@ -171,12 +171,17 @@ Item {
             paddingEpoch: -1,
             bucket: 0,
             travel: [0, 0],
-            events: [null, null, null, null, null],
-            eventIds: [0, 0, 0, 0, 0],
+            // 0-4 transient (meteors, comet, satellites, shower, slowWanderer);
+            // 5-9 radial phenomena (star birth, nova, red giant, supernova,
+            // pulsar). The two classes never share a slot in either direction.
+            events: [null, null, null, null, null, null, null, null, null, null],
+            eventIds: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             familyLast: {},
             moodClock: Date.now() / 1000,
             moodCorrection: 0,
             mood: [0, 0, 0, 0],
+            // Which kind owns phenomenon slot 3 and slot 4, or null.
+            phenomenonSlots: [null, null],
             historyWrites: 0,
             publications: 0
         };
@@ -518,15 +523,26 @@ Item {
         };
     }
 
+    // Kinds 5-9 are the radial phenomena; their names are the JSON family keys.
+    readonly property var radialNames: ["starBirth", "nova", "redGiant", "supernova", "pulsar"]
+
     function eventConfig(kind: int): var {
         const config = eventFamilies || {};
+        if (kind >= 5)
+            return (config.events || config)[radialNames[kind - 5]] || {};
         return kind === 0 ? config.meteors || {} : kind === 1 ? config.comet || {} : kind === 3 ? (config.events || config).shower || {} : kind === 4 ? (config.events || config).slowWanderer || {} : {};
     }
 
     function eventEnabled(kind: int): bool {
         if (kind < 3)
             return kind === 0 ? meteorsEnabled : kind === 1 ? cometEnabled : satellitesEnabled;
-        return eventConfig(kind).enabled !== false;
+        const cfg = eventConfig(kind);
+        if (cfg.enabled !== undefined)
+            return cfg.enabled !== false;
+        // An absent family is its documented default, and the pulsar's is off:
+        // a strictly periodic point is the one item in the catalogue the taste
+        // rules argue against, so it never turns itself on.
+        return kind !== 9;
     }
 
     function familyDefaults(kind: int): var {
@@ -694,8 +710,11 @@ Item {
         }
         // Reserve complete episodes, companions and splits without replacing
         // visible heads. Ordinary arrivals are capped at two; splits may use 3.
+        // Transient heads reserve against each other only. The radial phenomena
+        // in 5-9 are a separate class with its own slots, so a six-minute
+        // remnant can no longer starve a meteor.
         for (let pass = 0; pass < 6; ++pass)
-            for (let k = 0; k < s.events.length; ++k) {
+            for (let k = 0; k < 5; ++k) {
                 const other = s.events[k];
                 if (k !== kind && other && start < other.start + other.duration + other.offset + 1 && start + e.duration + e.offset + 1 > other.start)
                     start = other.start + other.duration + other.offset + 1;
@@ -733,6 +752,328 @@ Item {
             }
         }
         return e;
+    }
+
+    // ---- Radial phenomena (kinds 5-9) -------------------------------------
+    // All five draw through shader style 3 (core + halo + ring + echo ring) and
+    // differ only in envelope, colour, size and schedule. Everything below is
+    // captured once, at schedule time, from the same hash stream the transient
+    // events use, so an edit to the config only reaches the NEXT episode.
+
+    // A phenomenon may not sit where the shader cannot draw it honestly: events
+    // composite after the disk and are not shadow-masked, so one inside the
+    // lensing reach would shine straight through the hole. Rejection, not
+    // clamping, so the distribution outside the exclusion stays uniform.
+    function radialPlacement(index: int, salt: real): var {
+        const w = width * devicePixelRatio, h = height * devicePixelRatio;
+        const shortSide = Math.min(w, h);
+        const margin = 0.05 * shortSide;
+        const centre = [w * 0.5 + shader.centreOffset.x, h * 0.5 + shader.centreOffset.y];
+        const keepOut = 1.6 * (_hole.enabled ? _hole.bhGeometry.y : 0);
+        for (let attempt = 0; attempt < 8; ++attempt) {
+            const x = margin + (w - 2 * margin) * random(index, salt + 40 + attempt * 2);
+            const y = margin + (h - 2 * margin) * random(index, salt + 41 + attempt * 2);
+            if (Math.hypot(x - centre[0], y - centre[1]) >= keepOut)
+                return [x, y];
+        }
+        return null;
+    }
+
+    function captureRadial(kind: int, index: int, start: real): var {
+        const name = radialNames[kind - 5];
+        const cfg = eventConfig(kind);
+        const salt = screenSeed + 5501 + kind * 907;
+        const place = radialPlacement(index, salt);
+        if (!place)
+            return null;
+        const w = width * devicePixelRatio, h = height * devicePixelRatio;
+        const shortSide = Math.min(w, h);
+        const optics = Math.max(1, Math.sqrt(w * h / (1024 * 576)));
+        function sample(key, fallback, lo, hi, offset) {
+            const range = parameterRange(cfg, key, fallback, lo, hi);
+            return range[0] + (range[1] - range[0]) * random(index, salt + offset);
+        }
+        function value(key, fallback, cap) {
+            return clamp(cfg[key] === undefined ? fallback : cfg[key], 0, cap);
+        }
+        // Near-layer optical scale, so a phenomenon is as legible as the
+        // brightest stars rather than as a speck of dust.
+        const core = optics * 0.9;
+        const e = {
+            kind: kind,
+            family: name,
+            index: index,
+            start: start,
+            radial: true,
+            x: place[0],
+            y: place[1],
+            shortSide: shortSide,
+            core: core,
+            colour: [1, 0.96, 0.88],
+            hyper: false
+        };
+        const colors = paletteSnapshot();
+        const mix = clamp(cfg.paletteMix === undefined ? 0.30 : cfg.paletteMix, 0, 0.45);
+        if (colors.length && random(index, salt + 21) < mix) {
+            const weights = normalized(_state.palette, colors.length, null);
+            let draw = random(index, salt + 22), pick = 0;
+            for (; pick < weights.length - 1; ++pick) {
+                draw -= weights[pick];
+                if (draw < 0)
+                    break;
+            }
+            // Kept close to white: these are bright objects, not coloured ones.
+            const c = colors[pick];
+            e.colour = [c[0] + (1 - c[0]) * 0.45, c[1] + (1 - c[1]) * 0.45, c[2] + (1 - c[2]) * 0.45];
+        }
+        if (kind === 5) {
+            e.gain = value("gain", 0.22, 0.22);
+            e.duration = sample("durationSec", [180, 360], 10, 1800, 3);
+            e.condense = Math.min(sample("condenseSec", [40, 90], 0, 600, 5), e.duration * 0.5);
+            // haloPx is a from-to span and MAY descend (18 -> 4 is the default
+            // condensation), so it is read directly rather than through
+            // parameterRange, which sorts its pair.
+            const raw = Array.isArray(cfg.haloPx) && cfg.haloPx.length === 2 && cfg.haloPx.every(x => Number.isFinite(x)) ? cfg.haloPx : [18, 4];
+            e.halo0 = clamp(raw[0], 0.5, 64) * optics * 0.5;
+            e.halo1 = clamp(raw[1], 0.5, 64) * optics * 0.5;
+        } else if (kind === 6) {
+            e.gain = value("gain", 0.45, 0.45);
+            e.rise = Math.max(0.8, sample("riseSec", [1.5, 3], 0, 600, 3));
+            e.hold = sample("holdSec", [0.5, 1.5], 0, 600, 5);
+            e.decay = sample("decaySec", [25, 60], 0, 600, 7);
+            e.duration = e.rise + e.hold + e.decay;
+            e.shell = sample("shellShortSide", [0.02, 0.04], 0, 0.15, 9) * shortSide;
+            e.shellGain = value("shellGain", 0.12, 0.15);
+        } else if (kind === 7) {
+            e.gain = value("gain", 0.28, 0.28);
+            e.duration = sample("durationSec", [240, 480], 10, 1800, 3);
+            e.swell = Math.min(sample("swellSec", [90, 150], 0, 600, 5), e.duration * 0.4);
+            e.collapse = Math.min(sample("collapseSec", [45, 75], 0, 600, 7), e.duration * 0.3);
+            e.nebula = clamp(cfg.nebulaShortSide === undefined ? 0.015 : cfg.nebulaShortSide, 0, 0.15) * shortSide;
+            e.nebulaGain = value("nebulaGain", 0.06, 0.15);
+            e.warm = [1, 0.86, 0.72];
+        } else if (kind === 8) {
+            e.rise = Math.max(0.8, sample("riseSec", [0.8, 1.5], 0, 600, 3));
+            e.hold = sample("holdSec", [0.5, 1.5], 0, 600, 5);
+            e.decay = sample("decaySec", [90, 240], 0, 600, 7);
+            e.remnant = sample("remnantSec", [180, 360], 0, 1800, 9);
+            e.duration = e.rise + e.hold + e.decay + e.remnant;
+            e.shell = sample("shellShortSide", [0.06, 0.11], 0, 0.15, 11) * shortSide;
+            e.shellGain = value("shellGain", 0.10, 0.15);
+            e.echoGain = value("echoGain", 0.04, 0.15);
+            e.echoDelay = sample("echoDelaySec", [60, 120], 0, 600, 13);
+            e.echoScale = 2 + random(index, salt + 15);
+            const share = clamp(cfg.hypernovaShare === undefined ? 0.15 : cfg.hypernovaShare, 0, 1);
+            const cooldown = Math.max(600, Math.min(604800, Number(cfg.hypernovaCooldownSec) || 21600));
+            const last = _state.familyLast.hypernova === undefined ? -1e12 : _state.familyLast.hypernova;
+            e.hyper = random(index, salt + 17) < share && start - last >= cooldown;
+            e.gain = e.hyper ? value("hypernovaGain", 0.78, 0.78) : value("gain", 0.70, 0.70);
+            if (e.hyper)
+                e.peakColour = [0.82, 0.90, 1];
+        } else {
+            e.gain = value("gain", 0.30, 0.30);
+            e.duration = sample("durationSec", [240, 600], 10, 1800, 3);
+            e.period = Math.max(0.8, sample("periodSec", [0.8, 2], 0, 600, 5));
+            e.floor = Math.max(0.5, clamp(cfg.floorFraction === undefined ? 0.60 : cfg.floorFraction, 0, 1));
+            e.edge = Math.max(0.10, clamp(cfg.edgeSec === undefined ? 0.12 : cfg.edgeSec, 0, 600));
+        }
+        return e;
+    }
+
+    // Dramatic families share one cooldown, so the sky never stacks two of them.
+    function dramatic(kind: int): bool {
+        return kind === 8;
+    }
+
+    function scheduleRadial(kind: int): var {
+        const s = _state;
+        if (!eventEnabled(kind))
+            return null;
+        const index = s.eventIds[kind]++;
+        const cfg = eventConfig(kind);
+        const salt = screenSeed + 5501 + kind * 907;
+        let range;
+        if (kind === 8 || kind === 9)
+            range = parameterRange(cfg, "everyHours", kind === 8 ? [1.5, 3] : [2, 4], 0.25, 168).map(x => x * 3600);
+        else
+            range = parameterRange(cfg, "everyMinutes", kind === 5 ? [20, 45] : kind === 6 ? [25, 50] : [45, 90], 1, 1440).map(x => x * 60);
+        const previous = s.events[kind];
+        const base = previous ? previous.start : s.clock;
+        let start = Math.max(s.clock, base + range[0] + (range[1] - range[0]) * random(index, salt));
+        if (dramatic(kind)) {
+            const cooldown = clamp(Number((eventFamilies || {}).dramaCooldownSec) || 4500, 600, 86400);
+            const last = s.familyLast.drama === undefined ? -1e12 : s.familyLast.drama;
+            start = Math.max(start, last + cooldown);
+        }
+        const e = captureRadial(kind, index, start);
+        if (!e)
+            return null;
+        // Phenomena reserve against each other only: the transient heads are a
+        // separate class and must never be pushed around by a six-minute
+        // remnant, which is the whole reason for the split. Reservation allows
+        // exactly `phenomenonCap` to overlap, so the second slot is used but no
+        // episode is ever scheduled into a slot that cannot exist — a
+        // phenomenon that lost a slot mid-life would pop, which is the failure
+        // this whole pass is about.
+        const cap = Math.round(clamp(Number((eventFamilies || {}).phenomenonCap) || 2, 1, 2));
+        for (let pass = 0; pass < 6; ++pass) {
+            const ends = [];
+            for (let k = 5; k < s.events.length; ++k) {
+                const other = s.events[k];
+                if (k !== kind && other && start < other.start + other.duration && start + e.duration > other.start)
+                    ends.push(other.start + other.duration);
+            }
+            if (ends.length < cap)
+                break;
+            start = Math.min(...ends) + 1;
+        }
+        e.start = start;
+        if (dramatic(kind))
+            s.familyLast.drama = start;
+        if (e.hyper)
+            s.familyLast.hypernova = start;
+        return e;
+    }
+
+    // Head, colour, tail01, shape and bounds for shader style 3. `exempt` is
+    // the share of the gain that a supernova flash may spend outside the
+    // combined phenomenon cap; it eases with the flash rather than switching.
+    function radialState(e: var): var {
+        const off = {
+            head: [0, 0, 0, 0],
+            colour: [0, 0, 0, 3],
+            tail01: [0, 0, 0, 0],
+            shape: [0, 0, 0, 0],
+            bounds: [0, 0, 0, 0],
+            exempt: 0
+        };
+        if (!e)
+            return off;
+        const age = _state.clock - e.start;
+        if (age < 0 || age > e.duration)
+            return off;
+        // Every component carries an ABSOLUTE linear gain here and is turned
+        // into a fraction of the slot's peak at the end. A shell that was
+        // scaled by the core's own decay could never outlive it, which is
+        // exactly what a nova shell has to do.
+        let coreAbs = 0, haloAbs = 0, ringAbs = 0, echoAbs = 0;
+        let halo = 0, core = e.core;
+        let ringWidth = 0, ringRadius = 0, echoRadius = 0;
+        let colour = e.colour, exempt = 0;
+        if (e.kind === 5) {
+            // Star birth: a diffuse knot condenses into a core. Nothing in it
+            // is sudden; the entrance and the exit are both tens of seconds.
+            const t = ease(age / Math.max(0.001, e.condense));
+            halo = e.halo0 + (e.halo1 - e.halo0) * t;
+            core = e.core * (0.6 + 0.4 * t);
+            const env = e.gain * ease(age / Math.max(0.001, e.condense)) * ease((e.duration - age) / 60);
+            haloAbs = env * 0.27 * (1 - 0.45 * t);
+            coreAbs = env * 0.72 * t * t;
+        } else if (e.kind === 6) {
+            const flash = e.rise + e.hold;
+            let env;
+            if (age < e.rise)
+                env = e.gain * ease(age / e.rise);
+            else if (age < flash)
+                env = e.gain;
+            else {
+                const d = (age - flash) / Math.max(0.001, e.decay);
+                env = e.gain * Math.exp(-3.2 * d) * ease((1 - d) / 0.18);
+            }
+            coreAbs = env;
+            haloAbs = 0.15 * env;
+            halo = e.core * 3.5;
+            // The shell leaves in the last 60 % of the decay and fades out with
+            // its own radius, so it never ends on a visible edge. Its gain is
+            // its own, so it survives the core it came from.
+            const u = clamp((age - flash - 0.4 * e.decay) / Math.max(0.001, 0.6 * e.decay), 0, 1);
+            if (u > 0 && u < 1) {
+                ringRadius = e.shell * u;
+                ringWidth = Math.max(1.5, e.core * (0.8 + 2.5 * u));
+                ringAbs = e.shellGain * ease(u / 0.2) * (1 - u) * (1 - u);
+            }
+        } else if (e.kind === 7) {
+            // Red giant: swell and warm, hold, collapse, then one half-second
+            // brightening and a planetary-nebula shell.
+            const grow = ease(age / Math.max(0.001, e.swell));
+            const shrink = ease((e.duration - age) / Math.max(0.001, e.collapse));
+            const size = grow * shrink;
+            halo = e.core * (2.5 + 9 * size);
+            colour = [e.colour[0] + (e.warm[0] - e.colour[0]) * size, e.colour[1] + (e.warm[1] - e.colour[1]) * size, e.colour[2] + (e.warm[2] - e.colour[2]) * size];
+            const tail = e.duration - age;
+            // A gentle final flare, eased in and out over a second either side.
+            const flare = tail < e.collapse ? ease((e.collapse - tail) / Math.max(0.001, e.collapse * 0.5)) : 0;
+            const env = e.gain * ease(age / 20) * (0.55 + 0.45 * size) * (1 + 0.35 * flare) * ease(tail / 6);
+            coreAbs = 0.70 * env;
+            haloAbs = 0.30 * size * env;
+            const u = clamp((age - (e.duration - e.collapse)) / Math.max(0.001, e.collapse), 0, 1);
+            if (u > 0) {
+                ringRadius = e.nebula * u;
+                ringWidth = Math.max(1.5, e.core * (1 + 3 * u));
+                ringAbs = e.nebulaGain * ease(u / 0.25) * (1 - u);
+            }
+        } else if (e.kind === 8) {
+            const flash = e.rise + e.hold;
+            let env;
+            if (age < e.rise)
+                env = e.gain * ease(age / e.rise);
+            else if (age < flash)
+                env = e.gain;
+            else {
+                const d = (age - flash) / Math.max(0.001, e.decay + e.remnant);
+                env = e.gain * Math.exp(-4.0 * d) * ease((1 - d) / 0.25);
+            }
+            // The flash exemption eases away over three seconds of the decay,
+            // so the combined phenomenon cap takes hold without a step.
+            exempt = ease((flash + 3 - age) / 3);
+            if (e.hyper && e.peakColour) {
+                const peak = ease((flash + 1.5 - age) / 1.5);
+                colour = [e.colour[0] + (e.peakColour[0] - e.colour[0]) * peak, e.colour[1] + (e.peakColour[1] - e.colour[1]) * peak, e.colour[2] + (e.peakColour[2] - e.colour[2]) * peak];
+            }
+            coreAbs = env;
+            haloAbs = 0.18 * env;
+            halo = e.core * 4;
+            const span = e.decay + e.remnant;
+            const u = clamp((age - flash) / Math.max(0.001, span), 0, 1);
+            if (u > 0) {
+                ringRadius = e.shell * Math.pow(u, 0.55);
+                // The ring widens as it fades, which is what makes it read as
+                // dissipating rather than simply going away.
+                ringWidth = Math.max(2, e.core * (1 + 9 * u));
+                ringAbs = e.shellGain * ease(u / 0.08) * (1 - u) * (1 - u);
+                const delayed = (age - flash - e.echoDelay) / Math.max(0.001, span - e.echoDelay);
+                if (delayed > 0 && delayed < 1) {
+                    echoRadius = ringRadius * e.echoScale;
+                    echoAbs = e.echoGain * ease(delayed / 0.15) * (1 - delayed);
+                }
+            }
+        } else {
+            // Pulsar: a raised cosine with guaranteed edges and a trough that
+            // never drops below floorFraction of the peak. It modulates.
+            const phase = modulo(age, e.period) / e.period;
+            const duty = 0.5 - 0.5 * Math.cos(2 * Math.PI * phase);
+            const soft = Math.min(1, e.edge * 4 / e.period);
+            const shaped = duty * (1 - soft) + soft * 0.5;
+            const env = e.gain * (e.floor + (1 - e.floor) * shaped) * ease(age / 8) * ease((e.duration - age) / 8);
+            coreAbs = env;
+            haloAbs = 0.10 * env;
+            halo = e.core * 2.5;
+        }
+        // head.w is the slot's peak value; every component travels as a
+        // fraction of it, so the shader's single multiply reproduces all four
+        // absolute gains and the slot only switches off when all of them are 0.
+        const peak = Math.max(coreAbs + haloAbs, ringAbs + echoAbs);
+        if (peak <= 0.0004)
+            return off;
+        const reach = Math.max(Math.max(ringRadius + 3 * ringWidth, echoRadius + 6 * ringWidth), Math.max(3 * halo, 6 * core));
+        return {
+            head: [e.x, e.y, core, peak],
+            colour: colour.concat(3),
+            tail01: [echoRadius, echoAbs / peak, haloAbs / peak, coreAbs / peak],
+            shape: [halo, ringAbs / peak, ringWidth, ringRadius],
+            bounds: [e.x - reach, e.y - reach, e.x + reach, e.y + reach],
+            exempt: exempt
+        };
     }
 
     // One analytic curve supplies the head AND every tail point. Integration
@@ -822,12 +1163,13 @@ Item {
 
     function publishEvents(): void {
         const s = _state;
-        for (let kind = 0; kind < 5; ++kind) {
+        for (let kind = 0; kind < 10; ++kind) {
             const e = s.events[kind];
+            const radial = kind >= 5;
             if (!eventEnabled(kind) && e && s.clock < e.start)
                 s.events[kind] = null;
-            else if (!e || s.clock > e.start + e.duration + e.offset)
-                s.events[kind] = schedule(kind);
+            else if (!e || s.clock > e.start + e.duration + (radial ? 0 : e.offset))
+                s.events[kind] = radial ? scheduleRadial(kind) : schedule(kind);
         }
         const shower = s.events[3];
         const showerActive = shower && s.clock >= shower.start && s.clock <= shower.start + shower.duration;
@@ -860,6 +1202,68 @@ Item {
             for (const name of ["head", "colour", "tail01", "tail23", "shape", "bounds"]) {
                 const v = slot[name];
                 shader["event" + i + name[0].toUpperCase() + name.slice(1)] = Qt.vector4d(v[0], v[1], v[2], v[3]);
+            }
+        }
+        publishPhenomena();
+    }
+
+    // Slots 3-4. Long, faint, low-gain radial events only; they never spill
+    // into the transient heads and the heads never spill into them.
+    function publishPhenomena(): void {
+        const s = _state;
+        const cap = Math.round(clamp(Number((eventFamilies || {}).phenomenonCap) || 2, 1, 2));
+        // Slot ownership is STICKY. An episode claims a slot only in its first
+        // quarter-second, while its envelope is still at nothing, and keeps it
+        // until it ends. A phenomenon that could take a freed slot halfway
+        // through its life would appear at whatever gain it had reached, which
+        // is the one-frame pop this whole pass exists to remove; instead that
+        // episode simply never draws. Scheduling already keeps at most `cap`
+        // overlapping, so it should not come up.
+        const owner = s.phenomenonSlots;
+        for (let i = 0; i < 2; ++i) {
+            if (owner[i] === null)
+                continue;
+            const held = s.events[owner[i]];
+            if (!held || _state.clock > held.start + held.duration || i >= cap)
+                owner[i] = null;
+        }
+        for (let kind = 5; kind < 10; ++kind) {
+            const e = s.events[kind];
+            if (!e || owner.indexOf(kind) >= 0)
+                continue;
+            const age = s.clock - e.start;
+            if (age < 0 || age > 0.25)
+                continue;
+            for (let i = 0; i < cap; ++i)
+                if (owner[i] === null) {
+                    owner[i] = kind;
+                    break;
+                }
+        }
+        const live = [];
+        for (let i = 0; i < cap; ++i)
+            live.push(owner[i] === null ? null : radialState(s.events[owner[i]]));
+        // Combined peak-gain cap outside a supernova flash. The exemption is an
+        // eased weight, not a test, so the cap takes hold without a step; the
+        // scale itself is continuous in the sum for the same reason.
+        let capped = 0;
+        for (const state of live)
+            if (state)
+                capped += state.head[3] * (1 - state.exempt);
+        const scale = capped > 0.55 ? 0.55 / capped : 1;
+        for (let i = 0; i < 2; ++i) {
+            const state = live[i];
+            const head = state ? [state.head[0], state.head[1], state.head[2], state.head[3] * (state.exempt + (1 - state.exempt) * scale)] : [0, 0, 0, 0];
+            const slot = state || {
+                colour: [0, 0, 0, 3],
+                tail01: [0, 0, 0, 0],
+                shape: [0, 0, 0, 0],
+                bounds: [0, 0, 0, 0]
+            };
+            shader["event" + (i + 3) + "Head"] = Qt.vector4d(head[0], head[1], head[2], head[3]);
+            for (const name of ["colour", "tail01", "shape", "bounds"]) {
+                const v = slot[name];
+                shader["event" + (i + 3) + name[0].toUpperCase() + name.slice(1)] = Qt.vector4d(v[0], v[1], v[2], v[3]);
             }
         }
     }
@@ -1438,6 +1842,17 @@ Item {
         property vector4d event2Tail23: Qt.vector4d(0, 0, 0, 0)
         property vector4d event2Shape: Qt.vector4d(0, 0, 0, 0)
         property vector4d event2Bounds: Qt.vector4d(0, 0, 0, 0)
+        // Phenomenon slots: style 3 only, so five vectors instead of seven.
+        property vector4d event3Head: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event3Colour: Qt.vector4d(0, 0, 0, 3)
+        property vector4d event3Tail01: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event3Shape: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event3Bounds: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event4Head: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event4Colour: Qt.vector4d(0, 0, 0, 3)
+        property vector4d event4Tail01: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event4Shape: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event4Bounds: Qt.vector4d(0, 0, 0, 0)
         property vector2d activeStamp: Qt.vector2d(0, 0)
         property var bhTransfer: root._hole.bhTransfer
         property var bhNoise: root._hole["bhNoise"] || root._hole.bhTransfer
