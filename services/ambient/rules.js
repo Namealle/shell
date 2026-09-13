@@ -268,7 +268,7 @@ var EVENT_SPEC = {
     // One master dial on every interval in the catalogue: 2 is twice as many
     // events, 0.5 half as many, 0 turns scheduled events off entirely.
     rateScale: [1, "num", 0, 4],
-    phenomenonGainCap: [1.35, "num", 0.3, 3]
+    phenomenonGainCap: [1.6, "num", 0.3, 3]
 };
 
 // v8 rates and gains. v6 shipped every phenomenon at a gain below an ordinary
@@ -281,7 +281,7 @@ var EVENT_FAMILY_SPEC = {
         enabled: [true, "bool"],
         everyMinutes: [[8, 16], "minutes"],
         durationSec: [[80, 170], "pair", 10, 1800],
-        gain: [0.45, "num", 0, 0.45],
+        gain: [0.60, "num", 0, 0.60],
         condenseSec: [[25, 55], "pair", 1, 600],
         haloPx: [[40, 9], "span", 0.5, 96],
         paletteMix: [0.30, "num", 0, 0.45]
@@ -338,7 +338,7 @@ var EVENT_FAMILY_SPEC = {
         everyHours: [[0.5, 1.1], "hours"],
         durationSec: [[120, 260], "pair", 10, 1800],
         periodSec: [[0.9, 2.2], "pair", PERIOD_FLOOR, 60],
-        gain: [0.55, "num", 0, 0.55],
+        gain: [0.70, "num", 0, 0.70],
         floorFraction: [0.55, "num", FLOOR_FRACTION, 1],
         edgeSec: [0.14, "num", EDGE_FLOOR, 5]
     },
@@ -464,7 +464,7 @@ function validateEvents(value, warn) {
             enabled: boolean(w.enabled, true),
             everyHours: interval(w.everyHours, [0.75, 2], 0.25, 168),
             durationSec: interval(w.durationSec, [180, 360], 180, 360),
-            gain: number(w.gain, 0.55, 0, 0.55)
+            gain: number(w.gain, 0.75, 0, 0.75)
         }
     };
     var caps = validateFamily(e, EVENT_SPEC, warn, true);

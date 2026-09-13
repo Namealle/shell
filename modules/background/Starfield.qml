@@ -547,7 +547,7 @@ Item {
     // Combined peak linear gain across the phenomenon slots, outside a flash.
     // v6 held this at 0.55, which was below a single near star's 0.95: two
     // phenomena together could not reach the brightness of one ordinary star.
-    readonly property real phenomenonGainCeiling: 1.35
+    readonly property real phenomenonGainCeiling: 1.6
 
     function eventConfig(kind: int): var {
         const config = eventFamilies || {};
@@ -587,11 +587,12 @@ Item {
     }
 
     // coma scale, ion length, ion gain, dust length, dust gain, dust curve,
-    // striation amplitude, dust lag between anti-sunward and anti-velocity.
-    // Lengths multiply the captured `tail`; this table is the whole of what
-    // makes one comet family look unlike another.
+    // striation amplitude, dust lag angle in radians. Lengths multiply the
+    // captured `tail`; this table is the whole of what makes one comet family
+    // look unlike another. A fast comet is a bright blue spike with a stub of
+    // dust; a slow one is a broad curved fan; a bent one is nearly all dust.
     function cometLook(family: string): var {
-        return family === "fast" ? [0.80, 1.15, 0.55, 0.55, 0.24, 0.05, 0.16, 0.20] : family === "slow" ? [1.55, 0.85, 0.30, 1.15, 0.52, 0.20, 0.42, 0.40] : family === "bent" ? [1.20, 0.55, 0.20, 1.30, 0.58, 0.42, 0.58, 0.55] : family === "pulsating" ? [1.35, 0.95, 0.44, 0.95, 0.38, 0.16, 0.30, 0.30] : family === "fragmenting" ? [0.85, 0.70, 0.36, 0.80, 0.34, 0.13, 0.48, 0.28] : [1.10, 0.70, 0.30, 1.05, 0.44, 0.32, 0.36, 0.45];
+        return family === "fast" ? [0.80, 1.25, 0.75, 0.55, 0.26, 0.06, 0.16, 0.13] : family === "slow" ? [1.55, 1.25, 0.48, 1.15, 0.52, 0.20, 0.42, 0.26] : family === "bent" ? [1.20, 0.85, 0.32, 1.30, 0.58, 0.42, 0.58, 0.38] : family === "pulsating" ? [1.35, 1.15, 0.60, 0.95, 0.38, 0.16, 0.30, 0.20] : family === "fragmenting" ? [0.85, 0.90, 0.50, 0.80, 0.34, 0.13, 0.48, 0.18] : [1.10, 0.95, 0.42, 1.05, 0.44, 0.32, 0.36, 0.30];
     }
 
     function chooseFamily(kind: int, index: int, start: real): string {
@@ -627,7 +628,7 @@ Item {
         // kind >= 2: weight, duration low/high, gain cap, tail, bend, travel.
         // The 0.33/0.40 gain caps v6 used put a satellite and a slow wanderer
         // below an ordinary star; 0.55 puts them at one that moves.
-        const d = kind < 2 ? familyDefaults(kind)[family] : [1, kind === 4 ? 180 : 30, kind === 4 ? 360 : 45, 0.55, 0, 0, 0.01, 0.04, 0.85, 1.1];
+        const d = kind < 2 ? familyDefaults(kind)[family] : [1, kind === 4 ? 180 : 30, kind === 4 ? 360 : 45, kind === 4 ? 0.75 : 0.55, 0, 0, 0.01, 0.04, 0.85, 1.1];
         const f = (cfg.families || {})[family] || cfg;
         function sample(key, fallback, lo, hi, offset) {
             const range = parameterRange(f, key, fallback, lo, hi);
@@ -705,14 +706,15 @@ Item {
             const look = cometLook(family);
             event.coma = optics * 2.6 * look[0];
             event.ionLength = event.tail * look[1];
-            event.ionWidth = Math.max(1.2, shortSide * 0.0035 * (0.7 + 0.6 * random(index, salt + 24)));
+            event.ionWidth = Math.max(1.2, shortSide * 0.0030 * (0.7 + 0.6 * random(index, salt + 24)));
             event.ionGain = look[2];
             event.dustLength = event.tail * look[3];
             event.dustWidth = Math.max(2, shortSide * 0.0075 * (0.75 + 0.5 * random(index, salt + 25)));
             event.dustGain = look[4];
             event.curve = look[5];
             event.striae = look[6];
-            event.lag = look[7];
+            event.lagAngle = look[7];
+            event.dustSide = random(index, salt + 28) < 0.5 ? -1 : 1;
             event.comaGain = 0.34 + 0.18 * random(index, salt + 27);
             // Anti-sunward means away from the hole; with no hole, away from
             // the radial centre the whole field already flows out of.
@@ -895,7 +897,7 @@ Item {
             e.colour = [c[0] + (1 - c[0]) * 0.45, c[1] + (1 - c[1]) * 0.45, c[2] + (1 - c[2]) * 0.45];
         }
         if (kind === 5) {
-            e.gain = value("gain", 0.45, 0.45);
+            e.gain = value("gain", 0.60, 0.60);
             e.duration = sample("durationSec", [80, 170], 10, 1800, 3);
             e.condense = Math.min(sample("condenseSec", [25, 55], 0, 600, 5), e.duration * 0.5);
             // haloPx is a from-to span and MAY descend (40 -> 9 is the default
@@ -941,7 +943,7 @@ Item {
         } else if (kind === 9) {
             // A pulsar MODULATES; the validator floors (period >= 0.8 s, trough
             // >= 0.5 of peak, edge >= 0.10 s) make a square blink unreachable.
-            e.gain = value("gain", 0.55, 0.55);
+            e.gain = value("gain", 0.70, 0.70);
             e.duration = sample("durationSec", [120, 260], 10, 1800, 3);
             e.period = Math.max(0.8, sample("periodSec", [0.9, 2.2], 0, 600, 5));
             e.floor = Math.max(0.5, clamp(cfg.floorFraction === undefined ? 0.55 : cfg.floorFraction, 0, 1));
@@ -1375,27 +1377,15 @@ Item {
             ax = 1;
             ay = 0;
         }
-        const back = eventPath(e, Math.max(0, progress - 0.01), branch);
-        let vx = head[0] - back[0], vy = head[1] - back[1];
-        const vlen = Math.hypot(vx, vy);
-        if (vlen > 0.0001) {
-            vx /= vlen;
-            vy /= vlen;
-        } else {
-            vx = -ax;
-            vy = -ay;
-        }
-        let dx = ax * (1 - e.lag) - vx * e.lag, dy = ay * (1 - e.lag) - vy * e.lag;
-        const dlen = Math.hypot(dx, dy);
-        if (dlen > 0.0001) {
-            dx /= dlen;
-            dy /= dlen;
-        } else {
-            dx = ax;
-            dy = ay;
-        }
-        // The dust bends further from the ion tail, on whichever side it lags.
-        const side = ax * dy - ay * dx >= 0 ? 1 : -1;
+        // The dust lags the ion tail by a fixed angle on a birth-frozen side,
+        // the way a real dust tail trails the anti-solar line. BLENDING
+        // anti-sunward with anti-velocity is the wrong model: a comet receding
+        // straight from the light has them antiparallel, the blend collapses
+        // onto the ion tail, and the two tails draw on top of each other.
+        const side = e.dustSide;
+        const turn = side * e.lagAngle;
+        const cos = Math.cos(turn), sin = Math.sin(turn);
+        const dx = ax * cos - ay * sin, dy = ax * sin + ay * cos;
         // An outburst: the coma swells and brightens while the tails do not.
         const breath = e.family === "pulsating" ? 1 + 0.45 * Math.max(0, Math.sin(age * 2 * Math.PI / e.pulsePeriod)) : 1;
         // A fragment carries its own small coma and a short stub of dust.

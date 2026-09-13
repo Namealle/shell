@@ -55,6 +55,7 @@ layout(std140, binding = 0) uniform buf {
     vec2 event2Tail4; vec4 event2Shape; vec4 event2Bounds;
     vec4 event3Head; vec4 event3Colour; vec4 event3Tail01; vec4 event3Shape; vec4 event3Bounds;
     vec4 event4Head; vec4 event4Colour; vec4 event4Tail01; vec4 event4Shape; vec4 event4Bounds;
+    vec4 event5Head; vec4 event5Colour; vec4 event5Tail01; vec4 event5Shape; vec4 event5Bounds;
     float qt_Opacity;
 } ubuf;
 
@@ -75,6 +76,7 @@ void main() {
     events += eventSlot(pixel, ubuf.event2Head, ubuf.event2Colour, ubuf.event2Tail01, ubuf.event2Tail23, ubuf.event2Tail4, ubuf.event2Shape, ubuf.event2Bounds);
     events += radialField(pixel, ubuf.event3Head, ubuf.event3Colour, ubuf.event3Tail01, ubuf.event3Shape, ubuf.event3Bounds);
     events += radialField(pixel, ubuf.event4Head, ubuf.event4Colour, ubuf.event4Tail01, ubuf.event4Shape, ubuf.event4Bounds);
+    events += radialField(pixel, ubuf.event5Head, ubuf.event5Colour, ubuf.event5Tail01, ubuf.event5Shape, ubuf.event5Bounds);
     // main() treats the event sum as display-encoded before adding it to the
     // linear sky, which on a #000000 sky is exactly this.
     fragColor = vec4(clamp(encodeDisplay(decodeDisplay(events)), 0.0, 1.0), 1.0);
@@ -127,8 +129,9 @@ export function families(width, height, configPath) {
         const e = place(h.captureEvent(0, id++, 0, family), w / 2, hh / 2);
         out.push({ name: "meteor-" + family, slot: 0, best: peakFrame(h, e, x => h.eventState(x, 0, false, 3)) });
     }
+    // Off the light source, so the anti-sunward tails are not degenerate.
     for (const family of ["fast", "slow", "bent", "pulsating", "fragmenting", "spiral"]) {
-        const e = place(h.captureEvent(1, id++, 0, family), w / 2, hh / 2);
+        const e = place(h.captureEvent(1, id++, 0, family), w * 0.30, hh * 0.34);
         out.push({ name: "comet-" + family, slot: 0, best: peakFrame(h, e, x => h.eventState(x, 0, false, 3)) });
     }
     {
@@ -138,7 +141,7 @@ export function families(width, height, configPath) {
         out.push({ name: "slowWanderer", slot: 0, best: peakFrame(h, s, x => h.eventState(x, 0, false, 3)) });
     }
     for (let kind = 5; kind <= 11; ++kind) {
-        if (kind >= h.radialNames.length + 5) break;
+        if (kind - 5 >= h.radialNames.length) break;
         const name = h.radialNames[kind - 5];
         let e = null;
         for (let attempt = 0; attempt < 40 && !e; ++attempt) e = h.captureRadial(kind, id + attempt, 0);
