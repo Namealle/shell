@@ -196,6 +196,12 @@ the same toggle: `radialMode` carries the blend in its FRACTION (1 = the inward 
 separate signed per-layer accumulator (`_state.geo`) carries the geometry so the descriptor history is never run backwards — it is the same accumulation as `flow`, bit for
 bit, while the camera is off. The far layer keeps its equal-area grid, so its density stays uniform and its speed law stays 1/r rather than the particles' r/z; `dustFlow`
 3 is what keeps that difference under the threshold of notice. With `particlesEnabled:false` the middle and near layers fall back to the same reversed procedural grid.
+LIVE, on his tablet (2880x1800), ten `grim` frames 0.3 s apart per direction, fitted for the radial magnification between the first and the last (a fly-through IS a
+magnification about the centre, so the correlation peak is the answer): hole on **1.000** (corr 0.99, the field is not scaling at all), camera out **1.075**, camera in
+**0.925** -- within 0.5 % of each other's inverse, which is reverse playback being a real reverse rather than a differently-shaped flow. Cost on the same shell, same
+three outputs, `qs` process CPU over 30 s and `nvidia-smi`: hole on 20.5 % of one core at 3 % GPU, camera 18.4 % at 2 %. The camera regime is CHEAPER live as well as in
+the harness -- no innermost orbit to subdivide for. Captures: `starfield-v2/evidence/v8-live-tablet-camera-{holeon,out,in}.png` and the `-trails.png` composites of all
+ten frames, which is what shows the streaming.
 Black hole: `modules/background/BLACKHOLE.md` owns every default, the taste caps and the shader's own limiters; missing blackHole is disabled.
 Flat bounds: size 0.01–0.2 short sides, tilt 1–35° (the renderer accepts 80, only 35 is silhouette-verified), intensity/warmth/halos 0–1,
 spin 0–2 (pattern speed), inner 3–6 rs, outer max(inner+0.5, 3.5)–12 rs, beam 0–0.2, photonWidth 0.001–0.02 shadow radii,
