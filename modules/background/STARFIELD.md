@@ -362,6 +362,24 @@ recovered: on his 2880x1800 tablet at the shipped 600 stars the atlas goes **112
 whole supernova. The hot loop pays one hoisted boolean while no kick is alive, two adds per particle per frame for the drawn velocity, and one distance test per
 particle per live glow only while a flash is lit.
 
+**v10, LIVE on his tablet (2880x1800, hole OFF, the regime he runs).** `caelestia shell starfield fire supernova tablet ''` and `fire comet tablet ''`, `grim -o tablet`
+every 0.42 s:
+- **The supernova is a star.** The precursor is a real near particle with its own four-point flare: warm orange, swelling and brightening over ten seconds while it
+  travels with the field, going blue-white, then detonating into a cloud of individual fragments. Screen mean over the 80-frame sequence: **0.22 (the star) -> 41.6 (the
+  flash, 5,181,017 of 5,184,000 pixels lit) -> 2.87 and falling** as the shell leaves, and the sky returns to #000000. Captures:
+  `v10-supernova-precursor-tablet.png` (the swell, 3x gain), `v10-supernova-lifecycle-tablet.png` (star -> swell -> collapse -> debris + rim, nine frames),
+  `v10-supernova-flash-tablet.png`, `v10-supernova-debris-trails-tablet.png` (max composite of 28 frames — hundreds of ejecta tracks radiating and decelerating,
+  hot-white through yellow to orange, with the drawn rim running THROUGH them), and the raw sequences `v10-sn-*.png` / `v10-sn2-*.png`.
+- **The comet's tails trail it.** Fired with the camera on, it crossed 977 px in 9.2 s (**106 px/s** against a field at ~23 px/s) moving DOWN-RIGHT with the narrow blue
+  ion tail and the broad warm dust tail both pointing UP-LEFT, the dust lagging and curving off the path. Captures: `v10-comet-tail-tablet.png` (six crops along the
+  pass), `v10-comet-pass-trails-tablet.png`, sequence `v10-cm-*.png`.
+- **Both regimes.** `starfield-hole on`, then both fired again: the remnant's filament web sits in a field streaming into the hole and its debris is drawn out by
+  gravity — `v10-holeon-supernova-comet-trails-tablet.png`, sequence `v10-hole-*.png`. Restored to off.
+- **Cost.** `qs` process CPU, utime+stime over a 12 s window on three outputs: **33.9 % of one core idle, 33.8 % through a detonation and its shell** — no measurable
+  change, against a ~35 % budget. GPU **3-6 % at 22.4-23.7 W** over the same runs (`nvidia-smi`), against an 8 % budget. Debris sizes were cut from
+  `[0.9, 3.1] x optics` to `[0.8, 2.6] x sqrt(optics)` after the first live run: particle sizes are physical pixels and are not optics-scaled, so the full optical
+  factor made the fragments 2.7-9.2 px against a 2.4-4.8 px near star and they read as bubbles.
+
 **HARNESSES.** `tools/supernova_harness.qml` (27 checks) and `tools/comet_harness.qml` (18) load the real `Starfield.qml` with its real pool, fire through `pushEvent`
 and measure the pool, in both regimes. Run them the way the others are run:
 ```

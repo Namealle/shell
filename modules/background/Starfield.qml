@@ -2023,6 +2023,7 @@ Item {
             const cfg = eventConfig(8);
             const index = e.index;
             const optics = Math.max(1, Math.sqrt(w * h / (1024 * 576)));
+            const grain = Math.min(2, Math.sqrt(optics));
             const span = parameterRange(cfg, "debrisCount", [180, 370], 0, 480);
             const count = Math.round(span[0] + (span[1] - span[0]) * random(index, screenSeed + 9311));
             const median = supernovaEjecta(e);
@@ -2033,7 +2034,14 @@ Item {
             // rather than as a ring.
             ParticlePhysics.spawnBurst(P, at[0], at[1], count, [0.35 * mid, 1.65 * mid], {
                 lifeSec: [clamp(0.45 * e.shellSpan, 14, 60), clamp(1.05 * e.shellSpan, 20, 70)],
-                sizePx: [0.9 * optics, 3.1 * optics],
+                // Fragments, not blobs. Particle sizes are physical pixels and
+                // are NOT optics-scaled (nearPx is 2.4-4.8 px on every buffer),
+                // so multiplying by the full optical scale made the debris
+                // three times the size of the stars it was thrown out of --
+                // measured 2.7-9.2 px on the tablet, and it read as bubbles.
+                // sqrt of the optical scale keeps a big buffer's debris legible
+                // without leaving the star range.
+                sizePx: [0.8 * grain, 2.6 * grain],
                 lum: [2.2, 4.4],
                 colour: [1, 0.97, 0.92],
                 endColour: [0.92, 0.20, 0.10],
