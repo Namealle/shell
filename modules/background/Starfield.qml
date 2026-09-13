@@ -1785,9 +1785,6 @@ Item {
         const outward = _cameraOutward > 0.5;
         const sink = nebulaSink();
         const exitU = 0.5 * Math.pow(Math.max(sink, 0.06 * shortSide) / radius, 2);
-        // The entry point is DERIVED from the duration, so the configured
-        // passage length is what a crossing takes rather than a cap on a fixed
-        // speed: at a slower radialSpeed the cloud simply starts nearer.
         const drift = nebulaDriftPerSec();
         // Where a passage begins: just outside the buffer under infall, so it
         // arrives from off-screen; at depth near the centre under the camera,
@@ -1802,7 +1799,9 @@ Item {
         // Sixteen attempts, then whatever the last one was.
         let angle = 0, boundary = 0;
         for (let attempt = 0; attempt < 16; ++attempt) {
-            angle = random(index, salt + 9 + attempt * 2) * 2 * Math.PI;
+            // Well clear of the salts the palette and the stars use below: two
+            // draws from one salt would tie the entry angle to the colour.
+            angle = random(index, salt + 101 + attempt * 2) * 2 * Math.PI;
             boundary = nebulaBoundary(angle);
             if (outward || boundary >= 1.25 * Math.max(sink, 1))
                 break;
