@@ -173,7 +173,11 @@ Measured v7 → v8 at 1:1 on 1440x2560, peak/255 · lit px · lit radius px, aga
 (`starfield-v2/evidence/v8-events-sheet.png`, `v8-events-before-after.png`, rendered offscreen through the real kernels by `tools/events-sheet.mjs`):
 comet-slow 116·2566·86 → 255·29238·383; comet-bent 170·3441·102 → 255·36623·365; satellite 130·**14**·2 → 255·462·15; starBirth 46·216·9 → 131·1936·26;
 nova 125·840·17 → 255·5488·42; redGiant 74·7472·49 → 163·39760·113; supernova 222·1468·22 → 255·15308·70; kilonova and gammaBurst not drawn at all → 255·6676·47 and
-255·12282·178. Worst-case cost, six busy slots (three wide comets and three phenomena) at 3440x1440 on llvmpipe: below this harness's ~0.5 ms measurement floor.
+255·12282·178. Worst-case cost, six busy slots (three wide comets and three phenomena) at 3440x1440 on llvmpipe: below this harness's ~0.5 ms measurement floor — the
+CPU bounds reject nearly every pixel with one compare. Live on his machine, same shell, same three outputs, `qs` process CPU and `nvidia-smi`: v7 18.2–19.3 % of a core
+at 3 % GPU, v8 19.4–20.0 % at 3–4 % — **+1.2 points of one core, no measurable GPU change**, with the third phenomenon slot, the comet kernel and two new families in.
+Live captures on the tablet: `v8-live-tablet-comet.png` (coma, straight ion tail, curved striated dust tail, two meteors with trains, a satellite),
+`v8-live-tablet-redgiant.png`, `v8-live-tablet-nova.png`, `v8-live-tablet-full.png`.
 Black hole: `modules/background/BLACKHOLE.md` owns every default, the taste caps and the shader's own limiters; missing blackHole is disabled.
 Flat bounds: size 0.01–0.2 short sides, tilt 1–35° (the renderer accepts 80, only 35 is silhouette-verified), intensity/warmth/halos 0–1,
 spin 0–2 (pattern speed), inner 3–6 rs, outer max(inner+0.5, 3.5)–12 rs, beam 0–0.2, photonWidth 0.001–0.02 shadow radii,
