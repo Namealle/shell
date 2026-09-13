@@ -44,7 +44,7 @@ function extract(name) {
     return "host[\"" + name + "\"] = function " + args + " " + qml.slice(open, i + 1) + ";";
 }
 
-const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "scheduleRadial", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena"];
+const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "scheduleRadial", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena", "stormValue", "stormTrailAngle", "captureStorm", "stormRate", "stormPhase", "stormRadiant", "stormState", "stormOff", "stormFireballState"];
 
 // Readonly root constants the scheduler reads by bare name, taken from the
 // same source rather than restated here.

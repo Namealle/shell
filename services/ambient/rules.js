@@ -454,11 +454,25 @@ function validateEvents(value, warn) {
     // v4 keys keep their v4 clamping; every v6 key rejects instead.
     var out = {
         headCap: Math.round(number(e.headCap, 3, 1, 3)),
+        // The meteor storm. v8's three keys keep their names, their meaning and
+        // their v4 CLAMPING; only their bounds widened, which can never reject a
+        // file that used to validate. Everything after `gain` is v9: the shape
+        // of the rate hump, the look of a streak, and the fireballs.
         shower: {
             enabled: boolean(s.enabled, true),
-            everyHours: interval(s.everyHours, [0.75, 2], 0.25, 168),
-            durationSec: interval(s.durationSec, [30, 60], 30, 60),
-            gain: number(s.gain, 0.60, 0, 0.60)
+            everyHours: interval(s.everyHours, [0.42, 1], 0.25, 168),
+            durationSec: interval(s.durationSec, [70, 130], 20, 600),
+            gain: number(s.gain, 0.85, 0, 1.2),
+            rampFraction: number(s.rampFraction, 0.32, 0.1, 0.6),
+            peakRate: number(s.peakRate, 4, 0.2, 8),
+            radiantBias: number(s.radiantBias, 0.28, 0, 0.45),
+            paletteMix: number(s.paletteMix, 0.30, 0, 0.45),
+            streakShortSide: interval(s.streakShortSide, [0.10, 0.30], 0, 0.45),
+            headPx: interval(s.headPx, [3, 6], 1, 12),
+            fireballs: interval(s.fireballs, [1, 3], 0, 6),
+            trainSec: interval(s.trainSec, [12, 26], 0, 60),
+            earthgrazerShare: number(s.earthgrazerShare, 0.08, 0, 0.35),
+            fragmentShare: number(s.fragmentShare, 0.06, 0, 0.35)
         },
         slowWanderer: {
             enabled: boolean(w.enabled, true),

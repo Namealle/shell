@@ -92,6 +92,14 @@ layout(std140, binding = 0) uniform buf {
     vec4 event5Tail01;
     vec4 event5Shape;
     vec4 event5Bounds;
+    // METEOR STORM (events.shower), ONE slot for the whole shower. Four vec4,
+    // 64 B, whatever the peak rate is: the kernel generates every streak from
+    // the storm's seed and its PHASE, so several meteors a second cost no more
+    // uniform than one. See meteorStorm() for the layout of each vector.
+    vec4 stormHead;
+    vec4 stormShape;
+    vec4 stormColour;
+    vec4 stormSpan;
 #define BH_UNIFORMS
 #include "blackhole.glsl"
 #undef BH_UNIFORMS
@@ -775,8 +783,154 @@ vec3 radialField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 shape, ve
     }
     return head.w * max(value, 0.0) * colour.rgb;
 }
+// ---- Meteor storm -------------------------------------------------------
+// One integer hash, no transcendental: the angle reject runs once per candidate
+// per pixel and is the whole cost of a storm for the pixels no streak crosses.
+float stormHash(float k, float salt) {
+    float x = fract((k + salt) * 0.1031);
+    x *= x + 33.33;
+    x *= x + x;
+    return fract(x);
+}
+// Style 6, a storm fireball's persistent train. Wider and softer than a
+// meteor's streak, and it does not taper to a point: a train is what is LEFT
+// after the head has gone, so its brightness falls with age (on the CPU) and
+// along its own length, but its width grows.
+float stormTrainSegment(vec2 pixel, vec2 a, vec2 b, float travelled, float total, float width) {
+    vec2 v = b - a;
+    float len = sqrt(dot(v, v));
+    if (len < 0.001) return 0.0;
+    float t = clamp(dot(pixel - a, v) / (len * len), 0.0, 1.0);
+    float u = clamp((travelled + t * len) / max(total, 0.001), 0.0, 1.0);
+    float w = width * (0.55 + 1.4 * u);
+    vec2 delta = pixel - mix(a, b, t);
+    float r2 = dot(delta, delta);
+    float support = width * 9.0;
+    if (r2 >= support * support) return 0.0;
+    return exp2(-1.4426950 * r2 / (w * w)) * (1.0 - 0.55 * u)
+         * (1.0 - smoothstep(0.55 * support * support, support * support, r2));
+}
+// Style 6, a storm fireball: nucleus + terminal flash + a persistent train the
+// CPU drifts and shears for ten to thirty seconds. The train travels as four
+// points in the slot's existing vectors, so it needs no uniform of its own.
+//   head   = (x, y, headSigmaPx, gain)
+//   tail01 = (p0.xy, p1.xy)   p0 is the head end of the train
+//   tail23 = (p2.xy, p3.xy)
+//   tail4  = (trainWidthPx, trainGain)
+//   shape  = (trainLengthPx, flashSigmaPx, nucleusGain, flashGain)
+vec3 stormFireball(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec2 tail4, vec4 shape) {
+    vec2 p = pixel - head.xy;
+    float r2 = dot(p, p);
+    float sigma2 = head.z * head.z;
+    float variance = sigma2 + 0.0833333;
+    float value = shape.z * exp2(-0.7213475 * r2 / variance) * sigma2 / variance;
+    if (shape.w > 0.0 && shape.y > 0.0)
+        value += shape.w * exp2(-0.7213475 * r2 / (shape.y * shape.y));
+    if (tail4.y > 0.0 && shape.x > 0.0) {
+        float train = stormTrainSegment(pixel, tail01.xy, tail01.zw, 0.0, shape.x, tail4.x);
+        float travelled = length(tail01.zw - tail01.xy);
+        train = max(train, stormTrainSegment(pixel, tail01.zw, tail23.xy, travelled, shape.x, tail4.x));
+        travelled += length(tail23.xy - tail01.zw);
+        train = max(train, stormTrainSegment(pixel, tail23.xy, tail23.zw, travelled, shape.x, tail4.x));
+        value += tail4.y * train;
+    }
+    return head.w * max(value, 0.0) * mix(colour.rgb, vec3(1.0), 0.40);
+}
+// The storm itself. Nothing about an ordinary storm streak reaches the CPU:
+// this kernel generates all of them from the storm's seed and its phase.
+//   stormHead   = (radiantX, radiantY, phase, ratePerSec)
+//   stormShape  = (headSigmaPx, trailLoRad, trailHiRad, gain)
+//   stormColour = (tintR, tintG, tintB, paletteMix)
+//   stormSpan   = (window, earthgrazerShare, fragmentShare, seed)
+//
+// PHASE is the storm's cumulative expected meteor count, integrated on the CPU
+// from the rate hump. Streak k launches where phase == k, so k advances at
+// exactly `rate` per second whatever the hump is doing, and a streak's age
+// comes back as (phase - k)/rate. That inversion is EXACT for a constant or a
+// linear rate; under the hump's curvature it stretches a long streak's apparent
+// life by a few per cent, which is smaller than the variety draw sitting next
+// to it. It cannot move the rate, because the rate is phase's derivative.
+//
+// The projection is gnomonic about the radiant: a shower meteor travels a great
+// circle away from it, which projects to a straight RADIAL line, and its
+// apparent length is f*(tan(theta) - tan(theta - trail)). That is the
+// perspective foreshortening for free - a meteor beside the radiant is a point,
+// one sixty degrees away is a long streak - and it is what lets a single angle
+// compare reject a candidate, because every streak lies on a ray from one point.
+vec3 meteorStorm(vec2 pixel) {
+    float gain = ubuf.stormShape.w;
+    if (gain <= 0.0) return vec3(0.0);
+    vec2 rel = pixel - ubuf.stormHead.xy;
+    float d = length(rel);
+    float focal = min(ubuf.resolution.x, ubuf.resolution.y);
+    float phi = atan(rel.y, rel.x);
+    float rate = max(ubuf.stormHead.w, 0.02);
+    float seed = ubuf.stormSpan.w;
+    float base = ubuf.stormShape.x;
+    float support = base * 17.0 + 4.0;
+    float top = floor(ubuf.stormHead.z);
+    float frac = ubuf.stormHead.z - top;
+    int window = int(ubuf.stormSpan.x);
+    vec3 sum = vec3(0.0);
+    for (int j = 0; j < 40; ++j) {
+        if (j >= window) break;
+        float k = top - float(j);
+        float a = stormHash(k, seed) * 6.2831853;
+        float dphi = phi - a;
+        dphi -= 6.2831853 * floor(dphi * 0.1591549 + 0.5);
+        float across = dphi * d;
+        if (abs(across) > support) continue;
+        vec4 h = hash4(vec2(k * 0.017, seed));
+        vec4 g = hash4(vec2(seed + 7.31, k * 0.017));
+        // An earthgrazer is the same streak drawn slowly and far from the
+        // radiant: long, shallow, and alive for seconds instead of one.
+        float grazer = step(h.x, ubuf.stormSpan.y);
+        float omega = mix(0.42 + 0.90 * h.y, 0.09 + 0.11 * h.y, grazer);
+        float life = mix(0.55 + 1.05 * h.z, 2.8 + 2.6 * h.z, grazer);
+        float age = (frac + float(j)) / rate;
+        if (age > life) continue;
+        float theta = min(mix(0.05, 0.95, h.w * h.w) + mix(0.0, 0.35, grazer) + omega * age, 1.35);
+        float dh = focal * tan(theta);
+        float trail = mix(ubuf.stormShape.y, ubuf.stormShape.z, g.x) * mix(1.0, 2.2, grazer);
+        float dt = focal * tan(max(theta - min(trail, omega * age + 0.004), 0.004));
+        if (d < dt - support || d > dh + support) continue;
+        float sigma = base * mix(0.66, 1.33, g.w);
+        // In over six per cent of its life and out over the last twenty-eight:
+        // a streak never appears or vanishes on a frame.
+        float env = smoothstep(0.0, 0.06 * life, age) * smoothstep(0.0, 0.28 * life, life - age);
+        // Cubed uniform: many faint, few bright. This is the distribution, not
+        // a taste dial - a real shower is mostly meteors you almost miss.
+        float bright = (0.16 + 0.84 * g.y * g.y * g.y) * env;
+        float span = max(dh - dt, 1.0);
+        float u = clamp((dh - d) / span, 0.0, 1.0);
+        float w = sigma * (1.0 + 2.4 * u);
+        float over = max(d - dh, 0.0);
+        float body = exp2(-1.4426950 * (across * across + over * over) / (w * w)) * (1.0 - u) * sqrt(1.0 - u);
+        vec2 dir = vec2(cos(a), sin(a));
+        vec2 q = pixel - (ubuf.stormHead.xy + dir * dh);
+        float r2 = dot(q, q);
+        float sigma2 = sigma * sigma;
+        float variance = sigma2 + 0.0833333;
+        float value = 1.45 * exp2(-0.7213475 * r2 / variance) * sigma2 / variance + 0.85 * body;
+        if (g.z < ubuf.stormSpan.z) {
+            // Fragmenting: two siblings separate from the head after the split
+            // and keep flying on their own slightly divergent rays.
+            float split = smoothstep(0.40 * life, 0.95 * life, age);
+            vec2 n = vec2(-dir.y, dir.x) * (split * focal * 0.010);
+            float left = dot(q - n, q - n), right = dot(q + n, q + n);
+            value += 0.60 * split * (exp2(-0.7213475 * left / variance) + exp2(-0.7213475 * right / variance)) * sigma2 / variance;
+        }
+        // Colour by speed: a fast streak is green-teal, a slow one orange, and
+        // the sky's own palette is mixed into both by the same paletteMix the
+        // ordinary meteors use.
+        vec3 tint = mix(vec3(1.0, 0.72, 0.38), vec3(0.50, 1.0, 0.80), smoothstep(0.45, 1.15, omega));
+        sum += value * bright * mix(mix(tint, ubuf.stormColour.rgb, ubuf.stormColour.w), vec3(1.0), 0.45);
+    }
+    return gain * max(sum, vec3(0.0));
+}
 vec3 eventSlot(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec2 tail4, vec4 shape, vec4 bounds) {
     if (head.w <= 0.0 || pixel.x < bounds.x || pixel.y < bounds.y || pixel.x > bounds.z || pixel.y > bounds.w) return vec3(0.0);
+    if (colour.w > 5.5) return stormFireball(pixel, head, colour, tail01, tail23, tail4, shape);
     if (colour.w > 4.5) return cometField(pixel, head, colour, tail01, tail23, tail4, shape);
     if (colour.w > 2.5) return radialField(pixel, head, colour, tail01, shape, bounds);
     vec2 p = pixel - head.xy;
@@ -1016,6 +1170,10 @@ void legacyMain() {
     e2 += radialField(pixel,ubuf.event3Head,ubuf.event3Colour,ubuf.event3Tail01,ubuf.event3Shape,ubuf.event3Bounds);
     e2 += radialField(pixel,ubuf.event4Head,ubuf.event4Colour,ubuf.event4Tail01,ubuf.event4Shape,ubuf.event4Bounds);
     e2 += radialField(pixel,ubuf.event5Head,ubuf.event5Colour,ubuf.event5Tail01,ubuf.event5Shape,ubuf.event5Bounds);
+    // The legacy path has no far-field accumulator to join, so the storm rides
+    // with the events here: no lensing on it, which is what `particlesEnabled:
+    // false` already gives up for everything else in this branch.
+    if (ubuf.stormShape.w>0.0) e2 += meteorStorm(pixel);
     if (hole) {
         vec3 events = decodeDisplay(e0+e1+e2);
         if (max(events.r,max(events.g,events.b))>0.0 && localEnvelope<1.0) {
@@ -1049,18 +1207,23 @@ void main() {
     // a star can cross the disk band alive without ever being drawn ON TOP of
     // the material (his report, ledger 2281).
     float diskOcclusion = 0.0;
+    // A storm meteor is sky, not foreground: it is accumulated into `far`, so
+    // one passing the hole is lensed by the same warp the background stars get,
+    // is eaten by the shadow, and sinks behind the disk. No other event has
+    // that, because no other event is evaluated at a pixel.
+    vec2 skySource = pixel;
+    if (hole && ubuf.radialMode>0.5 && (ubuf.density>0.0 || ubuf.stormShape.w>0.0)) { float weight; skySource=bhWarpBackground(pixel,weight); }
     if (ubuf.density>0.0) {
         float scale = max(1.0,sqrt(ubuf.resolution.x*ubuf.resolution.y/(1024.0*576.0)))/sqrt(ubuf.density);
         vec2 relative = pixel-ubuf.resolution*0.5;
         float angle = ubuf.radialMode>0.5 ? atan(relative.y,relative.x) : 0.0;
-        vec2 source = pixel;
-        if (hole && ubuf.radialMode>0.5) { float weight; source=bhWarpBackground(pixel,weight); }
-        if (all(greaterThanEqual(source,vec2(0.0))) && all(lessThan(source,ubuf.resolution)))
-            far += stars(source,angle,scale,0.0,-1.0,pixel,1.0)*ubuf.brightness;
+        if (all(greaterThanEqual(skySource,vec2(0.0))) && all(lessThan(skySource,ubuf.resolution)))
+            far += stars(skySource,angle,scale,0.0,-1.0,pixel,1.0)*ubuf.brightness;
         diskOcclusion = particleDiskAbsorb(pixel,disk.a);
         material = particleField(pixel,diskOcclusion,ahead)*ubuf.brightness;
         ahead *= ubuf.brightness;
     }
+    if (ubuf.stormShape.w>0.0) far += meteorStorm(skySource)*ubuf.brightness;
     far = decodeDisplay(far);
     if (hole) far *= 1.0-bhShadowMask(pixel);
     // Explicit particles live in the apparent plane. bhWarpMaterial is used
