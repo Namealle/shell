@@ -1,4 +1,4 @@
-# Starfield v3
+# Starfield v4
 `~/.config/caelestia/starfield.json` is watched with 150 ms debounce (XDG_CONFIG_HOME respected).
 Missing/invalid JSON, a non-object document or missing screens disables every output; deleted keys restore defaults.
 One validated snapshot owns configuration; the shell never writes it. Full schema and defaults:
@@ -30,8 +30,7 @@ One validated snapshot owns configuration; the shell never writes it. Full schem
   "satellites": {"enabled":true,"interval":[240,480]},
   "events": {"headCap":3,"shower":{"enabled":true,"everyHours":[2,5],"durationSec":[30,60],"gain":0.60},
     "slowWanderer":{"enabled":true,"everyHours":[2,6],"durationSec":[180,360],"gain":0.40}},
-  "blackHole": {"enabled":false,"size":0.075,"tilt":14,"intensity":0.65,"warmth":0.5,"spin":1,"diskInnerRs":3,"diskOuterRs":8,
-    "beamStrength":0.15,"haloUpper":0.55,"haloLower":0.35,"photonWidth":0.006,"structure":0.05,"tiltWander":0,"transitionSec":30},
+  "blackHole": {}, "particles": {}, "particlesEnabled": true,
   "reactive": {"enabled":true,"contextScope":"perScreen","processPresenceWeight":0.35,"paletteBudget":0.45,
     "birthTauSec":60,"liveTauSec":90,"maxChangePerSec":0.005,
     "matchers":[
@@ -51,6 +50,11 @@ One validated snapshot owns configuration; the shell never writes it. Full schem
       {"signal":"gpuLoad","add":{"hole":{"activity":0.25}}}, {"signal":"heat","add":{"hole":{"warmth":0.15,"brightness":0.20}}},
       {"signal":"agent","add":{"hole":{"structure":0.10}}}, {"signal":"night","add":{"hole":{"brightness":-0.15}}}]}
 }
+```
+`blackHole` and `particles` are FORWARDED, not defaulted: only keys the file carries reach the renderer, so an absent
+key keeps the renderer's own default and a `preset` keeps supplying its fallbacks. Recommended for this machine:
+```json
+"blackHole": {"enabled": true, "preset": "target"}, "particles": {}
 ```
 Paste your colours here (replace this object's `colors`; IDs are optional, weights default to 1):
 ```json
@@ -80,8 +84,27 @@ Wanderer period 30–600 s/offset ≤8 px; binary period 12–360 s/separation 0
 Family weights 0–1 divide scheduled starts; duration stays within the listed range, gain/tail/bend within 0–listed maximum; ranges are ordered two-number arrays.
 Fragmenting share ≤2%, cooldown ≥7200 s; spiral cooldown ≥14400 s (both ≤604800). Event headCap 1–3; hourly spacing 2–168 h; episode duration/gain bounded as shown.
 Event intervals allow up to 86400 s; minima: meteor 3, comet 60, satellite 45. Companions/fireballs 0–1; three is the hard head cap, normally two (renderer).
-Black hole bounds: size 0.06–0.09 short sides, tilt 10–20°, intensity/warmth/halos 0–1, spin 0–2 (pattern speed), inner 3–6 rs, outer inner+0.5–12 rs.
-Beam 0–0.2, photonWidth 0.001–0.02 shadow radii, structure 0–0.08, tiltWander 0–1°, transition 30–300 s; missing blackHole is disabled. Visual integration is renderer-owned.
+Black hole: `modules/background/BLACKHOLE.md` owns every default, the taste caps and the shader's own limiters; missing blackHole is disabled.
+Flat bounds: size 0.01–0.2 short sides, tilt 1–35° (the renderer accepts 80, only 35 is silhouette-verified), intensity/warmth/halos 0–1,
+spin 0–2 (pattern speed), inner 3–6 rs, outer max(inner+0.5, 3.5)–12 rs, beam 0–0.2, photonWidth 0.001–0.02 shadow radii,
+legacy structure 0–0.08 — that cap is the legacy field's alone and never applies to `disk.detail` — tiltWander 0–1°, transition 30–300 s.
+v4 adds preset `""`/`"target"` (fallbacks only: any explicit key wins, and an explicit `disk`/`photon` object REPLACES the preset's, never merges),
+footprintCap 0.01–0.12 (declared budget), diskCap/photonCap 0.10–1 (the limiters the shader enforces).
+`disk`: detail 0–0.85, seed integer 0–65535, rotationSign −1/+1 (0 reads as +1), exposure 0.5–2,
+streaks{octaves 1–3, radialScale 0.5–2, innerCyclesPer4096 16–128, warp 0–0.25, grain 0–0.08}, knots{density 0–0.06, gain 0–0.5},
+embers{count 0–32, radiusRs 0.004–0.025, trailSec 0–0.6, gain 0–0.06}, doppler{preset film/physical, strength 0–1},
+hue{innerTemperature 4200–10000 K, outerTemperature 1000–2800 K, warmth 0–1, whiteness 0–1}, glow{gain 0–0.008, radiusPx 0.25–2.5},
+arcs{gain 0–0.02, radiusRh 1.2–2.6, spacingRh 0.2–1, count 0–2}. `photon`: mode shared-field/off, widthPx 0.1–0.75, gain 0–1.5, textureStrength 0–1.
+Hole numbers clamp into range; wrong types and unknown nested keys drop with an index-only warning. Visual integration is renderer-owned.
+Particles replace the procedural middle/near layers; `modules/background/PARTICLES.md` owns the physics, the atlas and the renderer's own clamping.
+`"particlesEnabled": false` restores the v3 shader path exactly; far dust, events and the disk stay procedural either way.
+Closed schema, every key optional: population{near, middle} integers 0–3200 with near+middle ≤3200 (defaults 120/480, or 600/1500 when
+stressPreset is true), stressPreset boolean, vref 10–600 px/s, launch{plunge, miss, wide 0–1 (the renderer normalizes the three),
+betaBound [0.10,0.99], unboundShare 0–1, betaUnbound [1.001,2], handedness 0–1}, capture{radius [1.05,8] Rh, gamma 0–2 /s,
+spiralSec [5,240] s}, epsilonRh 0.01–0.20, substeps integer 4–32, streak{exposureSec 0–0.10, maxPx 0–32},
+sizes{nearPx, middlePx, capturedPx [0.25,12] px}, safetyLifeSec [30,600] s; pairs are ordered two-number arrays.
+Malformed particle values are REJECTED, not repaired: a bad type, an out-of-range number, an inverted pair, a fractional integer or an
+over-budget population is dropped with an index-only warning and the renderer's documented default applies instead.
 V2 bounds: density/brightness 0–3, driftSpeed 0–30, direction ±360°, twinkle/edgeLift 0–1, flare ≤0.025, fps 1–60 rounded; opaque #RRGGBB background, default pure black.
 Motion: radial/drift, radialSpeed 0–26 (device px/s at shortSide/2 on 2160 short side), centreWander ≤0.05 short sides; zoom ≤0.15 (drift default 0.025), wander 0–2, rotation 0–3°.
 Variety seed is integer 0–2147483647, variable fraction 0–0.05; numeric wrong types use defaults, finite values clamp. Screen names exact, nonempty ≤128 characters, deduplicated.

@@ -248,25 +248,368 @@ function validateEvents(value) {
     };
 }
 
-function validateBlackHole(value) {
-    var b = object(value), inner = number(b.diskInnerRs, 3, 3, 6);
-    return {
-        enabled: boolean(b.enabled, false),
-        size: number(b.size, 0.075, 0.06, 0.09),
-        tilt: number(b.tilt, 14, 10, 20),
-        intensity: number(b.intensity, 0.65, 0, 1),
-        warmth: number(b.warmth, 0.5, 0, 1),
-        spin: number(b.spin, 1, 0, 2),
-        diskInnerRs: inner,
-        diskOuterRs: number(b.diskOuterRs, 8, inner + 0.5, 12),
-        beamStrength: number(b.beamStrength, 0.15, 0, 0.2),
-        haloUpper: number(b.haloUpper, 0.55, 0, 1),
-        haloLower: number(b.haloLower, 0.35, 0, 1),
-        photonWidth: number(b.photonWidth, 0.006, 0.001, 0.02),
-        structure: number(b.structure, 0.05, 0, 0.08),
-        tiltWander: number(b.tiltWander, 0, 0, 1),
-        transitionSec: number(b.transitionSec, 30, 30, 300)
-    };
+// Closed-object schemas. A key is forwarded only when the file carries it, so a
+// renderer default (and a black-hole preset fallback) owns every absent key.
+var PARTICLE_SPEC = {
+    population: {
+        group: {
+            near: {
+                integer: [0, 3200]
+            },
+            middle: {
+                integer: [0, 3200]
+            }
+        }
+    },
+    stressPreset: {
+        boolean: true
+    },
+    vref: {
+        number: [10, 600]
+    },
+    launch: {
+        group: {
+            plunge: {
+                number: [0, 1]
+            },
+            miss: {
+                number: [0, 1]
+            },
+            wide: {
+                number: [0, 1]
+            },
+            betaBound: {
+                pair: [0.10, 0.99]
+            },
+            unboundShare: {
+                number: [0, 1]
+            },
+            betaUnbound: {
+                pair: [1.001, 2]
+            },
+            handedness: {
+                number: [0, 1]
+            }
+        }
+    },
+    capture: {
+        group: {
+            radius: {
+                pair: [1.05, 8]
+            },
+            gamma: {
+                number: [0, 2]
+            },
+            spiralSec: {
+                pair: [5, 240]
+            }
+        }
+    },
+    epsilonRh: {
+        number: [0.01, 0.20]
+    },
+    substeps: {
+        integer: [4, 32]
+    },
+    streak: {
+        group: {
+            exposureSec: {
+                number: [0, 0.10]
+            },
+            maxPx: {
+                number: [0, 32]
+            }
+        }
+    },
+    sizes: {
+        group: {
+            nearPx: {
+                pair: [0.25, 12]
+            },
+            middlePx: {
+                pair: [0.25, 12]
+            },
+            capturedPx: {
+                pair: [0.25, 12]
+            }
+        }
+    },
+    safetyLifeSec: {
+        pair: [30, 600]
+    }
+};
+
+var BLACK_HOLE_SPEC = {
+    enabled: {
+        boolean: true
+    },
+    size: {
+        number: [0.01, 0.2]
+    },
+    tilt: {
+        number: [1, 35]
+    },
+    intensity: {
+        number: [0, 1]
+    },
+    warmth: {
+        number: [0, 1]
+    },
+    spin: {
+        number: [0, 2]
+    },
+    diskInnerRs: {
+        number: [3, 6]
+    },
+    diskOuterRs: {
+        number: [3.5, 12]
+    },
+    beamStrength: {
+        number: [0, 0.2]
+    },
+    haloUpper: {
+        number: [0, 1]
+    },
+    haloLower: {
+        number: [0, 1]
+    },
+    photonWidth: {
+        number: [0.001, 0.02]
+    },
+    // Legacy field: its 0.08 cap belongs here and never to disk.detail.
+    structure: {
+        number: [0, 0.08]
+    },
+    tiltWander: {
+        number: [0, 1]
+    },
+    transitionSec: {
+        number: [30, 300]
+    },
+    preset: {
+        choices: ["", "target"]
+    },
+    footprintCap: {
+        number: [0.01, 0.12]
+    },
+    diskCap: {
+        number: [0.10, 1]
+    },
+    photonCap: {
+        number: [0.10, 1]
+    },
+    disk: {
+        group: {
+            detail: {
+                number: [0, 0.85]
+            },
+            seed: {
+                integer: [0, 65535]
+            },
+            rotationSign: {
+                integer: [-1, 1]
+            },
+            exposure: {
+                number: [0.5, 2]
+            },
+            streaks: {
+                group: {
+                    octaves: {
+                        integer: [1, 3]
+                    },
+                    radialScale: {
+                        number: [0.5, 2]
+                    },
+                    innerCyclesPer4096: {
+                        integer: [16, 128]
+                    },
+                    warp: {
+                        number: [0, 0.25]
+                    },
+                    grain: {
+                        number: [0, 0.08]
+                    }
+                }
+            },
+            knots: {
+                group: {
+                    density: {
+                        number: [0, 0.06]
+                    },
+                    gain: {
+                        number: [0, 0.5]
+                    }
+                }
+            },
+            embers: {
+                group: {
+                    count: {
+                        integer: [0, 32]
+                    },
+                    radiusRs: {
+                        number: [0.004, 0.025]
+                    },
+                    trailSec: {
+                        number: [0, 0.6]
+                    },
+                    gain: {
+                        number: [0, 0.06]
+                    }
+                }
+            },
+            doppler: {
+                group: {
+                    preset: {
+                        choices: ["film", "physical"]
+                    },
+                    strength: {
+                        number: [0, 1]
+                    }
+                }
+            },
+            hue: {
+                group: {
+                    innerTemperature: {
+                        number: [4200, 10000]
+                    },
+                    outerTemperature: {
+                        number: [1000, 2800]
+                    },
+                    warmth: {
+                        number: [0, 1]
+                    },
+                    whiteness: {
+                        number: [0, 1]
+                    }
+                }
+            },
+            glow: {
+                group: {
+                    gain: {
+                        number: [0, 0.008]
+                    },
+                    radiusPx: {
+                        number: [0.25, 2.5]
+                    }
+                }
+            },
+            arcs: {
+                group: {
+                    gain: {
+                        number: [0, 0.02]
+                    },
+                    radiusRh: {
+                        number: [1.2, 2.6]
+                    },
+                    spacingRh: {
+                        number: [0.2, 1]
+                    },
+                    count: {
+                        integer: [0, 2]
+                    }
+                }
+            }
+        }
+    },
+    photon: {
+        group: {
+            mode: {
+                choices: ["shared-field", "off"]
+            },
+            widthPx: {
+                number: [0.1, 0.75]
+            },
+            gain: {
+                number: [0, 1.5]
+            },
+            textureStrength: {
+                number: [0, 1]
+            }
+        }
+    }
+};
+
+function warned(warn, index) {
+    // Same contract as the palette warning: the index is the entire payload.
+    if (typeof warn === "function")
+        warn(index);
+    else
+        console.warn(index);
+}
+
+function integral(value) {
+    return finite(value) && Math.floor(value) === value;
+}
+
+// One closed-object walk. clamped=true keeps the v3 black-hole habit of pulling
+// a finite number into range; clamped=false rejects instead of repairing, so a
+// malformed particle value falls back to the renderer default it documents.
+function validateGroup(value, spec, clamped, warn) {
+    var input = object(value), out = {}, keys = Object.keys(input);
+    for (var i = 0; i < keys.length; i++) {
+        var key = keys[i], v = input[key], rule = own(spec, key) ? spec[key] : null;
+        if (!rule) {
+            warned(warn, i);
+        } else if (rule.group !== undefined) {
+            if (v !== null && typeof v === "object" && !Array.isArray(v))
+                out[key] = validateGroup(v, rule.group, clamped, warn);
+            else
+                warned(warn, i);
+        } else if (rule.boolean) {
+            if (typeof v === "boolean")
+                out[key] = v;
+            else
+                warned(warn, i);
+        } else if (rule.choices !== undefined) {
+            if (typeof v === "string" && rule.choices.indexOf(v) !== -1)
+                out[key] = v;
+            else
+                warned(warn, i);
+        } else if (rule.pair !== undefined) {
+            // Ordered pairs are never sorted here; an inverted pair is malformed.
+            if (Array.isArray(v) && v.length === 2 && finite(v[0]) && finite(v[1]) && v[0] <= v[1] && v[0] >= rule.pair[0] && v[1] <= rule.pair[1])
+                out[key] = [v[0], v[1]];
+            else
+                warned(warn, i);
+        } else {
+            var bounds = rule.integer !== undefined ? rule.integer : rule.number;
+            var ok = rule.integer !== undefined && !clamped ? integral(v) : finite(v);
+            if (ok && !clamped)
+                ok = v >= bounds[0] && v <= bounds[1];
+            if (!ok)
+                warned(warn, i);
+            else if (rule.integer !== undefined)
+                out[key] = Math.round(clamp(v, bounds[0], bounds[1]));
+            else
+                out[key] = clamp(v, bounds[0], bounds[1]);
+        }
+    }
+    return out;
+}
+
+function validateParticles(value, warn) {
+    var input = object(value), out = validateGroup(input, PARTICLE_SPEC, false, warn);
+    if (!own(out, "population"))
+        return out;
+    // The shared 3200 budget is rejected whole, never reduced proportionally.
+    var stress = out.stressPreset === true, p = out.population;
+    var near = own(p, "near") ? p.near : (stress ? 600 : 120);
+    var middle = own(p, "middle") ? p.middle : (stress ? 1500 : 480);
+    if (near + middle > 3200) {
+        delete out.population;
+        warned(warn, Object.keys(input).indexOf("population"));
+    }
+    return out;
+}
+
+function validateBlackHole(value, warn) {
+    var out = validateGroup(value, BLACK_HOLE_SPEC, true, warn);
+    // v3 geometry rule survives: the outer radius never crosses the inner one.
+    if (own(out, "diskOuterRs")) {
+        var inner = own(out, "diskInnerRs") ? out.diskInnerRs : 3;
+        out.diskOuterRs = Math.max(out.diskOuterRs, inner + 0.5);
+    }
+    return out;
 }
 
 function defaultReactive() {
@@ -593,7 +936,9 @@ function validateDocument(value, warn) {
         palette: validatePalette(d.palette, warn),
         archetypes: validateArchetypes(d.archetypes),
         events: validateEvents(d.events),
-        blackHole: validateBlackHole(d.blackHole),
+        blackHole: validateBlackHole(d.blackHole, warn),
+        particles: validateParticles(d.particles, warn),
+        particlesEnabled: boolean(d.particlesEnabled, true),
         reactive: validateReactive(d.reactive)
     };
 }

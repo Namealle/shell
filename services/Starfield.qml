@@ -44,7 +44,10 @@ Singleton {
             slowWanderer: document.events.slowWanderer
         })
     readonly property int eventHeadCap: document.events.headCap
+    // Sparse pass-throughs: an absent key is the renderer's documented default.
     readonly property var blackHole: document.blackHole
+    readonly property var particles: document.particles
+    readonly property bool particlesEnabled: document.particlesEnabled
     readonly property var meteors: ({
             enabled: document.meteors.enabled,
             interval: Qt.vector2d(document.meteors.interval[0], document.meteors.interval[1]),
