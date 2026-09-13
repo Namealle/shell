@@ -1867,6 +1867,14 @@ Item {
             enterU: enterU,
             exitU: exitU,
             referenceR: referenceR,
+            // Birth-frozen, like every other captured number here. The hole's
+            // BOOLEAN flips in one frame while its drawn envelope takes thirty
+            // seconds, so a passage reading the boolean live would snap back to
+            // full brightness the instant the hole was switched off in the
+            // middle of its dissolve. Frozen radii plus the live envelope below
+            // eases the whole thing away instead.
+            reach: nebulaReach(),
+            sink: sink,
             angle: angle,
             boundary: boundary,
             tilt: random(index, salt + 11) * Math.PI,
@@ -1956,7 +1964,7 @@ Item {
         // crossing the sky at one distance - so its angular size is CONSTANT
         // and the tide is the only thing that reshapes it.
         const scale = clamp(1 + 0.90 * _cameraBlend * (r / Math.max(1, e.referenceR) - 1), 0.12, 2.4);
-        const reach = nebulaReach(), sink = nebulaSink();
+        const reach = e.reach, sink = e.sink;
         // Tidal field: radial stretch, tangential squeeze, growing as the cloud
         // falls in. The major axis turns from its birth-frozen angle toward the
         // radius as the tide takes hold, so the shear arrives rather than cuts.
@@ -1974,7 +1982,7 @@ Item {
         // into the rim, is already behind the disk's own composite by then, and
         // the shader subtracts the shadow from the far field it has joined - so
         // nothing of it is ever drawn over the hole itself.
-        const envHole = sink > 0 ? ease((r - sink) / Math.max(1, 0.90 * reach)) : 1;
+        const envHole = sink > 0 ? 1 - enable * (1 - ease((r - sink) / Math.max(1, 0.90 * reach))) : 1;
         // And gone once it has left the buffer entirely, measured along its own
         // direction rather than at the corner.
         const outer = e.boundary + 1.05 * major;
