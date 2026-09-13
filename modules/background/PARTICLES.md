@@ -21,7 +21,7 @@ Service schema (closed object; reject unknown keys, booleans must be booleans):
 | launch.unboundShare | .20 | finite 0..1 of miss launches |
 | launch.betaUnbound | [1.02,1.12] | ordered pair, each 1.001..2 |
 | launch.handedness | .85 | finite 0..1 prograde with disk.rotationSign |
-| capture.radius | [3.3,4] | ordered pair, each 1.05..8 Rh |
+| capture.radius | [1.06,1.45] | ordered pair, each 1.02..6 **Rv** (visible-rim radii, see below) |
 | capture.gamma | .25 | finite 0..2 /s; radial-only drag |
 | capture.spiralSec | [20,60] | ordered pair, each 5..240 active seconds |
 | epsilonRh | .05 | finite 0.01..0.20 |
@@ -31,7 +31,7 @@ Service schema (closed object; reject unknown keys, booleans must be booleans):
 | streak.bendExposureSec | .26 | finite 0..1 s, the exposure at full deformation |
 | streak.bendMaxPx | 64 | finite 0..120 physical px, the streak ceiling at full deformation |
 | streak.bendMaxAlive | 200 | integer 0..3200; a SMOOTH budget on the summed deformation, not a per-instance switch |
-| streak.bendRadiusRh | 2.4 | finite 0..12 Rh; the nominal onset radius of the tidal deformation |
+| streak.bendRadiusRv | 1.45 | finite 0..6 **Rv**; the nominal onset radius of the tidal deformation (was `bendRadiusRh`, 2.4 Rh) |
 | sizes.nearPx | [2.4,4.8] | ordered pair, each .25..12 physical px FWHM |
 | sizes.middlePx | [0.9,1.7] | ordered pair, each .25..12 physical px FWHM |
 | sizes.capturedPx | [1.2,2.2] | ordered pair, each .25..12 physical px FWHM |
@@ -59,6 +59,61 @@ are resolved. Renderer validation clamps, sorts pairs, rounds integer fields and
 proportionally reduces totals over3200; the service should reject malformed
 values instead. Normalization: `particles/Physics.js` defaults()/validate().
 
+## Rh is not how big the hole looks (v7)
+
+`Rh` is the DYNAMICAL scale — mu goes as `rh^3` — and it is also the screen
+radius where the impact parameter reaches `b_c = 3*sqrt(3)/2 Rs`, i.e. the
+shadow and the photon ring. It is **not** the size of the drawn object. What the
+eye reads as "the hole" is the accretion disk and its outer arcs, and under the
+`target` preset those reach **3.900 Rh**.
+
+Through v6 every boundary a star could reach was a multiple of Rh: the swallow
+radius was `1.0 Rh`, the capture band `3.3-4.0 Rh`, the spiral target `Rh`, the
+tidal onset `2.4 Rh`. Against a 3.900 Rh picture that put the swallow radius at
+**0.256** of the rim and the capture band straddling it. Measured on a 2160x3840
+output with the live config: **65.8 % of all rendered particle ink, and 99.5 % of
+the 267-instance captured ring, were inside the drawn hole** — his report, ledger
+2281: "the radius of where it gets pulled seems to be smaller than the hole,
+which makes it seem like stars are inside".
+
+`Physics.visibleRadius(rh, geom)` is now the one source of truth for how big the
+hole looks in physical pixels. It MIRRORS `bhOuter()`, `bhImpact()` and
+`bhArcReach()` in `shaders/blackhole.glsl` and must be changed with them;
+`test-particles.mjs` pins the three constants. `geom` is the hole's own published
+uniforms — `bhDisk.x/.y` and `bhArcs.x/.y/.z/.w` — read in `Starfield.qml`, so a
+disk the owner resizes moves the particle boundaries with it and nothing has to
+be edited in `starfield.json`. Omitted, it falls back to the v4 default disk
+(2.783 Rh). Rv is never below Rh.
+
+Anchored to Rv: the swallow radius (`Rv`, still times the `bhHalo.w` envelope),
+the capture band (`capture.radius`, now in Rv), the spiral target
+(`log(r/Rv)/2*spiralSec`), the launch pericentre ladder, the TDE victim bounds
+and the tidal reach (`streak.bendRadiusRv`). Still anchored to Rh, because they
+are dynamics and not geometry: mu, `vref`, `epsilonRh`, the substep thresholds
+and `padding`.
+
+Mass moves the band's STANDOFF above the rim, not the rim, which is drawn and
+does not move: `captureInner = Rv*(1 + (radius[0]-1)*cbrt(mass))`, on the same
+`cbrt(mass)` convention as the tidal reach.
+
+The launch classes are pericentres in Rv — under 1 is a plunge that is eaten,
+just over 1 grazes the rim, further out is a wide pass. A disk that fills the
+output leaves less room outside the rim than the `[0.05,0.60]/[1.15,1.80]/
+[2.5,4.5]` ladder wants, and a pericentre past the farthest birth edge is
+geometrically impossible (`launch()` would retry sixteen times and lose the
+birth), so the part of the ladder above 1 is mapped into `s.qRoom =
+0.80*halfDiagonal/Rv - 1`. Three classes stay distinguishable at any hole size.
+
+`Appearance.render` fades a star to nothing over the last `0.10 Rv` before the
+rim rather than the old couple of core radii: over a few pixels the swallow read
+as a star switching off, and a captured star creeping inward at a few px/s would
+switch off mid-orbit.
+
+Result on the same output: ink inside the rim **65.8 % -> 0.13 %**, closest
+visible star 0.998 Rv, captured ring 1.00-1.85 Rv with none inside, and the CPU
+half 0.215 -> 0.139 ms/frame because nothing reaches the deep-substep region any
+more. No shader, uniform or atlas change: no `.qsb` rebake.
+
 `blackHole.mass` (0.5..3, default 1) scales mu for the particles and, as its
 square root, the far-dust inflow, so one number moves every layer's speeds
 together; `particles.mass` overrides it. The hole's own visibility envelope
@@ -70,7 +125,7 @@ vanishing into an invisible point.
 
 Every particle carries one continuous scalar, `stretch` in 0..1, and nothing
 about its rendered shape switches between states. Through v5 a star crossed
-`streak.bendRadiusRh` and had its exposure replaced (.035 s -> .26 s) and its
+`streak.bendRadiusRh` (v7: `bendRadiusRv`) and had its exposure replaced (.035 s -> .26 s) and its
 kernel swapped from straight to curved in a SINGLE frame, while a
 first-come-first-served `bendMaxAlive` cap flipped stars in and out of that
 state from one frame to the next; measured on a 2160x3840 output, 344 stars sat
@@ -78,7 +133,7 @@ inside a 200-instance cap and rendered streaks jumped by up to 54 px between
 consecutive frames. The scalar replaces both.
 
 The drive is the local tidal field. mu is proportional to `rh^3 * mass`, so
-normalising `mu/r^3` at `reach = bendRadiusRh * rh * cbrt(mass) * onset` leaves
+normalising `mu/r^3` at `reach = bendRadiusRv * Rv * cbrt(mass) * onset` leaves
 `(reach/r)^3`, which depends on `mass/r^3` and nothing else: one number moves
 both the reach and the strength, and the hole's enable envelope (`absorb`,
 i.e. `bhHalo.w`) multiplies the whole target, so a disabled hole fades the
@@ -166,13 +221,15 @@ Integration subdivides per particle: the outer step is the publish interval, and
 each particle takes one to `substeps` inner kick-drift-kicks, chosen so
 dt/j*sqrt(mu/r^3) stays under half the 0.03 stability limit and no particle
 crosses 8% of its radius in a step — 1 beyond 2.68Rh, 2 beyond 1.69Rh, 3 beyond
-1.29Rh, 4 inside; mean 1.71. Physics uses epsilon-softened Newtonian acceleration, mu proportional to Rh^3,
+1.29Rh, 4 inside; mean 1.71, and since v7 all but the finest are unreached
+because nothing survives inside Rv. Physics uses epsilon-softened Newtonian acceleration, mu proportional to Rh^3,
 k=clamp(radialSpeed,0,26)/6*(.8+.4*filteredFlow), muTarget=muBase*k*k.
 Mu approaches its target over60 active seconds; existing x/v never rescale on
 speed edits. Zero speed freezes physics/births. Suspend gaps over.25s are dropped.
-Launch q ranges are fixed: plunge 0.05..0.60Rh, miss 1.15..1.80Rh, wide 2.5..4.5Rh.
+Launch q ranges are fixed: plunge 0.05..0.60Rv, miss 1.15..1.80Rv, wide 2.5..4.5Rv,
+the part above 1 compressed into the viewport's room (`qRoom`, see v7 above).
 Radial damping conserves angular momentum, then a three-second torque ramp uses
-nu=ln(rCircular/Rh)/(2*birthFrozenSpiralSec). Death sweeps the drift segment atRh.
+nu=ln(rCircular/Rv)/(2*birthFrozenSpiralSec). Death sweeps the drift segment atRv.
 Rate replenishment uses completed residence estimates, without cap-filling bursts.
 Bound offscreen particles stay alive; positive-energy outward escapes are removed.
 
@@ -218,7 +275,8 @@ texture, offsets, domain, count and clock commit together after painted(), and a
 missed paint retains the prior revision. Sentinels are checked on every commit.
 
 Disk integration: particles bypass bhWarpMaterial. Geometric shadow transmission
-clips streaks atRh; disk.rgb+(1-disk.a)*(far+material) composites in linear light.
+clips streaks atRh — a backstop only since v7, because the CPU already faded and
+swallowed them atRv; disk.rgb+(1-disk.a)*(far+material) composites in linear light.
 particleDiskAbsorb() takes the larger of bhDisk().a and D's bhDiskAbsorb(pixel).
 Binding1 is bhTransfer,2 is D's bhNoise,3 particles,4 birth descriptor history.
 D's included GLSL reaches production only through a rebake of this shader.

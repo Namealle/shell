@@ -147,10 +147,16 @@ Particles replace the procedural middle/near layers; `modules/background/PARTICL
 v6 deforms particle stars continuously: one 0–1 scalar per star from the local tidal field (mass/r^3), its direction relative to the hole and its time
 since capture, relaxed over 0.45–1.9 s per star, driving the streak exposure, a radial squash and the curved trail together. Birth-frozen onset, gain and
 rate keep two stars at the same radius different; `blackHole.mass` scales reach and strength; a disabled hole fades it to nothing. No key changes.
+v7 anchors every boundary a star can reach to the VISIBLE hole (Rv), not to Rh. Rh is the dynamical scale and the shadow/photon-ring radius; the
+drawn object is the disk and its arcs, which reach 3.900 Rh under the `target` preset, so the swallow radius, the capture band, the spiral target
+and the tidal reach all sat inside the picture and 66 % of the particle ink was rendered on top of the hole. Rv is derived in `Physics.visibleRadius`
+from `blackHole.diskInnerRs`/`diskOuterRs` and `disk.arcs`, mirroring bhOuter()/bhImpact()/bhArcReach() in `shaders/blackhole.glsl`: change them
+together. Two keys change unit with it — `capture.radius` (Rh -> Rv, default [1.06,1.45]) and `streak.bendRadiusRh` -> `streak.bendRadiusRv`
+(default 1.45). No shader, uniform or atlas change, so no `.qsb` rebake.
 Closed schema, every key optional: population{near, middle} integers 0–3200 with near+middle ≤3200 (defaults 120/480, or 600/1500 when
 stressPreset is true), stressPreset boolean, vref 10–600 px/s, launch{plunge, miss, wide 0–1 (the renderer normalizes the three),
-betaBound [0.10,0.99], unboundShare 0–1, betaUnbound [1.001,2], handedness 0–1}, capture{radius [1.05,8] Rh, gamma 0–2 /s,
-spiralSec [5,240] s}, epsilonRh 0.01–0.20, substeps integer 4–32, streak{exposureSec 0–0.10, maxPx 0–32},
+betaBound [0.10,0.99], unboundShare 0–1, betaUnbound [1.001,2], handedness 0–1}, capture{radius [1.02,6] Rv, gamma 0–2 /s,
+spiralSec [5,240] s}, epsilonRh 0.01–0.20, substeps integer 4–32, streak{exposureSec 0–0.10, maxPx 0–32, bendRadiusRv 0–6},
 sizes{nearPx, middlePx, capturedPx [0.25,12] px}, safetyLifeSec [30,600] s; pairs are ordered two-number arrays.
 Malformed particle values are REJECTED, not repaired: a bad type, an out-of-range number, an inverted pair, a fractional integer or an
 over-budget population is dropped with an index-only warning and the renderer's documented default applies instead.

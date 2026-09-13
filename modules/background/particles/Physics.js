@@ -2,7 +2,7 @@
 var BOUNDS = {
     capacity: 3200, population: [0, 3200], radialSpeed: [0, 26], vref: [10, 600], epsilonRh: [0.01, 0.2],
     substeps: [4, 32], betaBound: [0.1, 0.99], betaUnbound: [1.001, 2],
-    captureRadius: [1.05, 8], gamma: [0, 2], spiralSec: [5, 240],
+    captureRadius: [1.02, 6], gamma: [0, 2], spiralSec: [5, 240],
     safetyLifeSec: [30, 600], sizePx: [0.25, 12], exposureSec: [0, 0.1], maxPx: [0, 32], publishHz: [10, 30],
     flareShare: [0, 0.5], flareMaxAlive: [0, 64], capturedLight: [0, 1]
 };
@@ -20,9 +20,9 @@ function defaults() {
     return {population: {near: 120, middle: 480}, stressPreset: false, vref: 120,
         launch: {plunge: 0.35, miss: 0.55, wide: 0.10, betaBound: [0.65, 0.90],
             unboundShare: 0.2, betaUnbound: [1.02, 1.12], handedness: 0.85},
-        capture: {radius: [3.3, 4.0], gamma: 0.25, spiralSec: [20, 60]},
+        capture: {radius: [1.06, 1.45], gamma: 0.25, spiralSec: [20, 60]},
         epsilonRh: 0.05, substeps: 4,
-        streak: {exposureSec: 0.035, maxPx: 20, bendExposureSec: 0.26, bendMaxPx: 64, bendRadiusRh: 2.4, bendMaxAlive: 200},
+        streak: {exposureSec: 0.035, maxPx: 20, bendExposureSec: 0.26, bendMaxPx: 64, bendRadiusRv: 1.45, bendMaxAlive: 200},
         sizes: {nearPx: [2.4, 4.8], middlePx: [0.9, 1.7], capturedPx: [1.2, 2.2]},
         flare: {share: 0.085, maxAlive: 10, capturedLight: 0.7}, publishHz: 30, mass: 1,
         depth: {frontShare: 0.12, binaryMaxAlive: 40},
@@ -61,7 +61,7 @@ function validate(raw) {
     d.streak.maxPx = number(t.maxPx, 20, 0, 32);
     d.streak.bendExposureSec = number(t.bendExposureSec, 0.26, 0, 1);
     d.streak.bendMaxPx = number(t.bendMaxPx, 64, 0, 120);
-    d.streak.bendRadiusRh = number(t.bendRadiusRh, 2.4, 0, 12);
+    d.streak.bendRadiusRv = number(t.bendRadiusRv, 1.45, 0, 6);
     d.streak.bendMaxAlive = Math.round(number(t.bendMaxAlive, 200, 0, 3200));
     d.sizes.nearPx = range(z.nearPx, d.sizes.nearPx, BOUNDS.sizePx);
     d.sizes.middlePx = range(z.middlePx, d.sizes.middlePx, BOUNDS.sizePx);
@@ -96,17 +96,76 @@ function smooth(a, b, x) {
     if (a === b) return x >= b ? 1 : 0;
     var t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t);
 }
-function configure(s, width, height, rh, raw) {
+// ---- The visible hole -------------------------------------------------------
+// Rh is the DYNAMICAL scale: mu goes as rh^3, and it is also the screen radius
+// where the impact parameter reaches b_c, i.e. the shadow and the photon ring.
+// It is NOT how big the hole looks. The drawn object is the accretion disk and
+// its arcs, and with the target preset those reach 3.9 rh, so every boundary
+// expressed in rh - the swallow radius, the capture band, the spiral target,
+// the tidal reach - sat deep inside the picture of the hole and stars were
+// rendered on top of it (measured 2026-09-13: 66 % of the particle ink, and
+// 99.5 % of the captured ring, inside the drawn rim).
+//
+// `visibleRadius` is the one source of truth for "how big the hole looks, in
+// physical pixels". It MIRRORS bhOuter()/bhImpact()/bhArcReach() in
+// shaders/blackhole.glsl and must be changed with them; test-particles.mjs
+// pins the constants against that file.
+var BH_FOCAL = 7.834421972380958, BH_K = 20 / Math.sqrt(0.95);
+// Screen radius of the direct image of a circular orbit at `rs` Schwarzschild
+// radii: b = rs/sqrt(1-1/rs), inverted through bhImpact().
+function screenRadius(rs, rh) {
+    if (!(rs > 1.0001) || !(rh > 0)) return 0;
+    var sine = rs / Math.sqrt(1 - 1 / rs) / BH_K;
+    if (!(sine < 1)) return Infinity;
+    return BH_FOCAL * rh * sine / Math.sqrt(1 - sine * sine);
+}
+// geom mirrors the hole's published uniforms: bhDisk.x/.y and bhArcs.x/.y/.z/.w.
+// Omitted, it falls back to the v4 default disk, which is what the node tests
+// and any consumer without a hole see.
+function visibleRadius(rh, geom) {
+    var g = geom || {};
+    var inner = number(g.innerRs, 3, 3, 7);
+    var outer = Math.max(inner + 0.5, number(g.outerRs, 8, 3.5, 11));
+    // bhOuter(): the disk's emissive material ends here; beyond it is the faint
+    // frayed skirt the eye does not read as part of the object.
+    var material = screenRadius(inner + 0.66 * (outer - inner), rh);
+    // bhArcReach(): art-directed outer bands, drawn only when they carry gain.
+    var count = Math.round(number(g.arcCount, 0, 0, 4));
+    var arcs = number(g.arcGain, 0, 0, 0.02) > 0 && count >= 1
+        ? rh * (number(g.arcRadiusRh, 1.75, 1.2, 2.6)
+            + (count - 1) * number(g.arcSpacingRh, 0.6, 0.2, 1)) * 1.2
+        : 0;
+    var r = Math.max(rh, material, arcs);
+    return isFinite(r) ? r : rh;
+}
+function configure(s, width, height, rh, raw, geom) {
     s.config = validate(raw); s.width = Math.max(1, width); s.height = Math.max(1, height);
     s.rh = Math.max(0.1, rh); s.padding = Math.max(32, 0.25 * s.rh);
     s.epsilon = s.config.epsilonRh * s.rh;
     var v = s.config.vref * s.rh / 162;
     s.muBase = v * v * (20 / 3) * s.rh * s.config.mass;
     s.muTarget = s.muBase * s.k * s.k;
+    if (geom !== undefined) s.geometry = geom;
+    s.rim = visibleRadius(s.rh, s.geometry);
+    // The capture band is the rim scaled by the configured pair. A heavier hole
+    // reaches further, so the band's STANDOFF above the rim - not the rim
+    // itself, which is drawn and does not move - carries the mass, on the same
+    // cbrt(mass) convention the tidal reach uses.
+    var cbm = Math.pow(Math.max(0.5, Math.min(3, s.config.mass)), 1 / 3);
+    var c = s.config.capture.radius;
+    s.captureInner = s.rim * (1 + (c[0] - 1) * cbm);
+    s.captureOuter = s.rim * (1 + (c[1] - 1) * cbm);
+    // Launch pericentres are set against the swallow radius, which is now the
+    // rim. A disk that fills the output leaves less room outside it than the
+    // class ladder wants, and a pericentre past the farthest birth edge is
+    // geometrically impossible, so the outside-the-rim half of the ladder is
+    // compressed into the room the viewport actually has.
+    var reach = Math.hypot(s.width / 2 + s.padding, s.height / 2 + s.padding);
+    s.qRoom = Math.max(0, 0.80 * reach / s.rim - 1);
     s.targetPopulation = s.config.population.near + s.config.population.middle;
     s.birthRate = s.targetPopulation / s.meanLifetime;
 }
-function create(width, height, rh, seed, raw, birthCallback) {
+function create(width, height, rh, seed, raw, birthCallback, geom) {
     var s = {capacity: BOUNDS.capacity, aliveCount: 0, randomState: (seed >>> 0) || 1,
         clock: 0, accumulator: 0, birthAccumulator: 0, nextSlot: 0, k: 1,
         centreX: width / 2, centreY: height / 2, rotationSign: 1, absorb: 1,
@@ -121,13 +180,13 @@ function create(width, height, rh, seed, raw, birthCallback) {
         'radiusAtCapture','captureTime','launchClass','pericentre','safetyLife','spiralSec','depth',
         'r','g','b','size','capturedSize','luminosity','archetype','p0','p1','p2','p3','phase','seed'];
     for (var j = 0; j < fields.length; ++j) s[fields[j]] = new Float64Array(s.capacity);
-    configure(s, width, height, rh, raw); s.mu = s.muBase;
+    configure(s, width, height, rh, raw, geom); s.mu = s.muBase;
     return s;
 }
 // Unit conversion only (DPR change). A speed/config edit must never call this.
 function rescale(s, factor) {
     if (!(factor > 0) || !isFinite(factor)) return;
-    var scalar = ['width','height','rh','epsilon','padding','centreX','centreY'];
+    var scalar = ['width','height','rh','rim','captureInner','captureOuter','epsilon','padding','centreX','centreY'];
     var arrays = ['x','y','vx','vy','radiusAtCapture','pericentre','size','capturedSize'];
     for (var j=0;j<scalar.length;++j) s[scalar[j]]*=factor;
     for (j=0;j<arrays.length;++j) {
@@ -143,10 +202,20 @@ function energy(s, i) {
 function angularMomentum(s, i) {
     return (s.x[i]-s.centreX)*s.vy[i]-(s.y[i]-s.centreY)*s.vx[i];
 }
+// The launch classes are pericentres in units of the SWALLOW radius, which is
+// the hole's visible rim: under 1 is a plunge that is eaten, just over 1 grazes
+// it, further out is a wide pass. The ladder's top is LAUNCH_TOP, and the part
+// above 1 is mapped into s.qRoom so a rim that fills the output still leaves
+// three distinguishable classes instead of three impossible ones.
+var LAUNCH_Q = [[0.05,0.60],[1.15,1.80],[2.5,4.5]], LAUNCH_TOP = 4.5;
+function pericentre(s, f) {
+    if (f <= 1) return f * s.rim;
+    return s.rim * (1 + (f - 1) / (LAUNCH_TOP - 1) * s.qRoom);
+}
 function launch(s, i, options) {
     var o = options || {}, l = s.config.launch, draw = random(s);
     var cls = o.launchClass === undefined ? (draw < l.plunge ? 0 : draw < l.plunge+l.miss ? 1 : 2) : o.launchClass;
-    var q = o.q === undefined ? between(s, cls === 0 ? [0.05,0.60] : cls === 1 ? [1.15,1.80] : [2.5,4.5])*s.rh : o.q;
+    var q = o.q === undefined ? pericentre(s, between(s, LAUNCH_Q[cls])) : o.q;
     var beta = o.beta === undefined ? between(s, cls === 1 && random(s) < l.unboundShare ? l.betaUnbound : l.betaBound) : o.beta;
     var w = s.width+2*s.padding, h = s.height+2*s.padding;
     var perimeter = 2*(w+h);
@@ -224,7 +293,7 @@ function inject(s, x, y, vx, vy, depth, birthCallback) {
     s.spiralRate[i] = 0; s.radiusAtCapture[i] = 0; s.captureTime[i] = -1;
     var dx = x - s.centreX, dy = y - s.centreY;
     s.launchClass[i] = 0;
-    s.pericentre[i] = Math.min(Math.sqrt(dx * dx + dy * dy), 0.6 * s.rh);
+    s.pericentre[i] = Math.min(Math.sqrt(dx * dx + dy * dy), 0.6 * s.rim);
     s.safetyLife[i] = between(s, s.config.safetyLifeSec);
     s.spiralSec[i] = between(s, s.config.capture.spiralSec);
     s.depth[i] = depth;
@@ -242,14 +311,15 @@ function inject(s, x, y, vx, vy, depth, birthCallback) {
 function doom(s, options) {
     var o = options || {};
     var best = -1, bestScore = Infinity;
-    var inner = s.config.capture.radius[1] * s.rh;
+    // Every bound is against the rim, like the capture band it sits outside.
+    var inner = s.captureOuter, deep = 1.6 * s.rim, far = 3 * s.rim;
     for (var k = 0; k < s.liveCount; ++k) {
         var i = s.live[k];
         if (!s.alive[i] || s.radiusAtCapture[i] > 0) continue;
-        if (s.pericentre[i] > 6 * s.rh) continue;
+        if (s.pericentre[i] > deep) continue;
         var dx = s.x[i] - s.centreX, dy = s.y[i] - s.centreY;
         var r = Math.sqrt(dx * dx + dy * dy);
-        if (r < inner || r > 12 * s.rh) continue;
+        if (r < inner || r > far) continue;
         // Inbound only: a receding particle would stretch on its way out.
         if (dx * s.vx[i] + dy * s.vy[i] >= 0) continue;
         var score = r - s.pericentre[i];
@@ -386,10 +456,12 @@ function step(s, dt, options) {
     var alive=s.alive, live=s.live, n=s.liveCount;
     var cx=s.centreX, cy=s.centreY, mu=s.mu, rh=s.rh, clock=s.clock;
     var width=s.width, height=s.height, pad=s.padding;
-    // The swallow radius follows the hole's visibility envelope: at 0 there is
-    // no hole to fall into, so particles pass through the softened centre.
-    var deathR=rh*(s.absorb === undefined ? 1 : s.absorb);
-    var inner=c.radius[0]*rh, outer=c.radius[1]*rh, outer2=outer*outer, drag=c.gamma;
+    // The swallow radius is the hole's VISIBLE rim, not rh: a star must not be
+    // drawn on top of the object it is falling into. It still follows the
+    // visibility envelope, so at 0 there is no hole to fall into and particles
+    // pass through the softened centre.
+    var rim=s.rim, deathR=rim*(s.absorb === undefined ? 1 : s.absorb);
+    var inner=s.captureInner, outer=s.captureOuter, outer2=outer*outer, drag=c.gamma;
     var doDrag=o.drag !== false, doTorque=o.torque !== false, doDeaths=o.deaths !== false;
     // Per-particle subdivision. The design criterion is dt*sqrt(mu/r^3) < 0.03;
     // it binds only near the hole, so a particle out in the field integrates the
@@ -463,7 +535,8 @@ function step(s, dt, options) {
                     if (SINCE[i]<0) SINCE[i]=t;
                     if (t+h-SINCE[i]>=3) {
                         RCAP[i]=r; CTIME[i]=t+h;
-                        RATE[i]=Math.max(0,Math.log(r/rh)/(2*SPIRAL[i]));
+                        // The spiral ends at the rim, where the star is eaten.
+                        RATE[i]=Math.max(0,Math.log(r/rim)/(2*SPIRAL[i]));
                         ++s.counters.captures;
                     }
                 } else SINCE[i]=-1;
@@ -550,5 +623,6 @@ if (typeof module !== 'undefined' && module.exports) module.exports = {
     BOUNDS: BOUNDS, defaults: defaults, validate: validate, create: create, configure: configure,
     advance: advance, step: step, launch: launch, energy: energy, angularMomentum: angularMomentum,
     damp: damp, random: random, swept: swept, viewportEntry: viewportEntry, rescale: rescale,
-    doom: doom, doomed: doomed, tdeStep: tdeStep, inject: inject
+    doom: doom, doomed: doomed, tdeStep: tdeStep, inject: inject,
+    visibleRadius: visibleRadius, screenRadius: screenRadius
 };

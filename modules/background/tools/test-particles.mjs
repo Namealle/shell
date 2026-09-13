@@ -15,6 +15,10 @@ const Binning = require(join(particles, "Binning.js"));
 const Packing = require(join(particles, "Packing.js"));
 
 const W = 2160, H = 3840, RH = 0.11 * 2160, DT = 1 / 30;
+// Rh is the dynamical scale; Rv is how big the hole LOOKS, and every boundary a
+// star can reach is anchored to it. With no disk geometry supplied, Rv is the
+// v4 default disk: 2.783 Rh. simulate() below can pass a real preset instead.
+const RIM = Physics.visibleRadius(RH, undefined);
 let failures = 0, checks = 0;
 function check(name, ok, detail) {
     ++checks;
@@ -31,7 +35,7 @@ function simulate(options) {
     const o = options || {};
     const input = birthInput();
     const pool = Physics.create(W, H, RH, o.seed === undefined ? 7 : o.seed, o.config || {},
-        (p, i) => Appearance.birth(p, i, input));
+        (p, i) => Appearance.birth(p, i, input), o.geometry);
     pool.absorb = o.absorb === undefined ? 1 : o.absorb;
     let items = null, bins = null;
     const visit = o.visit || (() => {});
@@ -52,7 +56,7 @@ const IX = 0, ICORE = 4, ISTREAK = 6, IFLAGS = 11, IID = 16, IGEN = 17, ISTRETCH
 const radiusOf = (d, b) => Math.hypot(d[b] - W / 2, d[b + 1] - H / 2);
 
 // ---------------------------------------------------------------- continuity
-// The bug this replaced: a star crossing streak.bendRadiusRh had its exposure
+// The bug this replaced: a star crossing streak.bendRadiusRv had its exposure
 // switched from 0.035 s to 0.26 s in one frame, and a first-come-first-served
 // instance cap flipped stars in and out of that state every frame on top. Both
 // showed up as a rendered streak length jumping several tens of pixels between
@@ -92,8 +96,8 @@ const radiusOf = (d, b) => Math.hypot(d[b] - W / 2, d[b + 1] - H / 2);
     simulate({measureSec: 10, visit: items => {
         const d = items.data;
         for (let j = 0; j < items.count; ++j) {
-            const b = j * S, r = radiusOf(d, b) / RH;
-            if (r > 1.55 && r < 1.65) shell.push(d[b + ISTRETCH]);
+            const b = j * S, r = radiusOf(d, b) / RIM;
+            if (r > 1.20 && r < 1.30) shell.push(d[b + ISTRETCH]);
         }
     }});
     shell.sort((a, b) => a - b);
@@ -132,34 +136,37 @@ const radiusOf = (d, b) => Math.hypot(d[b] - W / 2, d[b + 1] - H / 2);
     // normalises the TOTAL deformation to an instance count, which would hide a
     // heavier hole's extra reach behind a smaller scale for everyone. Captured
     // stars are skipped for the same reason - their four-second capture ramp
-    // deforms them whatever the mass is, and the capture shell sits at 3.3-4 Rh.
+    // deforms them whatever the mass is, and the capture shell sits just
+    // outside the rim.
     function profile(mass) {
-        const sum = new Array(12).fill(0), count = new Array(12).fill(0);
+        const sum = new Array(16).fill(0), count = new Array(16).fill(0);
         simulate({config: {mass, streak: {bendMaxAlive: 3200}}, measureSec: 20, visit: items => {
             const d = items.data;
             for (let j = 0; j < items.count; ++j) {
-                const b = j * S, bin = Math.floor(radiusOf(d, b) / RH * 2);
-                if (bin < 12 && d[b + 15] < 0.01) { sum[bin] += d[b + ISTRETCH]; ++count[bin]; }
+                const b = j * S, bin = Math.floor(radiusOf(d, b) / RIM * 4);
+                if (bin < 16 && d[b + 15] < 0.01) { sum[bin] += d[b + ISTRETCH]; ++count[bin]; }
             }
         }});
         return sum.map((v, i) => count[i] ? v / count[i] : 0);
     }
     const light = profile(0.5), heavy = profile(3);
-    // The reach is bendRadiusRh * cbrt(mass) * the star's own onset scale, so
-    // 2.4 Rh becomes 1.9 Rh at mass 0.5 and 3.5 Rh at mass 3. Bins 8 and 9 are
-    // 4.0-5.0 Rh: past every light-hole onset, inside the heavy hole's widest.
-    const far = a => (a[8] + a[9]) / 2;
+    // The reach is bendRadiusRv * cbrt(mass) * the star's own onset scale, so
+    // 1.45 Rv becomes 1.15 Rv at mass 0.5 and 2.09 Rv at mass 3; with the
+    // 0.62-1.42 onset spread that is 0.71-1.63 Rv against 1.30-2.97 Rv. Bins 7
+    // and 8 are 1.75-2.25 Rv: past every light-hole onset, inside the heavy
+    // hole's widest.
+    const far = a => (a[7] + a[8]) / 2;
     check("a heavier hole reaches further out", far(heavy) > 0.02 && far(light) < 0.005,
-        `4-5 Rh: mass 0.5 -> ${far(light).toFixed(4)}, mass 3 -> ${far(heavy).toFixed(4)}`);
-    // Inside about 2 Rh the response saturates for both, so mass shows up as
-    // reach and as the total deformation carried, not as a deeper floor.
+        `1.75-2.25 Rv: mass 0.5 -> ${far(light).toFixed(4)}, mass 3 -> ${far(heavy).toFixed(4)}`);
+    // Near the rim the response saturates for both, so mass shows up as reach
+    // and as the total deformation carried, not as a deeper floor.
     check("a heavier hole deforms harder everywhere it is not already saturated",
-        heavy.slice(4, 12).every((v, i) => v >= light[i + 4] - 1e-6),
-        `2-6 Rh heavy ${heavy.slice(4, 12).map(v => v.toFixed(3)).join(",")} light ${light.slice(4, 12).map(v => v.toFixed(3)).join(",")}`);
-    const outer = a => a.slice(5).reduce((x, y) => x + y, 0);
+        heavy.slice(4, 16).every((v, i) => v >= light[i + 4] - 1e-6),
+        `1-4 Rv heavy ${heavy.slice(4, 16).map(v => v.toFixed(3)).join(",")} light ${light.slice(4, 16).map(v => v.toFixed(3)).join(",")}`);
+    const outer = a => a.slice(6).reduce((x, y) => x + y, 0);
     check("mass scales how much of the field is deformed at all",
         outer(heavy) > 2 * outer(light),
-        `2.5 Rh outward: heavy ${outer(heavy).toFixed(3)} light ${outer(light).toFixed(3)}`);
+        `1.5 Rv outward: heavy ${outer(heavy).toFixed(3)} light ${outer(light).toFixed(3)}`);
 }
 {
     // The hole's own enable envelope gates all of it: with the hole off, absorb
@@ -243,7 +250,7 @@ const radiusOf = (d, b) => Math.hypot(d[b] - W / 2, d[b + 1] - H / 2);
     const before = pool.aliveCount;
     const fired = Physics.doom(pool, {streakPx: 140, stretchSec: 8, fragments: 6});
     check("a victim is found on a deep inbound orbit", fired && pool.tde.index >= 0,
-        fired ? `particle ${pool.tde.index}, pericentre ${(pool.pericentre[pool.tde.index] / RH).toFixed(2)} Rh` : "none");
+        fired ? `particle ${pool.tde.index}, pericentre ${(pool.pericentre[pool.tde.index] / RIM).toFixed(2)} Rv` : "none");
     const victim = pool.tde.index;
     // The ramp must be gradual, and the rendered streak must actually reach it.
     let prev = 0, worstStep = 0, peak = 0, split = 0;
@@ -293,6 +300,77 @@ const radiusOf = (d, b) => Math.hypot(d[b] - W / 2, d[b + 1] - H / 2);
     }
     check("the live atlas stays inside it through a full disruption", worstHeight <= sized,
         `worst ${worstHeight} of ${sized} rows`);
+}
+
+// ------------------------------------------------------- the visible hole (v7)
+// The bug this replaced: every boundary a star could reach was a multiple of Rh,
+// the shadow/photon-ring radius, while the DRAWN hole is the disk and its arcs.
+// With the target preset that is 3.900 Rh, so the swallow radius sat at 0.256 of
+// the rim and the capture band straddled it: measured on a 2160x3840 output,
+// 65.8 % of the rendered particle ink and 99.5 % of the captured ring were
+// inside the object the stars were supposedly falling into.
+const TARGET_DISK = {innerRs: 3, outerRs: 10.5, arcGain: 0.013, arcRadiusRh: 1.6, arcSpacingRh: 0.55, arcCount: 4};
+{
+    // The geometry mirrors bhOuter()/bhImpact()/bhArcReach() in blackhole.glsl.
+    // If that file moves, these pin the drift.
+    const rv = Physics.visibleRadius(RH, TARGET_DISK);
+    check("the rim comes from the disk, and the target preset's disk is far outside Rh",
+        Math.abs(rv / RH - 3.900) < 0.01, `${(rv / RH).toFixed(3)} Rh`);
+    check("the v4 default disk gives a smaller rim, still outside Rh",
+        Math.abs(RIM / RH - 2.783) < 0.01 && RIM > RH, `${(RIM / RH).toFixed(3)} Rh`);
+    check("a disk that draws no arcs stops at its material edge",
+        Math.abs(Physics.visibleRadius(RH, {innerRs: 3, outerRs: 10.5, arcGain: 0}) / RH - 3.567) < 0.01,
+        `${(Physics.visibleRadius(RH, {innerRs: 3, outerRs: 10.5, arcGain: 0}) / RH).toFixed(3)} Rh`);
+    // b_c = 3*sqrt(3)/2 Rs lands exactly on Rh, which is what makes Rh the
+    // shadow radius and not the size of the hole.
+    check("the screen radius of the photon sphere is Rh itself",
+        Math.abs(Physics.screenRadius(3 * Math.sqrt(3) / 2 / Math.sqrt(1 - 2 / (3 * Math.sqrt(3))), RH)) >= 0
+        && Math.abs(Physics.screenRadius(1.5, RH) / RH - 1) < 0.02, `${(Physics.screenRadius(1.5, RH) / RH).toFixed(4)} Rh`);
+}
+for (const geometry of [undefined, TARGET_DISK]) {
+    const label = geometry ? "target preset" : "default disk";
+    let inkInside = 0, inkTotal = 0, worst = Infinity, capturedInside = 0, captured = 0;
+    let capturedMin = Infinity, rim = 0, capIn = 0;
+    const IHALF = 18, ILUM = 10, ICAPTURED = 15;
+    simulate({geometry, measureSec: 60, visit: (items, bins, pool) => {
+        const d = items.data;
+        rim = pool.rim; capIn = pool.captureInner;
+        for (let j = 0; j < items.count; ++j) {
+            const b = j * S, lum = d[b + ILUM];
+            if (!(lum > 0.001)) continue;
+            const r = radiusOf(d, b);
+            const ink = lum * Math.max(1, d[b + IHALF]);
+            inkTotal += ink;
+            if (r - d[b + IHALF] < pool.rim) inkInside += ink;
+            // Anything the eye can actually see must be outside the rim.
+            if (lum > 0.02 && r < worst) worst = r;
+            if (d[b + ICAPTURED] > 0.5) {
+                ++captured;
+                if (r < pool.rim) ++capturedInside;
+                if (r < capturedMin) capturedMin = r;
+            }
+        }
+    }});
+    check(`no visible star is drawn inside the rim (${label})`, worst >= rim - 0.5,
+        `closest visible ${worst.toFixed(1)} px vs rim ${rim.toFixed(1)} px (${(worst / rim).toFixed(4)} Rv)`);
+    check(`what little ink crosses the rim is the fade, not stars (${label})`,
+        inkInside / Math.max(1e-9, inkTotal) < 0.01,
+        `${(100 * inkInside / Math.max(1e-9, inkTotal)).toFixed(2)} % of ink (was 65.8 % in v6)`);
+    check(`the captured ring sits outside the rim (${label})`,
+        captured > 200 && capturedInside === 0 && capturedMin >= rim - 0.5,
+        `${captured} captured instances, ${capturedInside} inside, innermost ${capturedMin.toFixed(1)} px vs rim ${rim.toFixed(1)}`);
+    check(`the capture band is outside the rim too (${label})`, capIn > rim,
+        `band starts at ${(capIn / rim).toFixed(3)} Rv`);
+}
+{
+    // Mass carries the band's STANDOFF above the rim, on the cbrt(mass) the
+    // tidal reach uses. The rim itself is drawn and does not move with mass.
+    const a = Physics.create(W, H, RH, 5, {mass: 1}, null, TARGET_DISK);
+    const b = Physics.create(W, H, RH, 5, {mass: 3}, null, TARGET_DISK);
+    check("a heavier hole captures from further out, from the same rim",
+        Math.abs(a.rim - b.rim) < 1e-9 && b.captureOuter > a.captureOuter && b.captureInner > a.captureInner
+        && Math.abs((b.captureOuter / b.rim - 1) / (a.captureOuter / a.rim - 1) - Math.cbrt(3)) < 1e-6,
+        `standoff ${(a.captureOuter / a.rim - 1).toFixed(4)} -> ${(b.captureOuter / b.rim - 1).toFixed(4)} Rv`);
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

@@ -1653,6 +1653,16 @@ Item {
             return false;
         const w = width * devicePixelRatio, h = height * devicePixelRatio;
         const rh = _hole.bhGeometry.x;
+        // How big the hole LOOKS, from the hole's own published uniforms: the
+        // disk's radii and its outer arcs. Physics turns this into the swallow
+        // radius, the capture band and the tidal reach, so no particle is ever
+        // drawn on top of the object it is falling into. Read-only: the look of
+        // the disk is BlackHole.qml's to change, and this follows it.
+        const geometry = {
+            innerRs: _hole.bhDisk.x, outerRs: _hole.bhDisk.y,
+            arcGain: _hole.bhArcs.x, arcRadiusRh: _hole.bhArcs.y,
+            arcSpacingRh: _hole.bhArcs.z, arcCount: _hole.bhArcs.w
+        };
         // Serializing the settings twice a frame was pure garbage: both property
         // objects are replaced wholesale on an edit, so identity is the test.
         // blackHole.mass is the canonical key; particles.mass overrides it, so
@@ -1666,9 +1676,12 @@ Item {
                 _particleSettings.mass = mass;
             _particleSettingsText = JSON.stringify(_particleSettings);
         }
-        const signature = _particleSettingsText + ":" + w + ":" + h + ":" + rh;
+        const signature = _particleSettingsText + ":" + w + ":" + h + ":" + rh
+            + ":" + geometry.innerRs + ":" + geometry.outerRs
+            + ":" + geometry.arcGain + ":" + geometry.arcRadiusRh
+            + ":" + geometry.arcSpacingRh + ":" + geometry.arcCount;
         if (!_particles) {
-            _particles = ParticlePhysics.create(w, h, rh, screenSeed ^ varietySeed, _particleSettings);
+            _particles = ParticlePhysics.create(w, h, rh, screenSeed ^ varietySeed, _particleSettings, undefined, geometry);
             _particleConfiguration = signature;
         } else if (signature !== _particleConfiguration) {
             // DPR converts units only; ordinary resize and reactive edits leave
@@ -1683,7 +1696,7 @@ Item {
                         _particles.maxStreak[i] *= factor;
                     }
             }
-            ParticlePhysics.configure(_particles, w, h, rh, _particleSettings);
+            ParticlePhysics.configure(_particles, w, h, rh, _particleSettings, geometry);
             _particleConfiguration = signature;
             // A new bin grid can need a different number of texels; recompute
             // the shared allocation instead of keeping the old one forever.
