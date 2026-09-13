@@ -28,10 +28,10 @@ Service schema (closed object; reject unknown keys, booleans must be booleans):
 | substeps | 4 | integer 4..32 per 1/30 s; adaptive refinement may add steps |
 | streak.exposureSec | .035 | finite 0..0.10 seconds |
 | streak.maxPx | 20 | finite 0..32 physical px |
-| streak.bendExposureSec | .26 | finite 0..1 s, used inside bendRadiusRh |
-| streak.bendMaxPx | 64 | finite 0..120 physical px |
-| streak.bendMaxAlive | 200 | integer 0..3200 curved instances; the excess renders straight |
-| streak.bendRadiusRh | 2.4 | finite 0..12 Rh; inside it trails curve along the orbit |
+| streak.bendExposureSec | .26 | finite 0..1 s, the exposure at full deformation |
+| streak.bendMaxPx | 64 | finite 0..120 physical px, the streak ceiling at full deformation |
+| streak.bendMaxAlive | 200 | integer 0..3200; a SMOOTH budget on the summed deformation, not a per-instance switch |
+| streak.bendRadiusRh | 2.4 | finite 0..12 Rh; the nominal onset radius of the tidal deformation |
 | sizes.nearPx | [2.4,4.8] | ordered pair, each .25..12 physical px FWHM |
 | sizes.middlePx | [0.9,1.7] | ordered pair, each .25..12 physical px FWHM |
 | sizes.capturedPx | [1.2,2.2] | ordered pair, each .25..12 physical px FWHM |
@@ -66,6 +66,55 @@ together; `particles.mass` overrides it. The hole's own visibility envelope
 the hole leaves the particles streaming through a soft centre instead of
 vanishing into an invisible point.
 
+## Tidal deformation (v6)
+
+Every particle carries one continuous scalar, `stretch` in 0..1, and nothing
+about its rendered shape switches between states. Through v5 a star crossed
+`streak.bendRadiusRh` and had its exposure replaced (.035 s -> .26 s) and its
+kernel swapped from straight to curved in a SINGLE frame, while a
+first-come-first-served `bendMaxAlive` cap flipped stars in and out of that
+state from one frame to the next; measured on a 2160x3840 output, 344 stars sat
+inside a 200-instance cap and rendered streaks jumped by up to 54 px between
+consecutive frames. The scalar replaces both.
+
+The drive is the local tidal field. mu is proportional to `rh^3 * mass`, so
+normalising `mu/r^3` at `reach = bendRadiusRh * rh * cbrt(mass) * onset` leaves
+`(reach/r)^3`, which depends on `mass/r^3` and nothing else: one number moves
+both the reach and the strength, and the hole's enable envelope (`absorb`,
+i.e. `bhHalo.w`) multiplies the whole target, so a disabled hole fades the
+deformation out over the same thirty seconds and leaves none at all. The
+response saturates as `smoothstep(clamp((drive-1)*0.4))`, is weighted by
+`0.55 + 0.45 * |r^ . v^|` — the tide stretches material along the RADIUS, and
+the kernel is oriented by the velocity, so a radial plunge is what elongates it —
+and takes `0.35 * captured` on top, the existing four-second capture ramp
+standing in for time since capture.
+
+Three traits are frozen at birth, so two stars at the same radius never render
+the same shape: `tideOnset` .62-1.42 scales where the star first feels the hole,
+`tideGain` .55-1 how far it goes, `tideRate` .45-1.9 s the relaxation constant.
+The rendered value is a first-order relaxation `stretch += (target-stretch) *
+step/(tau+step)` on ACTIVE time, so a paused output resumes rather than jumping,
+and no star can move more than 6.9 % of its remaining gap in one frame.
+
+The scalar drives three things continuously: the exposure and its pixel ceiling
+lerp from `streak.exposureSec`/`maxPx` to `bendExposureSec`/`bendMaxPx`
+(tangential stretch), the shader multiplies `minorVariance` by `1 - .40*stretch`
+(radial squash at constant integrated energy), and it weights the curved
+kernel's transverse offset. That last term needs no direction factor of its own:
+kappa is the perpendicular acceleration, which a radial plunge has none of.
+
+`bendMaxAlive` is now a smooth global budget. Each frame the summed unscaled
+target is compared with it and one global scale slews toward `cap/demand` with a
+two-second constant, so a crowded frame dims everyone's deformation slightly
+instead of snapping one star's trail from 64 px to 14 px. Because the scale is
+global, slow and applied to the target rather than the state, no single star's
+shape can step. `bounds()` therefore sizes the atlas for `maxBends = maxItems`:
+any instance may be fully stretched, and a transient may briefly carry the sum
+above the budget while the relaxations catch up.
+
+Flags bit 6 is only a hint that the deformation is nonzero; the shader and the
+packer both weight on the scalar. Node tests: `modules/background/tools/test-particles.mjs`.
+
 Far dust flows inward on the existing radial cell grid, which advances at a
 constant rate in u = r^2/2 and therefore moves at dr/dt proportional to 1/r:
 about 100 px/s at 1 Rh, 14 px/s at mid-screen and 7 px/s in the corner of a
@@ -98,10 +147,10 @@ barycentre; wanderer offsets affect rendering only. Decayer lifetime starts at
 swept first viewport entry and never resets. DPR-only edits convert units once;
 ordinary resize retains physical x/v. Pericentre hue styling is omitted.
 
-Render instances are one flat Float64Array, stride 20: x y vx vy core support
-streak r g b lum flags phase p0 age captured id generation halfMajor halfMinor;
-flags is the archetype in the low three bits, bit 3 flare, bit 4 near layer,
-bit 5 in front of the disk, bit 6 curved trail. The binner walks the streak's
+Render instances are one flat Float64Array, stride 21: x y vx vy core support
+streak r g b lum flags phase p0 age captured id generation halfMajor halfMinor
+stretch; flags is the archetype in the low three bits, bit 3 flare, bit 4 near
+layer, bit 5 in front of the disk, bit 6 a nonzero tidal deformation. The binner walks the streak's
 capsule (half-extents at 18/19) rather than its bounding box; the packer turns
 the same two numbers into the axis-aligned box the shader rejects against, which
 a long thin trail fills about ten times more densely than the disc of its
@@ -110,8 +159,12 @@ half-length. Atlas: binding3, opaque nearest RGBA8, width256. Four metadata texe
 six low bits (0..16); bit6 extends offsets by65536; bit7 links another page.
 Full pages carry16 indices followed by a continuation header. No occupant drops;
 512 shader pages cover all6400 possible binary render instances. Eight data
-texels hold position16+support(0.5px)/core, velocity16, RGB8, energy16, flags/phase,
+texels hold position16+stretch/core, velocity16, RGB8, energy16, flags/phase,
 period/streak and the reject box + capture blend. The last texel is a sentinel.
+Texel +1 green carried the bin support through v5, which the reject box replaced
+and no shader has read since; it now carries the 0..255 tidal stretch, and costs
+no extra fetch because that texel is already sampled for the position's high
+bits. The version byte is 5 (was 4), checked on the CPU by `Packing.verify`.
 Position domain includes padding plus40px optical guard. All touched bins receive
 an index. Empty bins fetch one header; appearance is fetched only after support
 rejection. Compact anisotropic Gaussian kernels normalize integrated energy.

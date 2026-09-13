@@ -21,7 +21,8 @@ function range(value, fallback, lo, hi, u) {
 }
 function ensure(s) {
     if (s.exposure) return;
-    for (var k of ["exposure", "maxStreak", "entryStamp", "altR", "altG", "altB", "flare", "shimmerRate", "front"])
+    for (var k of ["exposure", "maxStreak", "entryStamp", "altR", "altG", "altB", "flare", "shimmerRate", "front",
+        "stretch", "tideOnset", "tideGain", "tideRate"])
         s[k] = new Float64Array(s.capacity);
     s.entryStamp.fill(-1);
 }
@@ -79,6 +80,15 @@ function birth(s, i, input) {
     // Frozen here so the twinkle term costs one sine per frame, not a hash too.
     s.shimmerRate[i] = 193 + Math.floor(draw(seed, 79) * 238);
     s.entryStamp[i] = -1;
+    // Tidal deformation traits. The rendered stretch is a continuous state that
+    // relaxes toward a target set by the local tidal field, so these three are
+    // what keep two stars at the same radius from looking like the same sprite:
+    // onset scales where the star first feels the hole, gain how far it goes,
+    // rate how many frames it takes to get there.
+    s.tideOnset[i] = 0.62 + 0.80 * draw(seed, 97);
+    s.tideGain[i] = 0.55 + 0.45 * draw(seed, 101);
+    s.tideRate[i] = 0.45 + 1.45 * draw(seed, 103);
+    s.stretch[i] = 0;
     var p = params[["steady", "pulsator", "decayer", "glint", "wanderer", "binary"][kind]] || {};
     s.p0[i] = 0; s.p1[i] = 0; s.p2[i] = 0; s.p3[i] = 0;
     var period = 1;
@@ -133,6 +143,10 @@ function supportFor(core, streak, flare) {
 // resized: a binary emits two render instances, every other archetype one, no
 // live core or streak can exceed the validated configuration maxima, and
 // render() itself caps how many instances may carry a flare.
+// Tidal deformation is continuous, so the allocation must assume that ANY
+// instance may be fully stretched: `streak.bendMaxAlive` is a smooth budget on
+// the summed stretch, not a hard per-instance switch, and a transient can carry
+// it above the budget for a second while the relaxations catch up.
 function bounds(s) {
     var z = s.config.sizes;
     var core = Math.round(clamp(Math.max(z.nearPx[1], z.middlePx[1], z.capturedPx[1]), 0.25, 12) * 16) / 16;
@@ -144,19 +158,21 @@ function bounds(s) {
     // bounded by streak.maxPx; only the capped bend and flare sets are wider.
     var plain = (supportFor(core, streak, false) + minor) * Math.SQRT1_2;
     var bent = (supportFor(core, s.config.streak.bendMaxPx, false) + minor) * Math.SQRT1_2;
-    return {maxItems: s.targetPopulation + s.config.depth.binaryMaxAlive,
+    var items = s.targetPopulation + s.config.depth.binaryMaxAlive;
+    return {maxItems: items,
         maxSupport: Math.max(plain, minor),
         maxFlares: s.config.flare.maxAlive, flareSupport: supportFor(nearCore, streak, true),
-        maxBends: s.config.streak.bendMaxAlive, bendSupport: Math.max(bent, minor)};
+        maxBends: items, bendSupport: Math.max(bent, minor)};
 }
 // Render instances are one flat Float64Array, not an array of objects: writing
 // eighteen properties per instance per frame is the single most expensive thing
 // this file can do in QML's JS engine. The field order is the contract shared
 // with Binning.js and Packing.js (and documented in PARTICLES.md).
-var STRIDE = 20;
+var STRIDE = 21;
 var IX = 0, IY = 1, IVX = 2, IVY = 3, ICORE = 4, ISUPPORT = 5, ISTREAK = 6, IR = 7,
     IG = 8, IB = 9, ILUM = 10, IFLAGS = 11, IPHASE = 12, IP0 = 13, IAGE = 14,
-    ICAPTURED = 15, IID = 16, IGENERATION = 17, IBOXX = 18, IBOXY = 19;   // 18/19: half-extents along and across the streak
+    ICAPTURED = 15, IID = 16, IGENERATION = 17, IBOXX = 18, IBOXY = 19,   // 18/19: half-extents along and across the streak
+    ISTRETCH = 20;                                                        // 20: continuous tidal deformation 0..1
 // Test and fixture helper: the same flat form from an array of plain objects.
 function instances(list) {
     if (list && list.data) return list;
@@ -175,12 +191,14 @@ function instances(list) {
         out.data[b + IID] = p.id || 0; out.data[b + IGENERATION] = p.generation || 0;
         out.data[b + IBOXX] = p.halfMajor === undefined ? (p.support || 0) : p.halfMajor;
         out.data[b + IBOXY] = p.halfMinor === undefined ? (p.support || 0) : p.halfMinor;
+        out.data[b + ISTRETCH] = p.stretch || 0;
     }
     return out;
 }
 function render(previous, s, style) {
     ensure(s);
-    var items = previous && previous.data ? previous : {data: new Float64Array(STRIDE * 64), count: 0, stride: STRIDE};
+    var items = previous && previous.data && previous.stride === STRIDE
+        ? previous : {data: new Float64Array(STRIDE * 64), count: 0, stride: STRIDE};
     var out = items.data, count = 0;
     var tau = 2 * Math.PI, phaseTime = ((s.clock % 4096) + 4096) % 4096;
     var twinkle = clamp(style && style.twinkle || 0, 0, 1);
@@ -191,6 +209,7 @@ function render(previous, s, style) {
     var KIND = s.archetype, PHASE = s.phase, P0 = s.p0, P1 = s.p1, P2 = s.p2;
     var SIZE = s.size, CAPSIZE = s.capturedSize, LUM = s.luminosity, FLARE = s.flare, DEPTH = s.depth, FRONT = s.front;
     var RCAP = s.radiusAtCapture, CTIME = s.captureTime, ENTRY = s.entryTime, STAMP = s.entryStamp;
+    var STRETCH = s.stretch, TONSET = s.tideOnset, TGAIN = s.tideGain, TRATE = s.tideRate;
     var EXPOSURE = s.exposure, MAXSTREAK = s.maxStreak, GEN = s.generation, SHIMMER = s.shimmerRate;
     var R = s.r, G = s.g, B = s.b, ALTR = s.altR, ALTG = s.altG, ALTB = s.altB;
     var live = s.live, n = s.liveCount, cx = s.centreX, cy = s.centreY;
@@ -200,10 +219,28 @@ function render(previous, s, style) {
     var width = s.width, height = s.height, clock = s.clock, dim = s.config.flare.capturedLight;
     var flareCap = s.config.flare.maxAlive, flares = 0;
     var st = s.config.streak;
-    var bendRadius = st.bendRadiusRh * rh, bendExposure = st.bendExposureSec;
+    var bendExposure = st.bendExposureSec;
     var bendMaxPx = st.bendMaxPx, bendSag = 6;
-    var bendCap = st.bendMaxAlive, bends = 0;
     var binaryCap = s.config.depth.binaryMaxAlive, binaries = 0;
+    // Tidal deformation. mu is proportional to rh^3 * mass, so normalising the
+    // field mu/r^3 at a radius proportional to rh*cbrt(mass) leaves a drive that
+    // depends on mass/r^3 and on nothing else: one number moves both the reach
+    // and the strength, and the hole's own enable envelope gates all of it, so a
+    // disabled hole fades the deformation out over the same thirty seconds.
+    var envelope = s.absorb === undefined ? 1 : clamp(s.absorb, 0, 1);
+    var reachBase = st.bendRadiusRh * s.rh * Math.pow(clamp(s.config.mass, 0, 3), 1 / 3);
+    // The relaxation is driven by ACTIVE time, so a paused output resumes where
+    // it left off instead of jumping a frame's worth of stretch per real second.
+    var step = s.stretchClock === undefined ? 0 : clock - s.stretchClock;
+    if (!(step > 0)) step = 0; else if (step > 0.25) step = 0.25;
+    s.stretchClock = clock;
+    // One global, slewed budget replaces the old per-instance bend cap. The cap
+    // decided frame by frame which stars were allowed a long curved trail, so
+    // stars on the losing side of it flipped between a 14 px chord and a 64 px
+    // arc from one frame to the next. A global scale dims everyone's deformation
+    // together, slowly, and no single star's trail can ever jump.
+    var budget = s.stretchBudget === undefined ? 1 : s.stretchBudget;
+    var bendCap = st.bendMaxAlive, demand = 0;
     for (var k = 0; k < n; ++k) {
         var i = live[k];
         var kind = KIND[i], phase = PHASE[i];
@@ -230,14 +267,40 @@ function render(previous, s, style) {
         var speed = Math.sqrt(vx * vx + vy * vy);
         var dx = X[i] - cx, dy = Y[i] - cy;
         var radius = Math.sqrt(dx * dx + dy * dy);
-        // Inside the bending radius the exposure is longer, so the trail spans a
-        // visible arc of the orbit instead of a sub-pixel chord.
-        // Both caps are enforced here, like the flare cap, so the atlas ceiling
-        // stays a hard bound: the excess renders straight, or as a single star.
-        var bend = radius < bendRadius && bends < bendCap ? 1 : 0;
-        bends += bend;
-        var exposure = bend ? bendExposure : EXPOSURE[i];
-        var cap = bend ? bendMaxPx : MAXSTREAK[i];
+        // Continuous tidal deformation. `drive` is the local tidal field
+        // normalised to 1 at THIS star's own onset radius; the response
+        // saturates a little inside it, and the rendered value is a first-order
+        // relaxation toward that target, so it can never move by more than
+        // step/(tau+step) of the remaining gap in one frame.
+        var reach = reachBase * TONSET[i];
+        var drive = reach / (radius > 1e-3 ? radius : 1e-3);
+        drive = drive * drive * drive;
+        var tide = (drive - 1) * 0.4;
+        tide = tide > 1 ? 1 : (tide > 0 ? tide : 0);
+        tide = tide * tide * (3 - 2 * tide);
+        // Direction relative to the hole. The tide stretches material ALONG the
+        // radius, so a star falling straight in elongates along its own motion
+        // and a tangential pass elongates across it; the rendered kernel is
+        // oriented by the velocity, so the radial component is the one that
+        // lengthens it. The curved-wake term needs no factor here at all: its
+        // kappa is the perpendicular acceleration, which a radial plunge has
+        // none of, so the shader gates the arc on the same geometry for free.
+        var radial = radius > 1e-3 && speed > 1e-3
+            ? Math.abs(dx * vx + dy * vy) / (radius * speed) : 0;
+        var target = envelope * TGAIN[i] * tide * (0.55 + 0.45 * radial);
+        // Time since capture: a captured star is already coming apart, and the
+        // existing four-second capture ramp is the clock that says how far.
+        target += 0.35 * captured * TGAIN[i] * envelope;
+        if (target > 1) target = 1;
+        demand += target;
+        target *= budget;
+        var stretch = STRETCH[i] + (target - STRETCH[i]) * (step / (TRATE[i] + step));
+        STRETCH[i] = stretch;
+        // Tangential stretch: the exposure and its ceiling both slide with the
+        // deformation, so the trail lengthens over many frames instead of
+        // switching between two fixed sprites.
+        var exposure = EXPOSURE[i] + stretch * (bendExposure - EXPOSURE[i]);
+        var cap = MAXSTREAK[i] + stretch * (bendMaxPx - MAXSTREAK[i]);
         var streak = Math.min(cap, speed * exposure);
         // Round the rendered geometry first; the bin radius includes its
         // quantization and position reconstruction error, not just source math.
@@ -258,7 +321,7 @@ function render(previous, s, style) {
         if (streak > 2 * core && speed > 0.01)
             // The minor extent carries the curved kernel's transverse sagitta,
             // which supportFor already reserved, so it stays inside the support.
-            halfMinor = Math.min(support, supportFor(core, 0, flare) + (bend ? bendSag : 0));
+            halfMinor = Math.min(support, supportFor(core, 0, flare) + bendSag * stretch);
         // Both fades are inlined smoothsteps and both are 1 almost everywhere:
         // a particle is only inside the rim fade or younger than 0.35 s rarely.
         var span = core * 2 > 6 ? core * 2 : 6, fade = 1;
@@ -271,20 +334,21 @@ function render(previous, s, style) {
         var shimmer = twinkle > 0 ? 1 + 0.15 * twinkle * Math.sin(cycle * SHIMMER[i] + phase) : 1;
         var light = LUM[i] * (1 - dim * captured) * behavior * fade * shimmer;
         var mix = kind === 6 ? 0.5 - 0.5 * Math.cos(oscillation) : 0;
-        // kind 0..6, bit 3 = four-point flare, bit 4 = near layer (saturating core)
-        // kind 0..6 low three bits, bit 3 flare, bit 4 near layer, bit 5 in front
-        // of the disk, bit 6 close enough to the hole to render a curved streak.
+        // kind 0..6 low three bits, bit 3 flare, bit 4 near layer (saturating
+        // core), bit 5 in front of the disk, bit 6 a nonzero tidal deformation.
+        // Bit 6 is only a hint: the shader and the packer both weight the curved
+        // kernel and the sagitta headroom by the stretch scalar itself.
         var flags = kind + 8 * flare + (DEPTH[i] > 0.5 ? 16 : 0) + (FRONT[i] > 0.5 ? 32 : 0)
-            + (radius < bendRadius ? 64 : 0);
+            + (stretch > 0.002 ? 64 : 0);
         for (var component = 0; component < components; ++component) {
-            if ((count + 1) * 20 > out.length) {
-                var grown = new Float64Array(Math.max((count + 1) * 20, out.length * 2));
+            if ((count + 1) * 21 > out.length) {
+                var grown = new Float64Array(Math.max((count + 1) * 21, out.length * 2));
                 grown.set(out);
                 out = items.data = grown;
             }
             // Literal offsets: a module-scope name costs a dictionary lookup
             // per write in QML's JS engine. Order is the STRIDE contract above.
-            var b = count * 20, sign = component === 0 ? 1 : -1;
+            var b = count * 21, sign = component === 0 ? 1 : -1;
             out[b] = X[i] + sign * ox; out[b + 1] = Y[i] + sign * oy;
             out[b + 2] = vx; out[b + 3] = vy; out[b + 4] = core;
             out[b + 5] = support; out[b + 6] = streak;
@@ -295,10 +359,16 @@ function render(previous, s, style) {
             out[b + 12] = phase; out[b + 13] = P0[i]; out[b + 14] = AGE[i];
             out[b + 15] = captured; out[b + 16] = i; out[b + 17] = GEN[i];
             out[b + 18] = halfMajor; out[b + 19] = halfMinor;
+            out[b + 20] = stretch;
             ++count;
         }
     }
     items.count = count;
+    // Feedback on the UNSCALED demand, so the fixed point is budget = cap/demand
+    // and the loop cannot oscillate: two seconds of slew on a number that only
+    // ever scales every star's target together.
+    var want = bendCap > 0 ? (demand > bendCap ? bendCap / demand : 1) : 0;
+    s.stretchBudget = budget + (want - budget) * (step / (2 + step));
     return items;
 }
 

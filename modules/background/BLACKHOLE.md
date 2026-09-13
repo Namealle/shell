@@ -140,6 +140,10 @@ bhDisk returns premultiplied LINEAR rgb/coverage: disk.rgb+(1-disk.a)*(far+mater
 Shadow masks starlight BEFORE disk. bhDiskAbsorb is actual compact geometric disk
 coverage weighted by P: 0 outside, 1 bright inner coverage; excludes shadow/thread.
 Foreground/capture events remain birth-frozen; CPU cubic Bezier capture ends inside Rh.
+`blackHole.mass` (.5-3, default 1, overridden by `particles.mass`) also sets the
+reach and strength of the particles' tidal deformation: the onset radius goes as
+`cbrt(mass)`, so the drive is exactly proportional to mass/r^3. The enable
+envelope gates it, so a disabled hole leaves no deformation. PARTICLES.md owns it.
 
 ## LUT, gates and limits
 blackhole_lut.py is unchanged RK4: 1024x262 RGBA8. Rows 0–255 u(psi), 256/257

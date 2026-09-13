@@ -60,7 +60,7 @@ function pack(previous, bins, items, meta, allocate) {
         rgb(texel, offset % 256, Math.floor(offset / 256) % 256,
             count + (offset >= 65536 ? 64 : 0) + (more ? 128 : 0));
     }
-    rgb(0, 83, 70, 4); // SF version 4; independently checked after upload.
+    rgb(0, 83, 70, 5); // SF version 5; independently checked after upload.
     number24(1, out.revision);
     number24(2, Math.floor(((meta.clock % 86400) + 86400) % 86400 * 128));
     rgb(3, 17, 129, 253); // detects channel swaps / color conversion.
@@ -102,8 +102,9 @@ function pack(previous, bins, items, meta, allocate) {
     written.length = writtenCount;
     // The instance loop is the hot one: byte offsets are computed once per texel
     // and written directly instead of through a closure.
-    // Flat render instances (particles/Appearance.js): stride 18, field order
-    // x y vx vy core support streak r g b lum flags phase p0 age captured id gen.
+    // Flat render instances (particles/Appearance.js): stride 21, field order
+    // x y vx vy core support streak r g b lum flags phase p0 age captured id gen
+    // halfMajor halfMinor stretch.
     var domain = out.domain, dx = domain[0], dy = domain[1];
     var sx = 65535 / domain[2], sy = 65535 / domain[3];
     var src = items.data, stride = items.stride;
@@ -131,15 +132,25 @@ function pack(previous, bins, items, meta, allocate) {
         var by = Math.sqrt(m2 * ey * ey + n2 * ex * ex) * 2;
         // A curved trail is displaced transversely by up to the sagitta the bin
         // radius reserved; at a diagonal the ellipse box would clip that, and the
-        // capsule the binner used already covers it.
-        if (src[f + 11] >= 64) { bx += 12; by += 12; }
+        // capsule the binner used already covers it. The shader clamps that
+        // displacement to +-6 px times the stretch, so the padding follows the
+        // same scalar instead of switching on with the old bend bit.
+        var stretch = src[f + 20];
+        if (stretch > 0) {
+            var pad = Math.ceil(12 * (stretch > 1 ? 1 : stretch));
+            bx += pad; by += pad;
+        }
         bx = bx > 255 ? 255 : (bx > 0 ? Math.ceil(bx) : 0);
         by = by > 255 ? 255 : (by > 0 ? Math.ceil(by) : 0);
-        var core = src[f + 4], support = src[f + 5], streak = src[f + 6], captured = src[f + 15];
+        var core = src[f + 4], streak = src[f + 6], captured = src[f + 15];
         var xh = (x / 256) | 0, yh = (y / 256) | 0, vxh = (vx / 256) | 0, vyh = (vy / 256) | 0;
         bytes[j] = x - xh * 256; bytes[j + 1] = xh; bytes[j + 2] = y - yh * 256;
         bytes[j + 4] = yh;
-        bytes[j + 5] = Math.ceil((support > 127.5 ? 127.5 : (support > 0 ? support : 0)) * 2);
+        // Texel +1 green carried the bin support, which the reject box replaced
+        // and no shader has read since v4. It now carries the continuous tidal
+        // stretch 0..255, and costs no extra fetch: the shader already samples
+        // this texel for the high bits of the position.
+        bytes[j + 5] = ((stretch > 1 ? 1 : (stretch > 0 ? stretch : 0)) * 255 + 0.5) | 0;
         bytes[j + 6] = ((core > 12 ? 12 : (core > 0.25 ? core : 0.25)) * 16 + 0.5) | 0;
         bytes[j + 8] = vx - vxh * 256; bytes[j + 9] = vxh; bytes[j + 10] = vy - vyh * 256;
         bytes[j + 12] = vyh;
@@ -164,7 +175,7 @@ function pack(previous, bins, items, meta, allocate) {
 }
 function verify(packet) {
     var d = packet.bytes, end = (packet.texelsUsed - 1) * 4;
-    return d[0] === 83 && d[1] === 70 && d[2] === 4 && d[3] === 255
+    return d[0] === 83 && d[1] === 70 && d[2] === 5 && d[3] === 255
         && d[4] + d[5] * 256 + d[6] * 65536 === packet.revision
         && d[12] === 17 && d[13] === 129 && d[14] === 253 && d[15] === 255
         && d[end] === 251 && d[end + 1] === 127 && d[end + 2] === 19 && d[end + 3] === 255;

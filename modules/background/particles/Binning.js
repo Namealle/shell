@@ -16,7 +16,7 @@ function build(previous, items, width, height) {
             cursor: new Uint32Array(n), indices: new Uint16Array(0),
             ranges: new Int32Array(0), rows: new Int32Array(0) };
     }
-    // Flat render instances (particles/Appearance.js): stride 18, x/y/support at
+    // Flat render instances (particles/Appearance.js): stride 21, x/y/support at
     // offsets 0/1/5. The same field order the packer reads.
     var data = items.data, stride = items.stride, count = items.count;
     if (count > 6400)

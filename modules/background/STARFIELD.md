@@ -131,6 +131,9 @@ arcs{gain 0–0.02, radiusRh 1.2–2.6, spacingRh 0.2–1, count 0–2}. `photon
 Hole numbers clamp into range; wrong types and unknown nested keys drop with an index-only warning. Visual integration is renderer-owned.
 Particles replace the procedural middle/near layers; `modules/background/PARTICLES.md` owns the physics, the atlas and the renderer's own clamping.
 `"particlesEnabled": false` restores the v3 shader path exactly; far dust, events and the disk stay procedural either way.
+v6 deforms particle stars continuously: one 0–1 scalar per star from the local tidal field (mass/r^3), its direction relative to the hole and its time
+since capture, relaxed over 0.45–1.9 s per star, driving the streak exposure, a radial squash and the curved trail together. Birth-frozen onset, gain and
+rate keep two stars at the same radius different; `blackHole.mass` scales reach and strength; a disabled hole fades it to nothing. No key changes.
 Closed schema, every key optional: population{near, middle} integers 0–3200 with near+middle ≤3200 (defaults 120/480, or 600/1500 when
 stressPreset is true), stressPreset boolean, vref 10–600 px/s, launch{plunge, miss, wide 0–1 (the renderer normalizes the three),
 betaBound [0.10,0.99], unboundShare 0–1, betaUnbound [1.001,2], handedness 0–1}, capture{radius [1.05,8] Rh, gamma 0–2 /s,

@@ -667,21 +667,30 @@ vec3 particleHit(vec2 pixel, float index, float absorb, out float front) {
     float core = g1.b/16.0;
     float sigma = core/2.354820045;
     float streak = optical.b*(120.0/255.0);
+    // Continuous tidal deformation, 0..1, from particles/Appearance.js. It is
+    // the CPU's relaxed per-star state, so every term below moves over many
+    // frames; nothing here switches between two shapes.
+    float stretch = g1.g*(1.0/255.0);
     float minorVariance = sigma*sigma+1.0/12.0;
+    // Radial squash: the same tide that draws the trail out along the motion
+    // pinches the star across it, at constant integrated energy.
+    minorVariance *= 1.0-0.40*stretch;
     float majorVariance = minorVariance+streak*streak/12.0;
     vec2 q = vec2(dot(d,direction),dot(d,vec2(-direction.y,direction.x)));
-    // Inside the bending radius the trail follows the local orbit: the transverse
+    // Deep in the field the trail follows the local orbit: the transverse
     // coordinate is offset by the arc of the true path, so a long streak reads as
     // a curved wake instead of a straight chord. kappa is the exact local
     // curvature of the softened two-body acceleration, computed here rather than
-    // packed, so it costs nothing for the particles that do not bend.
-    if (step(64.0,flags)>0.5 && speed>1.0) {
+    // packed, so it costs nothing for the particles that do not bend, and the
+    // stretch weights it in so the arc grows out of the chord.
+    if (stretch>0.002 && speed>1.0) {
         vec2 toCentre = ubuf.bhCentre-p;
         float rc2 = dot(toCentre,toCentre)+1.0;
         vec2 acc = toCentre*(ubuf.particleMu/(rc2*sqrt(rc2)));
         float kappa = dot(acc,vec2(-direction.y,direction.x))/(speed*speed);
-        // Bounded by the sagitta headroom the bin radius reserved.
-        q.y -= clamp(0.5*kappa*q.x*q.x,-6.0,6.0);
+        // Bounded by the sagitta headroom the bin radius reserved, which the
+        // packer also scales by this same stretch.
+        q.y -= clamp(0.5*kappa*q.x*q.x,-6.0,6.0)*stretch;
     }
     float distance = q.x*q.x/majorVariance+q.y*q.y/minorVariance;
     float energy = (light.g+256.0*light.b)*(4.0/65535.0);
