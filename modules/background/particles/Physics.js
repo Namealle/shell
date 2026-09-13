@@ -167,7 +167,7 @@ function cameraOn(s) {
 }
 function cameraFar(s) {
     var d = s.cameraDepth;
-    return d >= 2 && isFinite(d) ? (d > 64 ? 64 : d) : 12;
+    return d >= 2 && isFinite(d) ? (d > 64 ? 64 : d) : 16;
 }
 // A depth for a star that has none yet: every particle alive when the camera
 // engages needs one, and drawing it from the simulation's RNG would shift the
@@ -223,7 +223,7 @@ function create(width, height, rh, seed, raw, birthCallback, geom) {
         centreX: width / 2, centreY: height / 2, rotationSign: 1, absorb: 1,
         // Camera regime, all runtime state like `absorb`: the renderer writes
         // them every frame. blend 0 is the pure orbital regime.
-        cameraBlend: 0, cameraDir: 1, cameraDepth: 12, cameraRate: 0, cameraRoll: 0,
+        cameraBlend: 0, cameraDir: 1, cameraDepth: 16, cameraRate: 0, cameraRoll: 0,
         meanLifetime: 30, lifetimeSamples: 0, lifetimeSum: 0, burstPhase: ((seed >>> 0) % 6283)/1000,
         birthCallback: birthCallback, counters: {births: 0, deaths: 0, absorbed: 0,
             escapes: 0, safety: 0, captures: 0, passed: 0, steps: 0}};
@@ -297,9 +297,9 @@ function finishBirth(s, i, cls, q, depthOverride) {
 //   forward  born at the FAR plane, anywhere on the padded screen (uniform per
 //            unit area -- a uniform 3-D field crossing a plane is uniform on
 //            the screen), dies where its magnified radius leaves the screen.
-//   reverse  born at a screen EDGE with z drawn as far*sqrt(U), which is the
-//            distribution forward deaths arrive at that edge with, and dies at
-//            the far plane, anywhere on screen.
+//   reverse  the SAME far-plane draw, read as the point where the star will
+//            dissolve: run it back out along its own ray to the edge it came
+//            in through and start it there, at the depth it crossed at.
 function cameraLaunch(s, i) {
     var far = cameraFar(s), rate = s.cameraRate > 0 ? s.cameraRate : 0;
     var dir = s.cameraDir < 0 ? -1 : 1;

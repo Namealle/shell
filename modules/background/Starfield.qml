@@ -1822,7 +1822,7 @@ Item {
         // through the centre instead of vanishing into an invisible point.
         _particles.absorb = _hole.bhHalo.w;
         // The camera regime. `cameraRate` is depth units per active second: one
-        // traversal of the whole depth range takes 120 s at speed 6, so a star
+        // traversal of the whole depth range takes 60 s at speed 6, so a star
         // at the far plane crawls and the same star at the near plane streaks
         // past at `depth` times that. Zero speed freezes the camera with the
         // rest of the motion. The roll is a bounded sinusoid in RATE, so its
