@@ -1,5 +1,10 @@
 import QtQuick
+import "particles/Physics.js" as ParticlePhysics
+import "particles/Appearance.js" as ParticleAppearance
+import "particles/Binning.js" as ParticleBinning
+import "particles/Packing.js" as ParticlePacking
 
+// qsb resolves the sibling blackhole.glsl include from the input file directory.
 // Rebuild from repo root: /usr/lib/qt6/bin/qsb --glsl "100 es,120,150" --hlsl 50 --msl 12 -o modules/background/shaders/starfield.frag.qsb modules/background/shaders/starfield.frag
 Item {
     id: root
@@ -51,6 +56,8 @@ Item {
     property real calmTarget: 0.5
     property vector4d ambientHole: Qt.vector4d(0.5, 0.5, 0.5, 0.5)
     property var blackHole: ({})
+    property var particles: ({})
+    property bool particlesEnabled: true
     property var eventFamilies: ({})
     property int eventHeadCap: 3
 
@@ -72,6 +79,12 @@ Item {
         structure: root.blackHole && root.blackHole.structure !== undefined ? root.blackHole.structure : 0.05
         tiltWander: root.blackHole && root.blackHole.tiltWander !== undefined ? root.blackHole.tiltWander : 0
         transitionSec: root.blackHole && root.blackHole.transitionSec !== undefined ? root.blackHole.transitionSec : 30
+        preset: root.blackHole && typeof root.blackHole.preset === "string" ? root.blackHole.preset : ""
+        footprintCap: root.blackHole && root.blackHole.footprintCap !== undefined ? root.blackHole.footprintCap : pick("footprintCap", 0.03)
+        diskCap: root.blackHole && root.blackHole.diskCap !== undefined ? root.blackHole.diskCap : pick("diskCap", 0.25)
+        photonCap: root.blackHole && root.blackHole.photonCap !== undefined ? root.blackHole.photonCap : pick("photonCap", 0.3)
+        disk: root.blackHole && root.blackHole.disk !== undefined ? root.blackHole.disk : (_preset.disk !== undefined ? _preset.disk : ({}))
+        photon: root.blackHole && root.blackHole.photon !== undefined ? root.blackHole.photon : (_preset.photon !== undefined ? _preset.photon : ({}))
         resolution: Qt.vector2d(root.width * root.devicePixelRatio, root.height * root.devicePixelRatio)
         centre: Qt.vector2d(resolution.x / 2 + shader.centreOffset.x, resolution.y / 2 + shader.centreOffset.y)
         ambientHole: root.ambientHole
@@ -115,6 +128,10 @@ Item {
     }
 
     function resetState(): void {
+        _particles = null;
+        _particlePending = null;
+        _particleAtlasHeight = 0;
+        shader.particleReady = 0;
         _hole.reset();
         const history = [];
         const colors = paletteSnapshot();
@@ -198,6 +215,11 @@ Item {
         s.archetypes = archetypeWeights(s.archetypes.map((x, i) => filtered(x, archetypes[i], dt, 60)));
         s.mix = filtered(s.mix, clamp(paletteMixTarget, 0, 0.45), dt, 60);
         s.calm = filtered(s.calm, colors.length ? calmTarget : ambientBirth.w, dt, 60);
+        // D's detail provider may land after this renderer. Only bind fields
+        // that exist, then feed the frozen uniform names below after the merge.
+        for (const key of ["disk", "photon"])
+            if (_hole[key] !== undefined)
+                _hole[key] = blackHole && blackHole[key] ? blackHole[key] : ({});
         _hole.advance(dt);
         // Flow seconds include the user speed. Changing it never changes an
         // inferred birth phase. Zero speed freezes the ring as well as motion.
@@ -224,6 +246,7 @@ Item {
         s.travel[0] += along * Math.cos(heading) - across * Math.sin(heading);
         s.travel[1] += along * Math.sin(heading) + across * Math.cos(heading);
         s.clock = to;
+        advanceParticles(dt);
         // Wall time chooses the mood, but its display clock is active time.
         // Resume / wall-clock corrections slew, rather than replace a mask.
         const correction = clamp(s.moodCorrection, -dt * 0.05, dt * 0.05);
@@ -251,7 +274,8 @@ Item {
             advance(Math.min(30, target - _state.clock));
             // Rebuild entry history during explicit replay, not at its final
             // destination. A seek must not rejuvenate an already-dead ID.
-            publishEntries();
+            if (!particlesEnabled)
+                publishEntries();
         }
         _state.runtimeAtlas = false;
         publish();
@@ -1002,7 +1026,9 @@ Item {
             return;
         if (_hole.enabled && s.paddingEpoch < 0)
             s.paddingEpoch = s.flow;
-        publishEntries();
+        if (!particlesEnabled)
+            publishEntries();
+        shader.particlesEnabled = particlesEnabled ? 1 : 0;
         // Data URLs can still complete asynchronously despite asynchronous:false.
         // Decode into the inactive image. Until it is Ready retain BOTH the old
         // texture and its uniforms; an unsealed row can never reach a live frame.
@@ -1098,7 +1124,11 @@ Item {
         shader.twinkle *= 1 + (moodTwinkle / 0.22 - 1) * s.mood[1];
         for (const name of ["bhCentre", "bhGeometry", "bhDisk", "bhLook", "bhHalo", "bhPhase", "bhCaps"])
             shader[name] = _hole[name];
+        for (const name of ["bhDetail", "bhStreaks", "bhKnots", "bhEmbers", "bhDoppler", "bhHue", "bhGlow", "bhPhoton", "bhDetailPhase", "bhArcs"])
+            if (_hole[name] !== undefined)
+                shader[name] = _hole[name];
         publishEvents();
+        publishParticles();
         ++s.publications;
     }
 
@@ -1112,6 +1142,140 @@ Item {
         publish();
     }
 
+    // Particle positions, appearance, bins and timestamp commit as one revision.
+    // The inactive Canvas owns its reusable ImageData; a late paint retains the
+    // previous texture AND metadata. No simulation arrays are read by onPaint.
+    property var _particles: null
+    property var _particleItems: []
+    property var _particleBins: null
+    property var _particlePending: null
+    property string _particleConfiguration: ""
+    property real _particleDpr: 1
+    property real _particleLogicalWidth: 0
+    property real _particleLogicalHeight: 0
+    property real _particlePublishedClock: -1
+    property string _particlePublishedConfiguration: ""
+    property int _particleAtlasHeight: 0
+    property int _particleRevision: 0
+    property int _particlePublications: 0
+    property int _particleMissed: 0
+    property int _particleSentinelErrors: 0
+
+    function prepareParticles(): bool {
+        if (!particlesEnabled || width <= 0 || height <= 0)
+            return false;
+        const w = width * devicePixelRatio, h = height * devicePixelRatio;
+        const rh = _hole.bhGeometry.x;
+        const signature = JSON.stringify(particles) + ":" + w + ":" + h + ":" + rh;
+        if (!_particles) {
+            _particles = ParticlePhysics.create(w, h, rh, screenSeed ^ varietySeed, particles);
+            _particleConfiguration = signature;
+        } else if (signature !== _particleConfiguration) {
+            // DPR converts units only; ordinary resize and reactive edits leave
+            // existing physical positions and velocities untouched.
+            if (devicePixelRatio !== _particleDpr && width === _particleLogicalWidth && height === _particleLogicalHeight) {
+                const factor = devicePixelRatio / _particleDpr;
+                ParticlePhysics.rescale(_particles, factor);
+                if (_particles.exposure)
+                    for (let i = 0; i < _particles.capacity; ++i) {
+                        if (_particles.archetype[i] === 4 || _particles.archetype[i] === 5)
+                            _particles.p1[i] *= factor;
+                        _particles.maxStreak[i] *= factor;
+                    }
+            }
+            ParticlePhysics.configure(_particles, w, h, rh, particles);
+            _particleConfiguration = signature;
+            // A new bin grid can need a different number of texels; recompute
+            // the shared allocation instead of keeping the old one forever.
+            _particleAtlasHeight = 0;
+        }
+        _particleDpr = devicePixelRatio;
+        _particleLogicalWidth = width;
+        _particleLogicalHeight = height;
+        return true;
+    }
+
+    function advanceParticles(dt: real): void {
+        if (!prepareParticles())
+            return;
+        const s = _state, phase = random(screenSeed, 8761) * Math.PI * 2;
+        const m = Math.min(_particles.width, _particles.height);
+        const cx = _particles.width / 2 + m * clamp(centreWander, 0, 0.012) * wave(s.clock, 2, phase);
+        const cy = _particles.height / 2 + m * clamp(centreWander, 0, 0.012) * wave(s.clock, 2, phase + 1.7);
+        const input = {
+            colors: paletteSnapshot(),
+            weights: s.palette,
+            mix: s.mix,
+            archetypes: s.archetypes,
+            params: archetypeParams,
+            legacy: s.birth,
+            seed: screenSeed ^ varietySeed
+        };
+        ParticlePhysics.advance(_particles, dt, radialSpeed, s.live[2], cx, cy, blackHole && blackHole.disk && blackHole.disk.rotationSign < 0 ? -1 : 1, (pool, i) => ParticleAppearance.birth(pool, i, input));
+    }
+
+    function publishParticles(): void {
+        if (!prepareParticles())
+            return;
+        if (_particlePending) {
+            ++_particleMissed;
+            return;
+        }
+        const pool = _particles;
+        if (shader.particleReady > 0 && _particlePublishedClock === pool.clock && _particlePublishedConfiguration === _particleConfiguration && radialSpeed === 0)
+            return;
+        _particleItems = ParticleAppearance.render(_particleItems, pool, {
+            twinkle: shader.twinkle
+        });
+        _particleBins = ParticleBinning.build(_particleBins, _particleItems, pool.width, pool.height);
+        const canvas = shader.particleAtlas === particleFront ? particleBack : particleFront;
+        // One height for BOTH buffers, sized for every population this
+        // configuration can reach, so the sampled texture is allocated once and
+        // never resized. One resize of it cost 13 ms -> 6700 ms per frame of
+        // scene-graph submission on llvmpipe and did not recover.
+        if (!_particleAtlasHeight) {
+            const ceiling = ParticleAppearance.bounds(pool);
+            _particleAtlasHeight = ParticlePacking.capacity(_particleBins, ceiling.maxItems, ceiling.maxSupport);
+        }
+        const layout = ParticlePacking.layout(canvas.packet, _particleBins, _particleItems.length, _particleAtlasHeight);
+        _particleAtlasHeight = layout.height;
+        canvas.width = layout.width;
+        canvas.height = layout.height;
+        canvas.snapshot = {
+            items: _particleItems,
+            bins: _particleBins,
+            domain: [-pool.padding - 40, -pool.padding - 40, pool.width + 2 * pool.padding + 80, pool.height + 2 * pool.padding + 80],
+            clock: pool.clock,
+            configuration: _particleConfiguration,
+            minHeight: _particleAtlasHeight,
+            revision: ++_particleRevision
+        };
+        canvas.paintedRevision = 0;
+        _particlePending = canvas;
+        canvas.requestPaint();
+    }
+
+    function completeParticles(canvas: var): void {
+        if (canvas !== _particlePending || !canvas.packet || canvas.paintedRevision !== canvas.packet.revision || (_state.runtimeAtlas && !running))
+            return;
+        if (!ParticlePacking.verify(canvas.packet)) {
+            ++_particleSentinelErrors;
+            _particlePending = null;
+            return;
+        }
+        const p = canvas.packet;
+        shader.particleAtlas = canvas;
+        shader.particleAtlasInfo = Qt.vector4d(p.width, p.height, p.headersBase, p.listBase);
+        shader.particleDomain = Qt.vector4d(p.domain[0], p.domain[1], p.domain[2], p.domain[3]);
+        shader.particleData = Qt.vector4d(p.dataBase, p.count, p.clock, p.revision);
+        shader.particleGrid = Qt.vector2d(canvas.snapshot.bins.nx, canvas.snapshot.bins.ny);
+        shader.particleReady = 1;
+        _particlePublishedClock = p.clock;
+        _particlePublishedConfiguration = canvas.snapshot.configuration;
+        _particlePending = null;
+        ++_particlePublications;
+    }
+
     onTimeChanged: {
         if (_state && !_writingTime)
             seek(time);
@@ -1123,6 +1287,8 @@ Item {
             _state.moodCorrection = Date.now() / 1000 - _state.moodClock;
         if (running && _state && _state.pendingImage)
             completeAtlas(_state.pendingImage);
+        if (running && _particlePending && _particlePending.paintedRevision)
+            completeParticles(_particlePending);
     }
     Component.onCompleted: {
         resetState();
@@ -1169,6 +1335,17 @@ Item {
         property vector4d event2Bounds: Qt.vector4d(0, 0, 0, 0)
         property vector2d activeStamp: Qt.vector2d(0, 0)
         property var bhTransfer: root._hole.bhTransfer
+        property var bhNoise: root._hole["bhNoise"] || root._hole.bhTransfer
+        property vector4d bhDetail: Qt.vector4d(0, 0, 0, 0)
+        property vector4d bhStreaks: Qt.vector4d(0, 0, 0, 0)
+        property vector4d bhKnots: Qt.vector4d(0, 0, 0, 0)
+        property vector4d bhEmbers: Qt.vector4d(0, 0, 0, 0)
+        property vector4d bhDoppler: Qt.vector4d(0, 0, 0, 0)
+        property vector4d bhHue: Qt.vector4d(0, 0, 0, 0)
+        property vector4d bhGlow: Qt.vector4d(0, 0, 0, 0)
+        property vector4d bhPhoton: Qt.vector4d(0, 0, 0, 0)
+        property vector4d bhDetailPhase: Qt.vector4d(0, 0, 0, 0)
+        property vector4d bhArcs: Qt.vector4d(0, 0, 0, 0)
         property real captureHistory: 0
         property real legacyMaterialAlive: 1
         property vector2d bhCentre: Qt.vector2d(0, 0)
@@ -1178,6 +1355,13 @@ Item {
         property vector4d bhHalo: Qt.vector4d(0, 0, 0, 0)
         property vector4d bhPhase: Qt.vector4d(0, 0, 0, 0)
         property vector4d bhCaps: Qt.vector4d(0, 0, 0, 0)
+        property var particleAtlas: particleFront
+        property vector4d particleAtlasInfo: Qt.vector4d(256, 16, 4, 4)
+        property vector4d particleDomain: Qt.vector4d(0, 0, 1, 1)
+        property vector4d particleData: Qt.vector4d(0, 0, 0, 0)
+        property vector2d particleGrid: Qt.vector2d(1, 1)
+        property real particlesEnabled: 1
+        property real particleReady: 0
         property var descriptorAtlas: descriptorImage
         property real radialMode: 1
         property vector2d centreOffset: Qt.vector2d(0, 0)
@@ -1230,6 +1414,47 @@ Item {
         cache: false
         asynchronous: false
         onStatusChanged: root.completeAtlas(descriptorBack)
+    }
+
+    component ParticleCanvas: Canvas {
+        id: particleCanvas
+        width: 256
+        height: 16
+        // Keep the texture provider alive outside the viewport; opacity 0
+        // can elide its scene-graph node. No extra ShaderEffectSource pass.
+        x: -width - 1
+        smooth: false
+        renderTarget: Canvas.Image
+        renderStrategy: Canvas.Immediate
+        property var pixels: null
+        property var packet: null
+        property var snapshot: null
+        property int paintedRevision: 0
+        onPaint: {
+            if (!snapshot)
+                return;
+            const ctx = getContext("2d");
+            packet = ParticlePacking.pack(packet, snapshot.bins, snapshot.items, snapshot, (w, h) => {
+                pixels = ctx.createImageData(w, h);
+                return pixels.data;
+            });
+            // Qt 6 requires the explicit dirty rectangle for this data upload;
+            // it also keeps the upload proportional to the texels actually used
+            // rather than to the once-allocated texture.
+            ctx.putImageData(pixels, 0, 0, 0, 0, width, Math.min(height, Math.ceil(packet.texelsUsed / width)));
+            paintedRevision = packet.revision;
+        }
+        onPainted: root.completeParticles(this)
+    }
+
+    ParticleCanvas {
+        id: particleFront
+        objectName: "starfieldParticleFront"
+    }
+
+    ParticleCanvas {
+        id: particleBack
+        objectName: "starfieldParticleBack"
     }
 
     FrameAnimation {

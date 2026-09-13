@@ -61,6 +61,12 @@ layout(std140, binding = 0) uniform buf {
     vec4 mood;
     float captureHistory;
     float legacyMaterialAlive;
+    vec4 particleAtlasInfo;
+    vec4 particleDomain;
+    vec4 particleData;
+    vec2 particleGrid;
+    float particlesEnabled;
+    float particleReady;
 #define BH_UNIFORMS
 #include "blackhole.glsl"
 #undef BH_UNIFORMS
@@ -87,7 +93,9 @@ vec4 columnAt(mat4 m, float column) {
     if (column < 2.5) return m[2];
     return m[3];
 }
-layout(binding = 2) uniform sampler2D descriptorAtlas;
+// Binding 2 belongs to D's disk noise; 3 is the coherent particle atlas.
+layout(binding = 4) uniform sampler2D descriptorAtlas;
+layout(binding = 3) uniform sampler2D particleAtlas;
 
 // All channels are opaque, nearest-sampled RGB bytes. Palette RGB and all
 // metadata for a cohort share one row and one scene-graph publication.
@@ -607,7 +615,77 @@ vec3 encodeDisplay(vec3 c) {
     if (max(c.r,max(c.g,c.b)) <= 0.0031308) return c*12.92;
     return mix(c*12.92,1.055*pow(c,vec3(1.0/2.4))-0.055,step(vec3(0.0031308),c));
 }
-void main() {
+// RGB24 atlas layout is shared with particles/Packing.js. The common empty
+// pixel pays one header fetch. Geometry rejection precedes optical data reads.
+vec3 particleTexel(float index) {
+    vec2 p = vec2(mod(index,ubuf.particleAtlasInfo.x),floor(index/ubuf.particleAtlasInfo.x));
+    return floor(texture(particleAtlas,(p+0.5)/ubuf.particleAtlasInfo.xy).rgb*255.0+0.5);
+}
+float particleOffset(vec3 header) {
+    return header.r+256.0*header.g+65536.0*step(64.0,mod(header.b,128.0));
+}
+vec3 particleHit(vec2 pixel, float index, float absorb) {
+    float base = ubuf.particleData.x+8.0*index;
+    vec3 g0 = particleTexel(base), g1 = particleTexel(base+1.0);
+    vec2 p = vec2(g0.r+256.0*g0.g,g0.b+256.0*g1.r)/65535.0;
+    p = ubuf.particleDomain.xy+p*ubuf.particleDomain.zw;
+    vec2 d = pixel-p;
+    float support = g1.g*0.25;
+    if (dot(d,d)>=support*support) return vec3(0.0);
+    vec3 v0 = particleTexel(base+2.0), v1 = particleTexel(base+3.0);
+    vec3 light = particleTexel(base+4.0), optical = particleTexel(base+6.0);
+    vec2 velocity = vec2(v0.r+256.0*v0.g,v0.b+256.0*v1.r)*(65536.0/65535.0)-32768.0;
+    float speed = length(velocity);
+    vec2 direction = speed>0.01 ? velocity/speed : vec2(1.0,0.0);
+    float core = g1.b/16.0;
+    float sigma = core/2.354820045;
+    float streak = optical.b*(32.0/255.0);
+    float minorVariance = sigma*sigma+1.0/12.0;
+    float majorVariance = minorVariance+streak*streak/12.0;
+    vec2 q = vec2(dot(d,direction),dot(d,vec2(-direction.y,direction.x)));
+    float distance = q.x*q.x/majorVariance+q.y*q.y/minorVariance;
+    if (distance>=12.25) return vec3(0.0);
+    float kernel = exp2(-0.7213475204*distance)*(1.0-smoothstep(9.0,12.25,distance));
+    kernel /= 6.28318530718*sqrt(minorVariance*majorVariance);
+    float energy = (light.g+256.0*light.b)*(4.0/65535.0);
+    float captured = particleTexel(base+7.0).b/255.0;
+    vec3 rgb = decodeDisplay(vec3(v1.g,v1.b,light.r)/255.0);
+    return rgb*energy*kernel*(1.0-captured*absorb);
+}
+vec3 particlePage(vec2 pixel, vec3 header, float absorb) {
+    float offset = particleOffset(header), count = mod(header.b,64.0);
+    vec3 light = vec3(0.0);
+    for (int j=0;j<16;++j) {
+        if (float(j)>=count) break;
+        vec3 reference = particleTexel(ubuf.particleAtlasInfo.w+offset+float(j));
+        float index = reference.r+256.0*reference.g;
+        if (index<ubuf.particleData.y) light += particleHit(pixel,index,absorb);
+    }
+    return light;
+}
+vec3 particleField(vec2 pixel, float absorb) {
+    if (ubuf.particleReady<0.5 || ubuf.particleData.y<0.5) return vec3(0.0);
+    vec2 bin = floor(pixel/32.0);
+    if (any(lessThan(bin,vec2(0.0))) || any(greaterThanEqual(bin,ubuf.particleGrid))) return vec3(0.0);
+    vec3 header = particleTexel(ubuf.particleAtlasInfo.z+bin.x+bin.y*ubuf.particleGrid.x);
+    if (header.b<0.5) return vec3(0.0);
+    vec3 light = particlePage(pixel,header,absorb);
+    if (header.b>=128.0) {
+        // Explicit overflow path, up to 8192 occupants; the CPU's hard bound
+        // is 6400 render instances. No seventeenth occupant is discarded.
+        for (int page=0;page<511;++page) {
+            float next = particleOffset(header)+mod(header.b,64.0);
+            header = particleTexel(ubuf.particleAtlasInfo.w+next);
+            light += particlePage(pixel,header,absorb);
+            if (header.b<128.0) break;
+        }
+    }
+    return light;
+}
+// Particle absorption into the bright inner disk: D's geometric envelope, never below the raw coverage.
+float particleDiskAbsorb(vec2 pixel, float diskCoverage) { return max(diskCoverage, bhDiskAbsorb(pixel)); }
+
+void legacyMain() {
     vec2 pixel = qt_TexCoord0 * ubuf.resolution;
     vec3 colour = ubuf.skyColor.rgb;
     vec2 edgePosition = qt_TexCoord0 * 2.0 - 1.0;
@@ -692,4 +770,40 @@ void main() {
     float lit = step(1.0 / 255.0, max(colour.r, max(colour.g, colour.b)));
     colour += lit * dither / 255.0;
     fragColor = vec4(clamp(colour, 0.0, 1.0), 1.0) * ubuf.qt_Opacity;
+}
+
+void main() {
+    if (ubuf.particlesEnabled<0.5) { legacyMain(); return; }
+    vec2 pixel = qt_TexCoord0*ubuf.resolution;
+    float r = length(pixel-ubuf.bhCentre);
+    bool hole = ubuf.bhHalo.w>0.0 && r<ubuf.bhGeometry.y;
+    vec4 disk = hole ? bhDisk(pixel) : vec4(0.0);
+    vec2 edgePosition = qt_TexCoord0*2.0-1.0;
+    float edge = pow(clamp(dot(edgePosition,edgePosition)*0.6,0.0,1.0),1.5);
+    vec3 far = ubuf.skyColor.rgb+ubuf.edgeLift*edge*vec3(0.10,0.19,0.30);
+    vec3 material = vec3(0.0);
+    if (ubuf.density>0.0) {
+        float scale = max(1.0,sqrt(ubuf.resolution.x*ubuf.resolution.y/(1024.0*576.0)))/sqrt(ubuf.density);
+        vec2 relative = pixel-ubuf.resolution*0.5;
+        float angle = ubuf.radialMode>0.5 ? atan(relative.y,relative.x) : 0.0;
+        vec2 source = pixel;
+        if (hole && ubuf.radialMode>0.5) { float weight; source=bhWarpBackground(pixel,weight); }
+        if (all(greaterThanEqual(source,vec2(0.0))) && all(lessThan(source,ubuf.resolution)))
+            far += stars(source,angle,scale,0.0,-1.0,pixel,1.0)*ubuf.brightness;
+        material = particleField(pixel,particleDiskAbsorb(pixel,disk.a))*ubuf.brightness;
+    }
+    far = decodeDisplay(far);
+    if (hole) far *= 1.0-bhShadowMask(pixel);
+    // Explicit particles live in the apparent plane. bhWarpMaterial is used
+    // only by legacyMain; their swept death remains at Rh, never sqrt(2)*Rh.
+    material *= mix(1.0,smoothstep(ubuf.bhGeometry.x,ubuf.bhGeometry.x+0.75,r),ubuf.bhHalo.w);
+    vec3 linearColour = disk.rgb+(1.0-disk.a)*(far+material);
+    vec3 events = eventSlot(pixel,ubuf.event0Head,ubuf.event0Colour,ubuf.event0Tail01,ubuf.event0Tail23,ubuf.event0Tail4,ubuf.event0Shape,ubuf.event0Bounds);
+    events += eventSlot(pixel,ubuf.event1Head,ubuf.event1Colour,ubuf.event1Tail01,ubuf.event1Tail23,ubuf.event1Tail4,ubuf.event1Shape,ubuf.event1Bounds);
+    events += eventSlot(pixel,ubuf.event2Head,ubuf.event2Colour,ubuf.event2Tail01,ubuf.event2Tail23,ubuf.event2Tail4,ubuf.event2Shape,ubuf.event2Bounds);
+    vec3 colour = encodeDisplay(linearColour+decodeDisplay(events));
+    float dither = fract(52.9829189*fract(dot(floor(pixel),vec2(0.06711056,0.00583715))))-0.5;
+    float lit = step(1.0/255.0,max(colour.r,max(colour.g,colour.b)));
+    colour += lit*dither/255.0;
+    fragColor = vec4(clamp(colour,0.0,1.0),1.0)*ubuf.qt_Opacity;
 }
