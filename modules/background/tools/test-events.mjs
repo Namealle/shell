@@ -44,7 +44,7 @@ function extract(name) {
     return "host[\"" + name + "\"] = function " + args + " " + qml.slice(open, i + 1) + ";";
 }
 
-const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "warmStart", "scheduleRadial", "mixColour", "supernovaSite", "supernovaState", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena"];
+const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "warmStart", "scheduleRadial", "mixColour", "supernovaSite", "supernovaState", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena", "stormValue", "stormTrailAngle", "captureStorm", "stormRate", "stormPhase", "stormRadiant", "stormState", "stormOff", "stormFireballState"];
 
 // Readonly root constants the scheduler reads by bare name, taken from the
 // same source rather than restated here.
@@ -419,8 +419,9 @@ function tests() {
     // have nothing dramatic in them. These bounds are the fix, pinned.
     {
         // Minimum interval per family at rateScale 1, in active seconds, from
-        // the shipped defaults: the warm window is [0.3, 1] x this.
-        const MIN = [45, 300, 150, 2700, 2700, 480, 360, 1080, 1800, 1800, 2160, 2520];
+        // the shipped defaults: the warm window is [0.3, 1] x this. Kind 3 is
+        // 0.42 h since the v9 storm widened `shower.everyHours` to [0.42, 1].
+        const MIN = [45, 300, 150, 1512, 2700, 480, 360, 1080, 1800, 1800, 2160, 2520];
         const firsts = [];
         for (let seed = 1; seed <= 24; ++seed) {
             const h2 = makeHost(validateDocument(null), { screenSeed: seed * 977, width: 2880, height: 1800, hole: false });

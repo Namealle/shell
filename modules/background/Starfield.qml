@@ -320,6 +320,20 @@ Item {
         s.travel[0] += along * Math.cos(heading) - across * Math.sin(heading);
         s.travel[1] += along * Math.sin(heading) + across * Math.cos(heading);
         s.clock = to;
+        // A running storm's radiant tracks the camera here, where dt is real:
+        // the roll integrates the same bounded sinusoid the particles roll by,
+        // and the creep is the far plane's own magnification rate, which is the
+        // camera term a direction at infinity is entitled to. Both are clamped,
+        // so a long storm in a fast fly-through can never lose its radiant.
+        const storming = s.events[3];
+        if (storming && storming.radiantOffset && s.clock >= storming.start && s.clock <= storming.start + storming.duration + (storming.offset || 0)) {
+            const depthRange = clamp(cameraDepth, 2, 64);
+            const pace = clamp(cameraSpeed, 0, 30);
+            const dir = cameraDirection === "in" ? -1 : 1;
+            const creepRate = pace > 0 ? (depthRange - 1) * pace / 360 * 0.10 / depthRange : 0;
+            storming.creep = clamp(storming.creep * Math.exp(dir * _cameraBlend * creepRate * dt), 0.35, 2.2);
+            storming.roll += clamp(cameraRoll, 0, 2) * (Math.PI / 180) * wave(s.clock, 23, random(screenSeed, 8761) * Math.PI * 2 + 0.9) * _cameraBlend * dt;
+        }
         advanceParticles(dt);
         // Wall time chooses the mood, but its display clock is active time.
         // Resume / wall-clock corrections slew, rather than replace a mask.
@@ -881,7 +895,6 @@ Item {
         const family = kind < 2 ? chooseFamily(kind, index, start) : kind === 3 ? "shower" : kind === 4 ? "slowWanderer" : "satellite";
         const e = captureEvent(kind, index, start, kind === 3 ? "straight" : family);
         if (kind === 3) {
-            e.duration = 30 + 30 * random(index, screenSeed + 4091);
             e.pair = false;
             e.offset = 0;
         }
@@ -900,36 +913,340 @@ Item {
         s.firstEpisode[kind] = true;
         if (family === "fragmenting" || family === "spiral")
             s.familyLast[family] = start;
-        if (kind === 3) {
-            e.family = "shower";
-            e.children = [];
-            e.radiant = [e.centre[0] - Math.cos(e.angle) * e.shortSide * 0.45, e.centre[1] - Math.sin(e.angle) * e.shortSide * 0.45];
-            const count = 4 + Math.floor(random(index, screenSeed + 4092) * 3);
-            // Equal stagger fits the captured 30..60s episode and remains 4..12s.
-            const stagger = clamp((e.duration - 3) / (count - 1), 4, 12);
-            for (let i = 0; i < count; ++i) {
-                const child = captureEvent(0, index * 7 + i, start + i * stagger, "straight");
-                // Family overrides cannot leave a visible child unfinished when
-                // its reserved episode ends, or overbook the next head slot.
-                child.duration = Math.min(child.duration, stagger - 1, e.duration - i * stagger);
-                const a = e.angle + (random(index * 7 + i, screenSeed + 4093) - 0.5) * 0.12;
-                const dx = Math.cos(a), dy = Math.sin(a);
-                const along = e.shortSide * (0.30 + 0.35 * random(index * 7 + i, screenSeed + 4094));
-                const x = e.radiant[0] + dx * along, y = e.radiant[1] + dy * along;
-                child.p0 = [x - dx * child.distance / 2, y - dy * child.distance / 2];
-                child.p1 = [x, y];
-                child.p2 = [x + dx * child.distance / 2, y + dy * child.distance / 2];
-                child.angle = a;
-                child.bend = 0;
-                child.pair = false;
-                child.offset = 0;
-                child.capture = false;
-                classifyCapture(child);
-                child.gain = Math.min(0.60, child.gain);
-                e.children.push(child);
-            }
-        }
+        if (kind === 3)
+            captureStorm(e, index);
         return e;
+    }
+
+    // ---- The meteor storm (kind 3) -----------------------------------------
+    // v8's shower was six ordinary meteors on a 30-60 s timer, staggered 4-12 s
+    // apart and capped at 0.60 gain: one meteor at a time, dimmer than a normal
+    // one, radiating from a point nobody could infer from six samples. He could
+    // not spot it (ledger 2284), and there was nothing to spot.
+    //
+    // A storm is now ONE slot with a procedural kernel behind it (meteorStorm in
+    // starfield.frag). The CPU owns the schedule, the radiant, the rate hump and
+    // the fireballs; the shader owns every ordinary streak, generated from the
+    // storm's seed and its cumulative PHASE. Several meteors a second therefore
+    // cost four vec4 of uniform rather than dozens of slots, and the three
+    // transient heads stay free - which is what the fireballs use.
+    function stormValue(cfg: var, key: string, fallback: real, low: real, high: real): real {
+        const raw = cfg && cfg[key];
+        return clamp(raw === undefined || raw === null ? fallback : Number(raw), low, high);
+    }
+
+    // A trail is an ANGLE on the sky, not a length on the screen: the same
+    // meteor is a point beside the radiant and a long streak sixty degrees away.
+    // This is the angle whose gnomonic projection, at the 45 deg reference where
+    // tan is 1, spans `fraction` of the short side.
+    function stormTrailAngle(fraction: real): real {
+        return Math.PI / 4 - Math.atan(clamp(1 - fraction, 0.02, 1));
+    }
+
+    function captureStorm(e: var, index: int): void {
+        const cfg = eventConfig(3) || {};
+        const salt = screenSeed + 4091;
+        const draw = offset => random(index, salt + offset);
+        const span = (key, fallback, low, high, offset) => {
+            const r = parameterRange(cfg, key, fallback, low, high);
+            return r[0] + (r[1] - r[0]) * draw(offset);
+        };
+        const w = width * devicePixelRatio, h = height * devicePixelRatio;
+        const shortSide = Math.min(w, h);
+        e.family = "shower";
+        // Build-up, plateau and decay out of ONE duration, so the documented
+        // key keeps its meaning and the shape is a fraction of it.
+        e.duration = span("durationSec", [70, 130], 20, 600, 1);
+        const rampFraction = stormValue(cfg, "rampFraction", 0.32, 0.1, 0.6);
+        e.ramp = e.duration * rampFraction;
+        e.decay = (e.duration - e.ramp) * 0.62;
+        e.peakSec = Math.max(0, e.duration - e.ramp - e.decay);
+        e.rateMax = stormValue(cfg, "peakRate", 6, 0.2, 8) * Math.max(0.05, rateScale());
+        // The hump starts and ends at the ORDINARY meteor rate, so a storm
+        // arrives out of the sky the viewer already has rather than switching
+        // one on: 1/82 s against a peak of four a second, the same ratio a real
+        // shower has against the sporadic background.
+        const spacing = clamp(meteorsInterval.x, 3, 604800) + clamp(meteorsInterval.y, 3, 604800);
+        e.rateFloor = meteorsEnabled ? clamp(2 * Math.max(0.05, rateScale()) / Math.max(6, spacing), 0.002, e.rateMax * 0.25) : 0.002;
+        const trail = parameterRange(cfg, "streakShortSide", [0.10, 0.30], 0, 0.45);
+        e.trailLo = stormTrailAngle(trail[0]);
+        e.trailHi = stormTrailAngle(trail[1]);
+        const headPx = parameterRange(cfg, "headPx", [3, 6], 1, 12);
+        // The shader spreads each streak's sigma over 0.66..1.33 of this, which
+        // reproduces the pair exactly when its ends are a factor of two apart.
+        e.headSigma = (headPx[0] + headPx[1]) * 0.5 * shortSide / 2160;
+        e.stormGain = stormValue(cfg, "gain", 1, 0, 1.5);
+        e.grazers = stormValue(cfg, "earthgrazerShare", 0.08, 0, 0.35);
+        e.fragments = stormValue(cfg, "fragmentShare", 0.06, 0, 0.35);
+        e.stormMix = stormValue(cfg, "paletteMix", 0.30, 0, 0.45);
+        e.creep = 1;
+        e.roll = 0;
+        // The radiant: off-centre by construction (a storm pointed at the middle
+        // of the screen reads as a zoom, not a shower), and never on the hole,
+        // because a radiant inside the drawn material would put the convergence
+        // point behind something opaque. Same keep-out the phenomena use.
+        const bias = stormValue(cfg, "radiantBias", 0.28, 0, 0.45);
+        const centre = [w * 0.5 + shader.centreOffset.x, h * 0.5 + shader.centreOffset.y];
+        const keepOut = 1.25 * holeReach();
+        e.radiantOffset = [0, 0];
+        for (let attempt = 0; attempt < 16; ++attempt) {
+            const a = draw(20 + attempt) * Math.PI * 2;
+            // The keep-out the phenomena use is 1109 px on DP-3 against a 605 px
+            // radiant bias, so a hole-on storm has to be PUSHED past it, not
+            // redrawn until it misses: sixteen draws inside the disk all fail.
+            // A radiant just off the short edge is the better picture anyway -
+            // every streak then crosses the whole buffer.
+            const r = clamp(Math.max(shortSide * bias * (0.72 + 0.56 * draw(40 + attempt)), _hole.enabled ? keepOut * 1.05 : 0), 0, 0.75 * shortSide);
+            e.radiantOffset = [Math.cos(a) * r, Math.sin(a) * r];
+            const px = centre[0] + e.radiantOffset[0], py = centre[1] + e.radiantOffset[1];
+            const clear = !_hole.enabled || Math.hypot(px - _hole.bhCentre.x, py - _hole.bhCentre.y) >= keepOut;
+            // ON the buffer, not merely near it. Pushing the radiant past the
+            // hole's keep-out can send it off the short edge, and a shower whose
+            // convergence point is off-screen reads as meteors going one way
+            // rather than as a storm. The angle is what the retries vary.
+            const margin = shortSide * 0.04;
+            if (clear && px > margin && px < w - margin && py > margin && py < h - margin)
+                break;
+        }
+        // Fireballs are the one part of a storm the shader does NOT generate:
+        // they carry a terminal flash and a train that outlives them by half a
+        // minute, so they need the CPU's clock and a real slot each. One to
+        // three of them, spread across the peak, on the free transient heads.
+        const trainSpan = parameterRange(cfg, "trainSec", [12, 26], 0, 60);
+        const count = Math.round(span("fireballs", [1, 3], 0, 6, 3));
+        const from = e.ramp * 0.55;
+        const to = e.ramp + e.peakSec + e.decay * 0.45;
+        e.children = [];
+        let overhang = 0;
+        for (let i = 0; i < count; ++i) {
+            const pick = o => random(index * 13 + i, salt + o);
+            const flight = 1.6 + 1.6 * pick(91);
+            const train = trainSpan[0] + (trainSpan[1] - trainSpan[0]) * pick(101);
+            const at = from + (to - from) * (i + 0.15 + 0.7 * pick(141)) / Math.max(1, count);
+            // A fireball is AIMED, not drawn like the others. Its ray and its
+            // angular speed are solved so the terminal flash lands on a point
+            // inside the buffer: a free draw flares off the corner most of the
+            // time, because the radiant is off-centre and tan() runs away.
+            // ...and never onto the hole. A fireball is a SLOT, composited
+            // after the disk and not shadow-masked, so one flaring on the disk
+            // would shine straight through it - the same reason the phenomena
+            // reject a placement inside the drawn material. The procedural
+            // streaks have no such problem: they are evaluated at the lensed
+            // source, so they bend around the hole and sink behind the disk.
+            // Drawn in POLAR coordinates about the hole, because on the tablet
+            // the keep-out circle covers most of the buffer: a rejection loop
+            // over a rectangle fails a third of the time, a radius that starts
+            // outside it never does. The angle is what the retries vary, until
+            // the point is on the buffer too.
+            const edge = shortSide * 0.05;
+            const origin = [centre[0] + e.radiantOffset[0], centre[1] + e.radiantOffset[1]];
+            // The whole RAY has to miss the hole, not only its far end: the
+            // train runs all the way back to the radiant, and a train drawn
+            // across the shadow shines through it exactly as a flash would.
+            const misses = point => {
+                if (!_hole.enabled)
+                    return true;
+                const vx = point[0] - origin[0], vy = point[1] - origin[1];
+                const len = vx * vx + vy * vy;
+                const t = len > 0 ? clamp(((_hole.bhCentre.x - origin[0]) * vx + (_hole.bhCentre.y - origin[1]) * vy) / len, 0, 1) : 0;
+                return Math.hypot(origin[0] + vx * t - _hole.bhCentre.x, origin[1] + vy * t - _hole.bhCentre.y) >= keepOut;
+            };
+            let target = null;
+            for (let attempt = 0; attempt < 40; ++attempt) {
+                const ta = pick(201 + attempt) * Math.PI * 2;
+                const tr = Math.max(_hole.enabled ? keepOut * 1.06 : 0, shortSide * (0.12 + 0.34 * pick(241 + attempt)));
+                const point = [_hole.bhCentre.x + Math.cos(ta) * tr, _hole.bhCentre.y + Math.sin(ta) * tr];
+                if (point[0] > edge && point[0] < w - edge && point[1] > edge && point[1] < h - edge && misses(point)) {
+                    target = point;
+                    break;
+                }
+            }
+            // No clear ray in forty tries means the radiant sits so close to the
+            // keep-out that the hole blocks most of the sky from it. Drop THIS
+            // fireball rather than aim it through the disk: a storm with one
+            // fireball is a storm; one shining through the hole is a bug.
+            if (!target)
+                continue;
+            const ray = [target[0] - origin[0], target[1] - origin[1]];
+            const reach = Math.max(shortSide * 0.08, Math.hypot(ray[0], ray[1]));
+            const thetaEnd = Math.min(Math.atan(reach / shortSide), 1.15);
+            const theta0 = Math.max(0.05, thetaEnd - (0.22 + 0.26 * pick(81)) * flight);
+            const child = {
+                fireball: true,
+                at: at,
+                angle: Math.atan2(ray[1], ray[0]),
+                theta0: theta0,
+                omega: (thetaEnd - theta0) / flight,
+                flight: flight,
+                train: train,
+                sigma: e.headSigma * (1.7 + 0.7 * pick(111)),
+                flashSigma: shortSide * (0.010 + 0.010 * pick(121)),
+                trainWidth: e.headSigma * (2.4 + 1.6 * pick(151)),
+                gain: e.stormGain * (1.45 + 0.55 * pick(131)),
+                // The wind as a SHEAR, not four independent bearings: one base
+                // direction plus a twist along the train's length. Four random
+                // angles put an elbow in the polyline, which is what the first
+                // live capture showed - a train bends, it does not hinge.
+                drift: [pick(161) * Math.PI * 2, (pick(162) - 0.5) * 1.8],
+                colour: e.colour.slice()
+            };
+            e.children.push(child);
+            overhang = Math.max(overhang, at + flight + train - e.duration);
+        }
+        // The episode is not recycled while a train is still fading, and the
+        // reservation against the other transients covers the same span.
+        e.offset = Math.max(0, overhang);
+    }
+
+    // The rate hump: a trickle, a smoothstep up to `rateMax`, a plateau, and a
+    // smoothstep back down. Meteors per second, already through rateScale.
+    function stormRate(e: var, age: real): real {
+        if (!e || !e.radiantOffset || age < 0 || age >= e.duration)
+            return 0;
+        const s = age < e.ramp ? ease(age / Math.max(1e-6, e.ramp))
+            : age < e.ramp + e.peakSec ? 1
+            : ease(1 - (age - e.ramp - e.peakSec) / Math.max(1e-6, e.decay));
+        return e.rateFloor + (e.rateMax - e.rateFloor) * s;
+    }
+
+    // Its integral, in closed form: the storm's cumulative expected meteor
+    // count. This is the single number that makes a streak's launch time and
+    // the rate the SAME fact - streak k launches where phase reaches k, so k
+    // advances at exactly `rate` per second whatever the hump is doing.
+    // INT of smoothstep(0,1,x) from 0 to u is u^3 - u^4/2; the falling shoulder
+    // is that same integral read backwards.
+    function stormPhase(e: var, age: real): real {
+        if (!e || !e.radiantOffset)
+            return 0;
+        const t = clamp(age, 0, e.duration);
+        const rise = e.rateMax - e.rateFloor;
+        const bump = u => u * u * u * (1 - 0.5 * u);
+        if (t < e.ramp)
+            return e.rateFloor * t + rise * e.ramp * bump(t / Math.max(1e-6, e.ramp));
+        let total = e.rateFloor * e.ramp + rise * e.ramp * 0.5;
+        if (t < e.ramp + e.peakSec)
+            return total + e.rateMax * (t - e.ramp);
+        total += e.rateMax * e.peakSec;
+        const rest = t - e.ramp - e.peakSec;
+        return total + e.rateFloor * rest + rise * e.decay * (0.5 - bump(1 - rest / Math.max(1e-6, e.decay)));
+    }
+
+    // Where the radiant is right now. It is a point on the SKY, so it takes the
+    // shared centre wander and the camera's roll, and in the camera regime a
+    // slow radial creep at the far plane's own depth - the far layer is what a
+    // direction at infinity moves with. A translating camera does not carry a
+    // direction off the screen, and integrating the near field's magnification
+    // here would have done exactly that (4.8x over a 100 s storm, measured).
+    function stormRadiant(e: var): var {
+        const w = width * devicePixelRatio, h = height * devicePixelRatio;
+        const cx = w * 0.5 + shader.centreOffset.x, cy = h * 0.5 + shader.centreOffset.y;
+        const creep = clamp(Number(e.creep) || 1, 0.35, 2.2);
+        const roll = Number(e.roll) || 0;
+        const rx = e.radiantOffset[0] * creep, ry = e.radiantOffset[1] * creep;
+        const cos = Math.cos(roll), sin = Math.sin(roll);
+        return [cx + rx * cos - ry * sin, cy + rx * sin + ry * cos];
+    }
+
+    // The four vectors the storm kernel reads, or null when no storm is running.
+    function stormState(): var {
+        const s = _state;
+        const e = s.events[3];
+        if (!e || !e.radiantOffset || !eventEnabled(3))
+            return null;
+        const age = s.clock - e.start;
+        if (age < 0 || age >= e.duration)
+            return null;
+        const rate = stormRate(e, age);
+        if (rate <= 0 || e.stormGain <= 0)
+            return null;
+        const place = stormRadiant(e);
+        // The window is how far back the kernel has to look for a streak that
+        // is still alive: the longest life in the kernel is 5.4 s (an
+        // earthgrazer), so rate*5.4 candidates plus a margin, and the loop is
+        // hard-bounded at 40 in the shader whatever this says.
+        const window = Math.min(48, Math.max(4, Math.ceil(rate * 5.5) + 3));
+        return {
+            head: [place[0], place[1], stormPhase(e, age), rate],
+            shape: [e.headSigma, e.trailLo, e.trailHi, e.stormGain],
+            colour: e.colour.concat(e.stormMix),
+            span: [window, e.grazers, e.fragments, modulo(e.index * 7919 + screenSeed, 4096)]
+        };
+    }
+
+    function stormOff(): var {
+        return {
+            head: [0, 0, 0, 0],
+            shape: [1, 0, 0, 0],
+            colour: [1, 1, 1, 0],
+            span: [0, 0, 0, 0]
+        };
+    }
+
+    // One fireball, drawn through shader style 7 on an ordinary transient head.
+    // It flies the same gnomonic ray out of the radiant the procedural streaks
+    // do, flares at the end of its flight, and leaves a train that drifts and
+    // shears for ten to thirty seconds after the head has gone.
+    function stormFireballState(e: var, c: var): var {
+        const s = _state;
+        const age = s.clock - e.start - c.at;
+        if (age < 0 || age > c.flight + c.train)
+            return null;
+        const w = width * devicePixelRatio, h = height * devicePixelRatio;
+        const shortSide = Math.min(w, h);
+        const focal = shortSide;
+        const place = stormRadiant(e);
+        const dx = Math.cos(c.angle), dy = Math.sin(c.angle);
+        const at = t => {
+            const theta = Math.min(c.theta0 + c.omega * clamp(t, 0, c.flight), 1.35);
+            const d = focal * Math.tan(theta);
+            return [place[0] + dx * d, place[1] + dy * d];
+        };
+        const flown = Math.min(age, c.flight);
+        const head = at(flown);
+        const trainAge = Math.max(0, age - c.flight);
+        const life = clamp(trainAge / Math.max(0.001, c.train), 0, 1);
+        // The train is the path the head took. Each of its four points drifts
+        // on its OWN frozen bearing, slowly turning, so the train shears and
+        // bends instead of sliding rigidly: that is what a real persistent
+        // train does in the high-altitude wind.
+        const points = [];
+        for (let i = 0; i < 4; ++i) {
+            const p = at(flown * (1 - i / 3));
+            const bearing = c.drift[0] + c.drift[1] * i / 3 + 0.30 * Math.sin(0.42 * trainAge + c.drift[0] + i * 0.5);
+            const pull = shortSide * 0.045 * life * (0.30 + 0.70 * i / 3);
+            points.push([p[0] + Math.cos(bearing) * pull, p[1] + Math.sin(bearing) * pull]);
+        }
+        let length = 0;
+        for (let i = 0; i < 3; ++i)
+            length += Math.hypot(points[i + 1][0] - points[i][0], points[i + 1][1] - points[i][1]);
+        // Nucleus: alive through the flight only. Flash: a Gaussian in time at
+        // the end of it. Train: rises with the flight and then fades over its
+        // own lifetime.
+        const coreEnv = ease(age / 0.18) * ease((c.flight - age) / 0.40);
+        // 0.90 s wide: the brightest thing in a storm still has no edge a
+        // blink could hide in - 0.033 of its own peak per frame at 30 Hz,
+        // inside the 0.05 the anti-strobe floors are proven against.
+        const t = (age - c.flight * 0.90) / 0.90;
+        const flashEnv = Math.exp(-2.6 * t * t);
+        const trainEnv = ease(age / Math.max(0.3, c.flight * 0.5)) * Math.pow(1 - life, 1.4);
+        const coreAbs = c.gain * coreEnv;
+        const flashAbs = c.gain * 0.60 * flashEnv;
+        const trainAbs = c.gain * 0.42 * trainEnv;
+        const peak = Math.max(coreAbs + flashAbs, trainAbs);
+        if (peak <= 0.0004)
+            return null;
+        const pad = Math.max(3 * c.flashSigma, 9 * c.trainWidth, 6 * c.sigma);
+        const xs = points.map(p => p[0]).concat([head[0]]);
+        const ys = points.map(p => p[1]).concat([head[1]]);
+        return {
+            head: [head[0], head[1], c.sigma, peak],
+            colour: c.colour.concat(7),
+            tail01: points[0].concat(points[1]),
+            tail23: points[2].concat(points[3]),
+            tail4: [c.trainWidth, trainAbs / peak],
+            shape: [length, c.flashSigma, coreAbs / peak, flashAbs / peak],
+            bounds: [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad]
+        };
     }
 
     // ---- Radial phenomena (kinds 5-9) -------------------------------------
@@ -1817,16 +2134,30 @@ Item {
     // push time from the same hash stream, so it is as deterministic as a
     // scheduled one, and it obeys exactly the same slot and cap rules.
     function pushEvent(name: string, delaySec: real, overrides: var): bool {
-        const kind = radialNames.indexOf(name) + 5;
-        if (kind < 5 || !_state)
+        // `storm` and `shower` are the same family; v8 only knew the seven
+        // radial names, so `fire shower` did nothing and the storm could not be
+        // looked at on demand. Transient kinds capture through schedule()'s own
+        // path, which is what gives a forced storm its radiant and fireballs.
+        const transient = ["meteors", "comet", "satellites", "shower", "slowWanderer"].indexOf(name === "storm" ? "shower" : name);
+        const kind = transient >= 0 ? transient : radialNames.indexOf(name) + 5;
+        if (kind < 0 || (transient < 0 && kind < 5) || !_state)
             return false;
         const s = _state;
         if (s.pendingEvents.length >= 4)
             s.pendingEvents.shift();
         const at = s.clock + Math.max(0, Number(delaySec) || 0);
-        const e = captureRadial(kind, s.eventIds[kind]++, at);
+        const e = transient >= 0
+            ? captureEvent(kind, s.eventIds[kind]++, at, kind === 3 ? "straight" : kind < 2 ? chooseFamily(kind, s.eventIds[kind] - 1, at) : kind === 4 ? "slowWanderer" : "satellite")
+            : captureRadial(kind, s.eventIds[kind]++, at);
         if (!e)
             return false;
+        // A forced shower captures its storm here, BEFORE the overrides, so
+        // `fire shower tablet '{"peakRate":6}'` changes the storm it made
+        // rather than being overwritten by it.
+        if (kind === 3) {
+            e.pair = false;
+            captureStorm(e, s.eventIds[3] - 1);
+        }
         if (overrides) {
             for (const key of Object.keys(overrides))
                 e[key] = overrides[key];
@@ -1860,7 +2191,7 @@ Item {
             if (s.clock > e.start + 120)
                 continue;
             const held = s.events[e.kind];
-            if (held && s.clock >= held.start && s.clock <= held.start + held.duration) {
+            if (held && s.clock >= held.start && s.clock <= held.start + held.duration + (e.kind < 5 ? held.offset || 0 : 0)) {
                 keep.push(e);
                 continue;
             }
@@ -1882,8 +2213,10 @@ Item {
         }
         drainPending();
         const shower = s.events[3];
-        const showerActive = shower && s.clock >= shower.start && s.clock <= shower.start + shower.duration;
-        if (showerActive && s.mood[0] === 3)
+        // A fireball's train outlives the rate hump by design, so the episode
+        // stays "active" for the overhang `captureStorm` reserved in `offset`.
+        const showerActive = shower && s.clock >= shower.start && s.clock <= shower.start + shower.duration + (shower.offset || 0);
+        if (showerActive && s.clock <= shower.start + shower.duration && s.mood[0] === 3)
             shader.mood = Qt.vector4d(0, 0, 0, 0);
         const slots = [];
         function append(e) {
@@ -1899,11 +2232,24 @@ Item {
             if (e.pair && slots.length < ceiling)
                 slots.push(eventState(e, 0, true, 3));
         }
-        if (showerActive) {
-            for (const child of shower.children)
-                append(child);
-        } else
-            append(s.events[0]);
+        // The storm's ordinary streaks are the shader's, not a slot's. What the
+        // CPU still owns is the four vectors that describe the storm and the
+        // one to three fireballs, which take the transient heads the v8 shower
+        // used to fill with six plain meteors.
+        const storm = stormState() || stormOff();
+        shader.stormHead = Qt.vector4d(storm.head[0], storm.head[1], storm.head[2], storm.head[3]);
+        shader.stormShape = Qt.vector4d(storm.shape[0], storm.shape[1], storm.shape[2], storm.shape[3]);
+        shader.stormColour = Qt.vector4d(storm.colour[0], storm.colour[1], storm.colour[2], storm.colour[3]);
+        shader.stormSpan = Qt.vector4d(storm.span[0], storm.span[1], storm.span[2], storm.span[3]);
+        if (showerActive && shower.children) {
+            const ceiling = Math.min(Math.round(clamp(eventHeadCap, 0, 3)), 3);
+            for (const child of shower.children) {
+                const slot = stormFireballState(shower, child);
+                if (slot && slots.length < ceiling)
+                    slots.push(slot);
+            }
+        }
+        append(s.events[0]);
         for (const kind of [1, 2, 4])
             append(s.events[kind]);
         for (let i = 0; i < 3; ++i) {
@@ -2682,12 +3028,20 @@ Item {
         property vector4d event5Tail01: Qt.vector4d(0, 0, 0, 0)
         property vector4d event5Shape: Qt.vector4d(0, 0, 0, 0)
         property vector4d event5Bounds: Qt.vector4d(0, 0, 0, 0)
+        // ---- v9 extras. This order IS the std140 layout in starfield.frag:
+        // supernova (64 B), storm (64 B), nebula (112 B), 1600 -> 1840 B.
         // v9 supernova extras, 64 B. One supernova is alive at a time, so these
         // ride beside the phenomenon slots rather than inside one.
         property vector4d snFlash: Qt.vector4d(0, 0, 0, 0)
         property vector4d snTone: Qt.vector4d(0, 0, 0, 0)
         property vector4d snShell: Qt.vector4d(0, 0, 0, 0)
         property vector4d snExtra: Qt.vector4d(0, 0, 0, 0)
+        // The meteor storm: one slot for the whole shower, however many streaks
+        // are in the air. stormShape.w is the gain AND the off switch.
+        property vector4d stormHead: Qt.vector4d(0, 0, 0, 0)
+        property vector4d stormShape: Qt.vector4d(1, 0, 0, 0)
+        property vector4d stormColour: Qt.vector4d(1, 1, 1, 0)
+        property vector4d stormSpan: Qt.vector4d(0, 0, 0, 0)
         property vector2d activeStamp: Qt.vector2d(0, 0)
         property var bhTransfer: root._hole.bhTransfer
         property var bhNoise: root._hole["bhNoise"] || root._hole.bhTransfer
