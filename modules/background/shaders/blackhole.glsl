@@ -478,6 +478,63 @@ vec4 bhDisk(vec2 pixel) {
     float width = ubuf.bhPhoton.x;
     float d = r-rh-0.5*width;
     float coverage = clamp(d+0.5*width+0.5,0.0,1.0)-clamp(d-0.5*width+0.5,0.0,1.0);
+    // Inner halo: the photon-ring COMPLEX, between the shadow edge and the
+    // ISCO's direct image at 1.4257 Rh. A true trace of it needs the transfer
+    // LUT extended from 2pi to 3pi (deferred), so this is the same
+    // ART-DIRECTED stand-in the outer arcs already are, put where the owner's
+    // reference actually carries its brightest light: measured on
+    // owner-target-wallpaper.png the 1.0-1.2 Rh annulus means .580 and
+    // 1.2-1.45 Rh means .461, against .057/.058 for the v6 render, and that
+    // ring is nearly isotropic (plane .603, pole .616). Material is shaded at
+    // the emissivity peak 49ri/36 -- the same source the thread uses -- so it
+    // carries the disk's own colour, streams on the same clock, and is
+    // occluded by BOTH nearer crossings. bhGlow.z is its gain, bhGlow.w its
+    // reach in Rh (<=1 disables it, keeping every earlier preset unchanged).
+    if (ubuf.bhGlow.z > 0.0 && ubuf.bhGlow.w > 1.0) {
+        float x = (r-rh)/max(rh*(ubuf.bhGlow.w-1.0),0.0001);
+        if (x >= 0.0 && x < 1.0) {
+            // (1-x^2)^1.25: flat-topped at the shadow edge, zero slope at the
+            // reach, so neither end reads as a drawn circle.
+            float w = 1.0-x*x;
+            w *= sqrt(w*sqrt(w));
+            w *= clamp(r-rh+0.5,0.0,1.0);
+            float hr = 49.0*ubuf.bhDisk.x/36.0;
+            // Half the disk's texture strength: the reference's band is one
+            // coherent sheet (its azimuthal high-frequency energy is .655
+            // against 2.05 for the v6 disk), and at full strength the ridge
+            // shaping speckles the band so hard that raising the gain only
+            // pins the bright filaments to the cap without lifting the mean.
+            vec3 shade = bhShadeField(vec4(hr,hit0.y,1.0,hit0.w),e,impact,
+                vec2(0.018*162.0/rh,fp0.y),1.0,0.45*ubuf.bhPhoton.z);
+            float sl = max(dot(shade,vec3(0.2126,0.7152,0.0722)),0.000001);
+            // Gain is a fraction of the photon CAP, not a free multiplier: the
+            // band's brightness is stated, not emergent, and stays bounded.
+            // Colour and texture come from the disk (unit-luminance tint times
+            // the filament/Doppler ratio), so it is the same material.
+            float mean0 = 0.13*ubuf.bhLook.x*pow(bhProfile(hr),max(ubuf.bhDepth.z,0.001));
+            // Bounded to +-45%: visible striation, mean still 1, and no filament can
+            // pin itself to the cap and eat the gain without lifting the band.
+            float ratio = clamp(sl/max(mean0,0.000001),0.55,1.45);
+            // Same rotating field as the rim, at a gentler depth: the owner's
+            // band is coherent, not speckled, but it must still shear.
+            float gate = bhRimField(hr,hit0.y,18.0,89.0);
+            float breaks = mix(1.0,mix(0.62,1.3,bhEase((gate-0.3)/0.45)),0.6*ubuf.bhRim.z);
+            // Only material actually in FRONT occludes it. The lensed far-side
+            // arc is light from behind and must not darken the ring.
+            float occ = 1.0-nearHit.a*bhEase((cos(hit0.w)+0.2)/0.4);
+            float level = min(ubuf.bhGlow.z,1.0)*w;
+            vec3 unit = shade/sl;
+            // bhShadeField's highlight desaturation gates on the DISK's own
+            // brightness against the cap; this band's brightness is set
+            // externally, so at any sane exposure that gate never fires and
+            // the band stays tan. Redo it here at the level actually emitted.
+            if (ubuf.bhHue.w > 0.0)
+                unit = mix(unit,vec3(1.0),ubuf.bhHue.w*bhEase((level-0.3)/0.45));
+            float amount = level*ubuf.bhCaps.y*ratio*breaks*occ;
+            disk.rgb = bhLimit(disk.rgb+unit*amount,ubuf.bhCaps.y);
+            disk.a = max(disk.a,min(1.0,w*occ*min(ubuf.bhGlow.z,1.0)*1.2));
+        }
+    }
     if (coverage > 0.0 && ubuf.bhPhoton.w > 0.0) {
         // Azimuth at psi+2pi equals order zero in the Schwarzschild ray plane.
         vec4 ringHit = vec4(49.0*ubuf.bhDisk.x/36.0,hit0.y,1.0,hit0.w);
