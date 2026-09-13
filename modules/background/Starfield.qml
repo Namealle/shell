@@ -785,6 +785,10 @@ Item {
             p0: [x - dx * distance / 2, y - dy * distance / 2],
             p1: [x - dy * toward, y + dx * toward],
             p2: [x + dx * distance / 2, y + dy * distance / 2],
+            // v10: the chord's midpoint, kept so cometParticles can re-cut a
+            // longer chord around the same point once it knows how fast the
+            // field is actually moving.
+            origin: [x, y],
             centre: centre,
             angle: angle,
             distance: distance,
@@ -2255,6 +2259,20 @@ Item {
         return [x, y];
     }
 
+    // v10: where the nucleus actually is. A fragment carries the same lateral
+    // split the drawn path used, measured off the real body rather than off a
+    // Bezier that is no longer what the comet is flying.
+    function cometHead(e: var, branch: int, progress: real): var {
+        const head = [e.site[0], e.site[1]];
+        if (e.family === "fragmenting" && branch !== 0) {
+            const split = ease((progress - e.splitU) / Math.max(1e-6, 1 - e.splitU));
+            const offset = branch * e.shortSide * 0.035 * split * split;
+            head[0] -= Math.sin(e.angle) * offset;
+            head[1] += Math.cos(e.angle) * offset;
+        }
+        return head;
+    }
+
     function eventState(e: var, branch: int, companion: bool, segments: int): var {
         if (!e || (companion && !e.pair))
             return eventOff();
@@ -2309,7 +2327,7 @@ Item {
         }
         const width = e.pointWidth;
         if (e.kind === 1)
-            return cometState(e, points[0], progress, branch, gain, width, age);
+            return cometState(e, e.site ? cometHead(e, branch, progress) : points[0], progress, branch, gain, width, age);
         const extent = width * (e.kind === 0 ? 15 : 7);
         const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
         return {
@@ -2329,6 +2347,28 @@ Item {
     // comet passes it, and the dust tail lags between that and anti-velocity
     // and bends away from the ion tail. Everything else was captured at birth.
     function cometState(e: var, head: var, progress: real, branch: int, gain: real, width: real, age: real): var {
+        // v10. A comet is a BODY. Its nucleus is a particle with its own proper
+        // motion (see cometParticles), and the tails are built from where that
+        // particle actually is and which way it is actually going, this frame.
+        //
+        // WHICH WAY A TAIL POINTS. A dust tail is material left behind, so it
+        // TRAILS THE MOTION and curves off the path -- always, in both regimes.
+        // An ion tail is gas driven off by light, so it points away from the
+        // light source; and in the camera regime there is no light source, so
+        // it trails the motion too. That is what he expected to see and did not
+        // get: "the tail was in the wrong direction" (ledger 2285), because v9
+        // pointed BOTH tails away from the screen centre whatever the comet was
+        // doing. `lightWeight` is the hole's own envelope, so the two models
+        // crossfade with the regime and neither is ever a cut. With no velocity
+        // at all -- the offscreen sheets, a pool that could not spare a slot --
+        // this is exactly v9.
+        let bx = 0, by = 0;
+        const v = e.vel;
+        const speed = v ? Math.hypot(v[0], v[1]) : 0;
+        if (speed > 1e-4) {
+            bx = -v[0] / speed;
+            by = -v[1] / speed;
+        }
         let ax = head[0] - e.light[0], ay = head[1] - e.light[1];
         const alen = Math.hypot(ax, ay);
         if (alen > 0.0001) {
@@ -2338,15 +2378,47 @@ Item {
             ax = 1;
             ay = 0;
         }
-        // The dust lags the ion tail by a fixed angle on a birth-frozen side,
-        // the way a real dust tail trails the anti-solar line. BLENDING
-        // anti-sunward with anti-velocity is the wrong model: a comet receding
-        // straight from the light has them antiparallel, the blend collapses
-        // onto the ion tail, and the two tails draw on top of each other.
+        if (speed <= 1e-4) {
+            bx = ax;
+            by = ay;
+        }
+        const lit = speed > 1e-4 ? clamp(e.lightWeight === undefined ? 1 : e.lightWeight, 0, 1) : 1;
+        let ix = bx + (ax - bx) * lit, iy = by + (ay - by) * lit;
+        let ilen = Math.hypot(ix, iy);
+        if (ilen < 1e-4) {
+            ix = bx;
+            iy = by;
+            ilen = 1;
+        }
+        ix /= ilen;
+        iy /= ilen;
+        // NEVER AHEAD OF THE MOTION. Off the anti-velocity by at most 80
+        // degrees: a tail in front of its own nucleus is the one thing a comet
+        // cannot have, whatever the light happens to be doing.
+        if (speed > 1e-4) {
+            const dot = ix * bx + iy * by;
+            const floorCos = 0.17;
+            if (dot < floorCos) {
+                let px = ix - bx * dot, py = iy - by * dot;
+                const plen = Math.hypot(px, py);
+                if (plen > 1e-6) {
+                    px /= plen;
+                    py /= plen;
+                }
+                const sn = Math.sqrt(Math.max(0, 1 - floorCos * floorCos));
+                ix = bx * floorCos + px * sn;
+                iy = by * floorCos + py * sn;
+            }
+        }
+        // The dust lags the trail direction by a fixed angle on a birth-frozen
+        // side, the way a real dust tail lags the anti-solar line. BLENDING two
+        // directions is the wrong model: a comet receding straight from the
+        // light has them antiparallel, the blend collapses onto the ion tail,
+        // and the two tails draw on top of each other.
         const side = e.dustSide;
         const turn = side * e.lagAngle;
         const cos = Math.cos(turn), sin = Math.sin(turn);
-        const dx = ax * cos - ay * sin, dy = ax * sin + ay * cos;
+        const dx = bx * cos - by * sin, dy = bx * sin + by * cos;
         // An outburst: the coma swells and brightens while the tails do not.
         const breath = e.family === "pulsating" ? 1 + 0.45 * Math.max(0, Math.sin(age * 2 * Math.PI / e.pulsePeriod)) : 1;
         // A fragment carries its own small coma and a short stub of dust.
@@ -2359,17 +2431,144 @@ Item {
         const pad = Math.max(9 * e.dustWidth, 3 * coma, 6 * width);
         const tipX = head[0] + dx * dust - dy * e.curve * side * dust;
         const tipY = head[1] + dy * dust + dx * e.curve * side * dust;
-        const xs = [head[0], head[0] + ax * ion, tipX];
-        const ys = [head[1], head[1] + ay * ion, tipY];
+        const xs = [head[0], head[0] + ix * ion, tipX];
+        const ys = [head[1], head[1] + iy * ion, tipY];
         return {
             head: [head[0], head[1], width, gain],
             colour: e.colour.concat(5),
-            tail01: [ax, ay, ion, e.ionWidth],
+            tail01: [ix, iy, ion, e.ionWidth],
             tail23: [dx, dy, dust, e.dustWidth],
             tail4: [Math.abs(e.curve) * side, coma],
             shape: [e.ionGain * share, e.dustGain * share, e.comaGain * breath, e.striae],
             bounds: [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad]
         };
+    }
+
+    // ---- v10: the comet is a body with its own proper motion ----------------
+    // "I saw a large comet or whatever that was with a large tail and it feels
+    // really poor for me: it was moving slow, same as the other stars, and the
+    // tail was in the wrong direction." (ledger 2285)
+    //
+    // It moved at the field's speed because v9 drew it along a captured Bezier
+    // over a 30-65 s duration that had nothing to do with how fast anything
+    // else on the screen was going. It now crosses a long chord at a MEASURED
+    // multiple of the field's own speed, as a particle, and the tails come off
+    // that particle's velocity.
+    //
+    // 3-8x the field. "Slow" is the slowest family and it is still three times
+    // the flow, because slower than that is the complaint.
+    function cometRatio(family: string): real {
+        return family === "fast" ? 7.5 : family === "slow" ? 3.2 : family === "bent" ? 4.2 : family === "pulsating" ? 4.6 : family === "fragmenting" ? 6.0 : 5.0;
+    }
+    // How far the chord turns over the whole pass, in radians. With the hole on
+    // this is done for real by gravity (the velocity is in vx/vy and the pass is
+    // a genuine hyperbola); with the camera on there is no force, so the
+    // peculiar channel is rotated by hand at the same rate.
+    function cometTurn(family: string): real {
+        return family === "fast" ? 0.10 : family === "slow" ? 0.34 : family === "bent" ? 0.95 : family === "pulsating" ? 0.28 : family === "fragmenting" ? 0.22 : 1.50;
+    }
+    function cometParticles(): void {
+        const s = _state;
+        const e = s.events[1];
+        if (!_particles || !_particles.live || !particlesEnabled) {
+            s.cometEpisode = null;
+            return;
+        }
+        const P = _particles;
+        if (!e || s.clock < e.start || s.clock > e.start + e.duration + (e.offset || 0)) {
+            s.cometEpisode = null;
+            return;
+        }
+        const age = s.clock - e.start;
+        if (s.cometEpisode !== e) {
+            s.cometEpisode = e;
+            e.body = -1;
+            e.bodyGeneration = -1;
+            e.shedAt = s.clock;
+            e.turnAt = s.clock;
+            // A seek landed mid-pass: there is no body to spawn halfway along
+            // its own chord, so the episode plays as v9's sprite did.
+            if (age > 0.5)
+                return;
+            const shortSide = Math.min(P.width, P.height);
+            const flow = ParticlePhysics.flowSpeed(P);
+            // A LONG chord, 1.1-1.6 short sides, so it enters and leaves off
+            // the screen instead of appearing in the middle of it.
+            const chord = shortSide * (1.1 + 0.5 * random(e.index, screenSeed + 4409));
+            let speed = cometRatio(e.family) * Math.max(1, flow);
+            // Six seconds is the floor on a pass. With the hole on the field is
+            // itself streaming at a few hundred px/s, so a comet at three times
+            // that would cross in four seconds and read as a meteor; the floor
+            // takes precedence there and the ratio is honoured wherever the
+            // regime leaves room for it, which is the camera regime he runs.
+            speed = clamp(speed, chord / 25, chord / 6);
+            const dx = Math.cos(e.angle), dy = Math.sin(e.angle);
+            const origin = e.origin || [e.p0[0] * 0.5 + e.p2[0] * 0.5, e.p0[1] * 0.5 + e.p2[1] * 0.5];
+            const at = [origin[0] - dx * chord / 2, origin[1] - dy * chord / 2];
+            e.p0 = at.slice();
+            e.p2 = [origin[0] + dx * chord / 2, origin[1] + dy * chord / 2];
+            e.distance = chord;
+            e.speed = speed;
+            e.flowAt = flow;
+            e.ratio = speed / Math.max(1e-6, flow);
+            e.duration = chord / speed;
+            e.body = ParticlePhysics.spawnBody(P, at[0], at[1], dx * speed, dy * speed, {
+                lifeSec: e.duration + 6,
+                // Big enough to lens and occlude like the body it is, small
+                // enough that it and the sprite's own nucleus read as one.
+                sizePx: clamp(e.pointWidth * 1.5, 1, 9),
+                lum: 3.6,
+                colour: e.colour,
+                depth: 1,
+                group: 2,
+                streakPx: Math.min(36, P.config.streak.bendMaxPx),
+                exposureSec: 0.05
+            });
+            e.bodyGeneration = e.body >= 0 ? P.generation[e.body] : -1;
+            e.omega = cometTurn(e.family) * (random(e.index, screenSeed + 4411) < 0.5 ? -1 : 1) / Math.max(0.001, e.duration);
+            e.site = at.slice();
+            e.vel = [dx * speed, dy * speed];
+            e.siteAt = s.clock;
+        }
+        // The ion tail's model crossfades with the regime, on the hole's own
+        // envelope: anti-sunward with the hole on, trailing the motion with it
+        // off, and no frame between them is a cut.
+        e.lightWeight = clamp(1 - _cameraBlend, 0, 1);
+        const i = e.body;
+        if (i >= 0 && P.alive[i] && P.generation[i] === e.bodyGeneration) {
+            e.site = [P.x[i], P.y[i]];
+            e.vel = [P.vx[i] + P.kickX[i], P.vy[i] + P.kickY[i]];
+            e.siteAt = s.clock;
+            const turn = e.omega * (s.clock - e.turnAt);
+            if (turn && (P.kickX[i] || P.kickY[i])) {
+                const c = Math.cos(turn), sn = Math.sin(turn);
+                const kx = P.kickX[i], ky = P.kickY[i];
+                P.kickX[i] = kx * c - ky * sn;
+                P.kickY[i] = kx * sn + ky * c;
+            }
+            e.turnAt = s.clock;
+            // It sheds. A few small motes a pass, each on its own short life,
+            // so the trail is made of material and not only of a sprite.
+            if (s.clock - e.shedAt >= 0.7 && age > 0.4 && age < e.duration - 0.4) {
+                e.shedAt = s.clock;
+                ParticlePhysics.spawnBurst(P, P.x[i], P.y[i], 1, [0.04 * e.speed, 0.16 * e.speed], {
+                    lifeSec: [3.5, 8],
+                    sizePx: [0.7, 1.5],
+                    lum: [1.2, 2.4],
+                    colour: e.colour,
+                    endColour: [0.45, 0.58, 0.82],
+                    fastShare: 0,
+                    drag: 0.9,
+                    group: 2
+                });
+            }
+        } else if (e.site && e.vel) {
+            // The body left the field. Dead-reckon the site rather than
+            // stopping the sprite in mid-air while its envelope fades out.
+            const dt = s.clock - (e.siteAt === undefined ? s.clock : e.siteAt);
+            e.site = [e.site[0] + e.vel[0] * dt, e.site[1] + e.vel[1] * dt];
+            e.siteAt = s.clock;
+        }
     }
 
     // R6. An episode handed in from outside the interval scheduler - a physics
@@ -2464,6 +2663,7 @@ Item {
         // only place an event touches the particle field, and the only place
         // any of these descriptors are mutated.
         supernovaParticles();
+        cometParticles();
         const shower = s.events[3];
         // A fireball's train outlives the rate hump by design, so the episode
         // stays "active" for the overhang `captureStorm` reserved in `offset`.

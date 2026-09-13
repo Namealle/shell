@@ -44,7 +44,7 @@ function extract(name) {
     return "host[\"" + name + "\"] = function " + args + " " + qml.slice(open, i + 1) + ";";
 }
 
-const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "warmStart", "scheduleRadial", "mixColour", "supernovaShellReach", "supernovaEjecta", "cfgShockSpeed", "supernovaParticles", "supernovaSite", "supernovaState", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena", "stormValue", "stormTrailAngle", "captureStorm", "stormRate", "stormPhase", "stormRadiant", "stormState", "stormOff", "stormFireballState", "farBoost", "nebulaConfig", "nebulaEnabled", "nebulaFlowRate", "nebulaDrift", "nebulaBoundary", "nebulaDriftPerSec", "nebulaReach", "nebulaSink", "captureNebula", "scheduleNebula", "nebulaState", "pushNebula", "publishNebula"];
+const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "warmStart", "scheduleRadial", "mixColour", "supernovaShellReach", "supernovaEjecta", "cfgShockSpeed", "supernovaParticles", "supernovaSite", "supernovaState", "radialState", "eventPath", "cometHead", "eventState", "cometState", "cometRatio", "cometTurn", "cometParticles", "pushEvent", "drainPending", "publishEvents", "publishPhenomena", "stormValue", "stormTrailAngle", "captureStorm", "stormRate", "stormPhase", "stormRadiant", "stormState", "stormOff", "stormFireballState", "farBoost", "nebulaConfig", "nebulaEnabled", "nebulaFlowRate", "nebulaDrift", "nebulaBoundary", "nebulaDriftPerSec", "nebulaReach", "nebulaSink", "captureNebula", "scheduleNebula", "nebulaState", "pushNebula", "publishNebula"];
 
 // Readonly root constants the scheduler reads by bare name, taken from the
 // same source rather than restated here.
@@ -689,6 +689,90 @@ function tests() {
         const last = h2.radialState(e);
         check("the supernova ends at nothing", last.head[3] * (last.tail01[1] + last.tail01[2] + last.tail01[3]) < 0.004,
             "final published gain " + (last.head[3] * (last.tail01[1] + last.tail01[2] + last.tail01[3])).toFixed(5));
+    }
+    {
+        // ------------------------------------------------- v10, the comet
+        // "It was moving slow, same as the other stars, and the tail was in
+        // the wrong direction." (ledger 2285) The direction half is pure
+        // geometry, so it is checked here against the shipped cometState; the
+        // speed half needs a live pool and is in tools/comet_harness.qml.
+        const h3 = makeHost(validateDocument(null), { width: 2880, height: 1800 });
+        h3._state.clock = 0;
+        const e = h3.captureEvent(1, 0, 0, "slow");
+        e.light = [1440, 900];
+        const angle = (dirX, dirY, x, y) => {
+            const s3 = h3.cometState(e, [x, y], 0.5, 0, 0.8, e.pointWidth, 5);
+            const ion = Math.atan2(s3.tail01[1], s3.tail01[0]);
+            const dust = Math.atan2(s3.tail23[1], s3.tail23[0]);
+            const trail = Math.atan2(-dirY, -dirX);
+            const wrap = (a) => Math.abs(((a - trail + Math.PI * 3) % (Math.PI * 2)) - Math.PI) * 180 / Math.PI;
+            return { ion: wrap(ion), dust: wrap(dust), forward: Math.max(s3.tail01[0] * dirX + s3.tail01[1] * dirY, s3.tail23[0] * dirX + s3.tail23[1] * dirY) };
+        };
+        // The camera regime: no light source on the sky, so both tails trail.
+        e.lightWeight = 0;
+        let worstIon = 0, worstDust = 0, worstForward = -1;
+        for (let n = 0; n < 64; ++n) {
+            const a = n * Math.PI / 32, dirX = Math.cos(a), dirY = Math.sin(a);
+            e.vel = [dirX * 140, dirY * 140];
+            // Every heading, from a spread of places on the screen, including
+            // straight at and straight away from where the hole would be.
+            const at = [1440 + 700 * Math.cos(a * 1.7), 900 + 500 * Math.sin(a * 2.3)];
+            const m = angle(dirX, dirY, at[0], at[1]);
+            worstIon = Math.max(worstIon, m.ion);
+            worstDust = Math.max(worstDust, m.dust);
+            worstForward = Math.max(worstForward, m.forward);
+        }
+        check("with no hole, both tails trail the motion within 30 degrees",
+            worstIon <= 30 && worstDust <= 30,
+            "worst ion " + worstIon.toFixed(1) + " deg, worst dust " + worstDust.toFixed(1) + " deg over 64 headings");
+        check("and neither of them ever points ahead of it",
+            worstForward < 0, "worst forward component " + worstForward.toFixed(3));
+        // The orbital regime: the hole is the only light on the sky, so the
+        // ion tail is anti-sunward and the DUST still trails the motion.
+        e.lightWeight = 1;
+        let antiHole = 0, dustTrails = 0, forward = -1;
+        for (let n = 0; n < 64; ++n) {
+            const a = n * Math.PI / 32, dirX = Math.cos(a), dirY = Math.sin(a);
+            e.vel = [dirX * 140, dirY * 140];
+            const at = [1440 + 700 * Math.cos(a * 1.7), 900 + 500 * Math.sin(a * 2.3)];
+            const st = h3.cometState(e, at, 0.5, 0, 0.8, e.pointWidth, 5);
+            const away = Math.hypot(at[0] - e.light[0], at[1] - e.light[1]);
+            const wantX = (at[0] - e.light[0]) / away, wantY = (at[1] - e.light[1]) / away;
+            const dot = st.tail01[0] * wantX + st.tail01[1] * wantY;
+            // Anti-sunward EXCEPT where anti-sunward would be ahead of the
+            // nucleus, which is a comet flying at the hole. There the clamp
+            // wins, and it must: a tail in front of its own nucleus is the one
+            // thing a comet cannot have.
+            const clamped = wantX * -dirX + wantY * -dirY < 0.17;
+            if (!clamped) {
+                if (dot > 0.999) ++antiHole;
+            } else if (Math.abs(st.tail01[0] * -dirX + st.tail01[1] * -dirY - 0.17) < 1e-9) ++antiHole;
+            const trail = st.tail23[0] * -dirX + st.tail23[1] * -dirY;
+            if (trail > Math.cos(0.45)) ++dustTrails;
+            forward = Math.max(forward, Math.max(st.tail01[0] * dirX + st.tail01[1] * dirY, st.tail23[0] * dirX + st.tail23[1] * dirY));
+        }
+        check("with the hole on, the ion tail points away from it",
+            antiHole === 64, antiHole + "/64 headings anti-sunward, or clamped off the nucleus's own path where anti-sunward would be ahead of it");
+        check("while the dust still trails the motion",
+            dustTrails === 64, dustTrails + "/64 headings");
+        check("and nothing points ahead of the motion in either regime",
+            forward <= 0.171, "worst forward component " + forward.toFixed(3) + " against the 80 degree clamp");
+        // The families keep their variety, and the slowest of them is still
+        // three times the field.
+        const ratios = ["fast", "slow", "bent", "pulsating", "fragmenting", "spiral"].map(f => h3.cometRatio(f));
+        check("every comet family is 3-8x the field, and they still differ",
+            Math.min(...ratios) >= 3 && Math.max(...ratios) <= 8 && new Set(ratios).size === 6,
+            ratios.map(r => r.toFixed(1)).join(", "));
+        check("and each of them bends by its own amount",
+            new Set(["fast", "slow", "bent", "pulsating", "fragmenting", "spiral"].map(f => h3.cometTurn(f))).size === 6);
+        // With no pool at all this is byte-for-byte v9: the sheets sweep it.
+        const v9 = makeHost(validateDocument(null), { width: 2880, height: 1800 });
+        const e9 = v9.captureEvent(1, 0, 0, "slow");
+        const st9 = v9.cometState(e9, [900, 600], 0.5, 0, 0.8, e9.pointWidth, 5);
+        const dxl = 900 - e9.light[0], dyl = 600 - e9.light[1], l = Math.hypot(dxl, dyl);
+        check("with no body behind it, the comet is exactly v9",
+            Math.abs(st9.tail01[0] - dxl / l) < 1e-12 && Math.abs(st9.tail01[1] - dyl / l) < 1e-12,
+            "ion tail still anti-sunward");
     }
     nebulaTests();
     console.log("\n" + (failures ? failures + " failures" : "all " + checks + " checks passed"));
