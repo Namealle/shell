@@ -1,10 +1,12 @@
-# Starfield v10
+# Starfield v11
+**The sky is its own Quickshell process** -- `starfield-shell start|restart|kill|fire`, not `caelestia shell`.
+See **Process model** at the end of this file before running or debugging anything.
 `~/.config/caelestia/starfield.json` is watched with 150 ms debounce (XDG_CONFIG_HOME respected).
 Missing/invalid JSON, a non-object document or missing screens disables every output; deleted keys restore defaults.
-One validated snapshot owns configuration; the shell never writes it. Full schema and defaults:
+One validated snapshot owns configuration; neither process ever writes it. Full schema and defaults:
 ```json
 {
-  "screens": [], "density": 1, "driftSpeed": 3.5, "driftDirection": 165,
+  "screens": [], "process": "separate", "density": 1, "driftSpeed": 3.5, "driftDirection": 165,
   "twinkle": 0.22, "flareFraction": 0.003, "brightness": 1, "backgroundColor": "#000000", "edgeLift": 0, "fps": 30,
   "motion": {"mode": "radial", "radialSpeed": 6, "centreWander": 0.012, "zoom": 0.003, "reversals": false, "wander": 0.8, "rotation": 0.5,
     "camera": {"enabled": "auto", "direction": "out", "speed": 6, "depth": 16, "dustFlow": 3, "roll": 0.15, "wander": 0.35, "sizeGain": 0.55}},
@@ -203,7 +205,7 @@ phase bounded and starts every passage at the same place in its own evolution.
 background it belongs to, its lanes extinct the dust behind it, the particles and the disk are in front of it, and `bhShadowMask` is subtracted from it: it can never be
 drawn over the hole. Like every event it ignores `brightness`. It takes its turn in the SHARED dramatic cooldown (`dramaCooldownSec`, `familyLast.drama`), so a passage and
 a supernova remnant never occupy the same screen — 900 s against a ≤480 s passage and a ≤333 s supernova separates them in both directions with no second mechanism.
-`caelestia shell starfield fire nebula <screen> ''` forces one through the same `pushEvent`; it waits for a running passage and is dropped two minutes later, exactly as a
+`starfield-shell fire nebula <screen>` forces one through the same `pushEvent`; it waits for a running passage and is dropped two minutes later, exactly as a
 pushed phenomenon waits for its family's entry.
 The two directions of "never beside a supernova remnant" are covered differently and deliberately: a dramatic family scheduled AFTER a passage is placed reads
 `familyLast.drama`, which a passage writes exactly as they do, so it takes its turn in the shared cooldown; a dramatic episode already on the books is RESERVED against
@@ -434,7 +436,7 @@ v9 supernova key changes: `precursorSec`, `flashShortSide`, `skyLift`, `spikeGai
 `everyHours` becomes [0.5, 1] (one every 30–60 min at rateScale 1), `shellShortSide` [0.25, 0.40], `shellGain` 0.55 (cap 0.80), `decaySec` [25, 60] and `remnantSec`
 [120, 300]; `shellShortSide` and `flashShortSide` are the drawn DIAMETER as a share of the short side, not a radius. `echoGain` and `echoDelaySec` are DROPPED — the
 remnant replaces the light echo — and a file carrying either warns with its index and is otherwise unaffected.
-`caelestia shell starfield fire <family> <screen> '{"key":value}'` takes a third argument now: a JSON object written straight onto the captured episode, which is how
+`starfield-shell fire <family> <screen> '{"key":value}'` takes a third argument now: a JSON object written straight onto the captured episode, which is how
 a phase is addressed. All three arguments are REQUIRED -- Quickshell checks the arity and QML will not take a default on an annotated parameter -- so `''` is how you
 say "every screen" and "no overrides": `starfield fire shower tablet ''`. A supernova's duration is recomputed from its phases afterwards, so `fire supernova tablet '{"precursor":4,"shellSpan":20,"remnant":40}'` is the
 same shapes in a quarter of the time rather than a life cycle truncated mid-phase. Invalid JSON is ignored; this is a test hook.
@@ -490,7 +492,7 @@ Storm keys CLAMP like the rest of the v4 shower block rather than rejecting. Bou
 `rampFraction` 0.1-0.6, `peakRate` 0.2-8, `radiantBias` 0-0.45, `paletteMix` 0-0.45, `streakShortSide` ordered 0-0.45, `headPx` ordered 1-12, `fireballs` ordered 0-6 (rounded),
 `trainSec` ordered 0-60, `earthgrazerShare` and `fragmentShare` 0-0.35. v8's three keys keep their names, their meaning and their clamping; only their bounds widened, which
 cannot reject a file that used to validate.
-`caelestia shell starfield fire <family> <screen> <overrides>` now takes the TRANSIENT families too - `fire storm tablet ''`, `fire shower tablet ''`,
+`starfield-shell fire <family> <screen> <overrides>` now takes the TRANSIENT families too - `fire storm tablet ''`, `fire shower tablet ''`,
 `fire meteors '' ''`, `fire comet '' ''`, `fire satellites '' ''`, `fire slowWanderer '' ''` - as well as the seven radial names and `nebula`. v8 only knew the radial
 names, so `fire shower` did nothing.
 Storm evidence, all measured rather than described: `modules/background/tools/test-storm.mjs` (55 checks, `--report` for the per-output table),
@@ -560,3 +562,50 @@ Context: mapped active/open-special/pinned windows on that output; focused weigh
 Pause: lock or visible fullscreen>1 freezes that output's targets and renderer active time/history, retaining Loader; other outputs continue. All paused stops polling and releases ServiceRefs.
 Config watching/event subscriptions remain; paused profiles preserve all fields through edits. Suspend resets baselines/derivatives with no catch-up; workspace activity freezes while paused.
 `background.enabled` still gates windows. Density is static, never reactive. Keep backgroundColor #000000 for exact-black empty pixels.
+
+## v11: PROCESS MODEL — THE SKY IS ITS OWN QUICKSHELL INSTANCE
+
+`shell.qml` and `starfield.qml` are two entry points into ONE repo, on branch `local`, rebased together. The sky runs in the second:
+```
+nice -n 15 qs -p ~/.config/quickshell/caelestia/starfield.qml -n -d     # = starfield-shell start
+```
+`-p` on a FILE makes that file's directory the config root, so `qs.services`, `qs.components`, `qs.utils` and `Caelestia.*` resolve exactly as they do for `shell.qml`.
+`starfield.qml` mounts `StarfieldWindows.qml` (one `StyledWindow` per enabled screen, namespace `caelestia-starfield`, `WlrLayer.Background`, opaque black, exclusion
+Ignore, empty input mask) and each window mounts `StarfieldLayer.qml` — the renderer's property wiring, which `Background.qml` mounts instead when the sky runs in-shell.
+One copy of the wiring, two possible hosts.
+
+**Why.** Measured 2026-09-13 18:51: `qs -c caelestia` main thread at 35 % of one core, 59 threads, only the main thread busy. `Starfield.qml` runs particle physics,
+packing and two `Canvas.Immediate` paints per output at 30 fps on the QML engine's main thread — the same thread every launcher, bar, notification and drawer animation
+runs on, so all of them queue behind the sky. His words: "every animation of it feels laggy and slower than it was." Two processes get two main threads and two render
+threads, and the kernel spreads them over different cores. Measured 2026-09-13 19:15 after the split, two outputs, desktop in use: sky main thread **34 %**, shell main
+thread and every shell thread **below 0.3 %** (i.e. below the sampler's floor). The sky's own cost did not fall — it moved.
+
+**`"process"` (top-level, default `"separate"`).** `"separate"` = the second instance draws; the shell's `caelestia-background` window drops to `WlrLayer.Bottom` and
+`color: "transparent"`, one layer ABOVE the sky's, so there is NO map-order dependency between the two clients and either can restart alone. `"shell"` restores the
+v10 in-process path (Background.qml mounts the layer, its window goes back to Background+black) for A/B. **Changing this key needs both processes restarted** —
+`starfield-shell restart` and `caelestia shell -r` — because it decides which process owns a window, not what a window draws.
+
+**`~/namealle/scripts/starfield-shell`** is the whole interface: `start` (idempotent, and what `execs.lua` runs at login), `kill`, `restart` (needed after ANY edit to
+the sky's QML — hot reload is off), `status` (pid, nice, both namespaces per output), `fire <family> [screen] [overrides]`. Binds: `CTRL+SUPER+SHIFT+R` kills both,
+`CTRL+SUPER+ALT+R` restarts both, `CTRL+SUPER+ALT+K` restarts the sky alone.
+
+**IPC moved with it.** `starfield fire` and `ambient dump` now answer on the SKY's socket: `qs -p …/starfield.qml ipc call starfield fire nebula tablet ''`, which is
+what `starfield-shell fire` wraps. `caelestia shell starfield fire …` still reaches the shell's idle copy of the service and draws nothing while `process` is
+`"separate"`; `caelestia shell ipc call ambient dump` answers **"Target not found"**, because naming `Ambient` only on the in-shell branch of `shell.qml`'s lock
+binding is what keeps the whole reactive poller — a 250 ms timer, `/proc` reads, `nvidia-smi` — out of the shell. That "Target not found" is the positive proof the
+shell is no longer doing the sky's work.
+
+**starfield.json is unchanged and still hot-reloaded**, now by whichever process is drawing. Proved 2026-09-13 with no restart: `fps` 30 → 2 dropped the sky's main
+thread 34.2 % → 0.2 %, and back to 34.2 % on restore. `starfield-hole` and `starfield-camera` edit that file and need nothing restarted.
+
+**The session lock** is the one bit of shell state the sky cannot read for itself, and `rules.js runningFor` pauses the renderer while it is up. `shell.qml` publishes
+it to `~/.local/state/caelestia/starfield-lock` (one byte, written only on lock/unlock) and `starfield.qml` binds `Ambient.locked` to a `FileView` on it. Nothing polls.
+
+**What the shell keeps:** the desktop clock, the Visualiser, the bar, the drawers, the lock — everything except the sky, all of it drawn above the sky from the shell's
+own Bottom-layer window. `Visualiser.qml` takes the sky as its blur source; out of process that source is a different client's pixels and unreachable, so it falls back
+to the (inactive) wallpaper Loader — an empty Item. The bars still draw; what they lose is the blurred copy of the sky behind them, and only when
+`background.visualiser.{enabled,blur}` are both on. His config has `visualiser.enabled: false`, so on this machine it loses nothing visible.
+
+**nice.** The script asks for 15 (absolute, not `nice -n` relative — an agent shell measured at -4). It does not get it: `ananicy-cpp` pins every process named `qs`
+to its `Service` type (nice 10, ionice 6) and re-applies within 5 s — measured. The rule is `/etc/ananicy.d/00-default/DEs-and-WMs/dank-material-shell.rules` and it
+matches by process NAME, so it cannot tell the two instances apart. Both run at nice 10, which is what the shell always ran at. Changing that means system config.
