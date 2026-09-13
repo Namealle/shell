@@ -205,7 +205,7 @@ def main():
     phases = [float(x) for x in args.phases.split(",")]
     frag_path = os.path.join(args.outdir, "nebula-preview.frag")
     open(frag_path, "w").write(preview())
-    outputs = [("tablet", 2880, 1800), ("DP-3", 2160, 3840)]
+    outputs = [("tablet", 2880, 1800), ("DP-3", 2160, 3840), ("HDMI-A-1", 3440, 1440)]
     report = {"label": args.label, "outputs": []}
     tiles = []
     with tempfile.TemporaryDirectory(prefix="nebula-") as tmp:
