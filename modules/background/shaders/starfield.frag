@@ -72,9 +72,11 @@ layout(std140, binding = 0) uniform buf {
     float particleMu;
     // Microlensing flux ceiling (phenomena.microlensing). 1 disables it.
     float lensFlux;
-    // Phenomenon slots 3-4: long, faint, low-gain radial events only, so they
+    // Phenomenon slots 3-5: long, faint, low-gain radial events only, so they
     // carry five vectors rather than a transient slot's seven. Neither class
-    // spills into the other. 160 B, against 224 B for two full slots.
+    // spills into the other. 240 B, against 336 B for three full slots. v8
+    // added the third: with seven families on two slots a red giant and a
+    // supernova spent most of an hour queued behind a 200 s star birth.
     vec4 event3Head;
     vec4 event3Colour;
     vec4 event3Tail01;

@@ -245,10 +245,13 @@ function table(stat, title) {
 function audit(configPath) {
     const text = configPath ? readFileSync(configPath, "utf8") : null;
     const document = validateDocument(text ? JSON.parse(text) : null);
+    // His three outputs in DEVICE pixels, which is what the shader works in:
+    // DP-3 is 3840x2160 rotated at scale 1.5 (logical 1440x2560, device
+    // 2160x3840), the tablet is 2880x1800 at scale 2.4, HDMI-A-1 is 1:1.
     const outputs = [
-        { name: "DP-3 1440x2560", width: 1440, height: 2560 },
-        { name: "HDMI-A-1 3440x1440", width: 3440, height: 1440 },
-        { name: "tablet 2880x1800", width: 2880, height: 1800 }
+        { name: "DP-3 2160x3840 device", width: 2160, height: 3840 },
+        { name: "HDMI-A-1 3440x1440 device", width: 3440, height: 1440 },
+        { name: "tablet 2880x1800 device", width: 2880, height: 1800 }
     ];
     console.log("config: " + (configPath || "DEFAULTS"));
     for (const out of outputs) {
