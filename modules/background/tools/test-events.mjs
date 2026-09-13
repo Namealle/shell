@@ -13,12 +13,15 @@
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { readFileSync } from "fs";
+import { createRequire } from "module";
 import vm from "vm";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..", "..");
 const QML = join(root, "modules", "background", "Starfield.qml");
 const RULES = join(root, "services", "ambient", "rules.js");
+const require = createRequire(import.meta.url);
+const ParticlePhysics = require(join(root, "modules", "background", "particles", "Physics.js"));
 
 // ---------------------------------------------------------------- rules.js
 const rulesContext = vm.createContext({ Math, JSON, isFinite, Number, Object, Array, console });
@@ -41,7 +44,7 @@ function extract(name) {
     return "host[\"" + name + "\"] = function " + args + " " + qml.slice(open, i + 1) + ";";
 }
 
-const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "scheduleRadial", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena"];
+const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "scheduleRadial", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena"];
 
 // Readonly root constants the scheduler reads by bare name, taken from the
 // same source rather than restated here.
@@ -76,13 +79,16 @@ export function makeHost(document, options) {
     const o = options || {};
     const w = o.width === undefined ? 1440 : o.width;
     const h = o.height === undefined ? 2560 : o.height;
-    const holeRadius = o.holeRadius === undefined ? 0.075 * Math.min(w, h) : o.holeRadius;
+    // His live hole: preset "target", size 0.11, lensReach 8, disk 3..11 Rs,
+    // arcs off. The keep-out is measured against what that actually draws.
+    const holeSize = o.holeSize === undefined ? 0.11 : o.holeSize;
+    const holeRadius = o.holeRadius === undefined ? holeSize * Math.min(w, h) : o.holeRadius;
     const shader = {
         centreOffset: { x: 0, y: 0 },
         mood: Qt.vector4d(0, 0, 0, 0)
     };
     const host = {
-        Qt, Math, Number, Array, Object, JSON, console,
+        Qt, Math, Number, Array, Object, JSON, console, ParticlePhysics,
         width: w,
         height: h,
         devicePixelRatio: o.dpr === undefined ? 1 : o.dpr,
@@ -122,7 +128,9 @@ export function makeHost(document, options) {
         _hole: {
             enabled: o.hole !== false,
             bhCentre: { x: w / 2, y: h / 2 },
-            bhGeometry: { x: holeRadius, y: holeRadius * 2.6, z: 0, w: 0 }
+            bhGeometry: { x: holeRadius, y: holeRadius * 8, z: 0, w: 0 },
+            bhDisk: { x: 3, y: 11, z: 0, w: 1 },
+            bhArcs: { x: 0, y: 1.75, z: 0.6, w: 0 }
         },
         _state: null
     };
@@ -356,6 +364,28 @@ function tests() {
             check("kind " + kind + " never steps faster than its eased rise floor",
                 seen <= bound * 1.05, seen.toFixed(4) + " <= " + bound.toFixed(4) + " per frame");
         }
+    }
+    // Placement. His live hole is preset "target": size 0.11 of the short side
+    // and lensReach 8. v6 excluded 1.6 x the LENSING reach, 12.8 Rh, which on
+    // every one of his three outputs covers the whole buffer - so radialPlacement
+    // returned null every time and no phenomenon was ever placed anywhere.
+    for (const out of [
+        { name: "DP-3 2160x3840", width: 2160, height: 3840 },
+        { name: "HDMI-A-1 3440x1440", width: 3440, height: 1440 },
+        { name: "tablet 2880x1800", width: 2880, height: 1800 }
+    ]) {
+        const h2 = makeHost(validateDocument(null), out);
+        let placed = 0;
+        for (let i = 0; i < 400; ++i) if (h2.radialPlacement(i, 4321)) placed++;
+        check("a phenomenon can be placed on " + out.name, placed >= 396, placed + "/400 captures found a spot");
+        // And never on the drawn material.
+        const reach = h2.holeReach();
+        let inside = 0;
+        for (let i = 0; i < 400; ++i) {
+            const p = h2.radialPlacement(i, 99);
+            if (p && Math.hypot(p[0] - out.width / 2, p[1] - out.height / 2) < reach) inside++;
+        }
+        check("no placement lands on the drawn hole on " + out.name, inside === 0, inside + " inside " + reach.toFixed(0) + " px");
     }
     console.log("\n" + (failures ? failures + " failures" : "all " + checks + " checks passed"));
     return failures;

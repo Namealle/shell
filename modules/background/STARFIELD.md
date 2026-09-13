@@ -137,8 +137,13 @@ it) and their gain cap is 0.55 and 0.75 rather than 0.33 and 0.40. All seven phe
 head=(x, y, coreSigmaPx, peak), shape=(haloSigmaPx, ringGain, ringWidthPx, ringRadiusPx), tail01=(echoRadiusPx, echoGain, haloGain, coreGain). Each component's gain is
 absolute and is divided by the slot peak, so a nova's shell outlives the core that threw it, a light echo outlives the shell, and a kilonova's ring reddens through the
 r-process colour after the flash that threw it has gone. `gammaBurst` is **style 4**: core + halo + two OPPOSED cones, no rings, so the ring channel is re-read as the
-beam — tail01=(haloSigmaPx, haloGain, coreGain, beamGain), shape=(dirX, dirY, beamLengthPx, beamWidthPx). Placement is REJECTED, never clamped, inside 1.6×the lensing
-reach (events composite after the disk and are not shadow-masked) or within 0.05 short sides of an edge; eight attempts, then the episode is skipped.
+beam — tail01=(haloSigmaPx, haloGain, coreGain, beamGain), shape=(dirX, dirY, beamLengthPx, beamWidthPx).
+**Placement.** An event composites after the disk and is not shadow-masked, so one sitting on the hole would shine straight through it; placement is therefore REJECTED,
+never clamped, inside 1.25× what the hole actually DRAWS, or within 0.05 short sides of an edge — sixteen attempts, then the episode is skipped. The drawn reach comes
+from `Physics.visibleRadius()` on the hole's own published uniforms, the same call the particles use, so one number moves both. **v6 excluded 1.6× `bhGeometry.y`, which
+is the LENSING reach — 8 Rh under his `target` preset, so 12.8 Rh. On DP-3 (2160x3840 device) that is 3041 px against a 1080 px half-width; on HDMI-A-1 2028 px and on
+the tablet 2534 px. It covered the whole buffer on all three: measured acceptance 0.000, 0/400 captures found a spot, so no phenomenon had EVER been placed on any of
+his screens.** The drawn material is 887/592/740 px on those outputs, the new keep-out 1109/740/924, and acceptance 400/400 (`test-events.mjs`).
 Slot ownership is STICKY: an episode claims a slot in its first second and keeps it until it ends, so nothing can appear mid-life at whatever gain it had reached.
 **v6 held the KIND in the slot, and publishEvents replaces `s.events[kind]` with the next episode the instant the current one ends: the release test always read a future
 end time, so slots 3–4 stayed owned by the first star birth and the first nova for the life of the process. Measured over six hours on three seeds, red giant was

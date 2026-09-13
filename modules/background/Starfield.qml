@@ -830,13 +830,36 @@ Item {
     // composite after the disk and are not shadow-masked, so one inside the
     // lensing reach would shine straight through the hole. Rejection, not
     // clamping, so the distribution outside the exclusion stays uniform.
+    // How far out the hole is actually DRAWN, from its own published uniforms -
+    // the same call the particles use so that one number moves both.
+    // bhGeometry.y is the LENSING reach (8 Rh under the `target` preset), not
+    // the drawn material: 1.6x it is 12.8 Rh, which on his DP-3, HDMI-A-1 and
+    // tablet alike covers the WHOLE buffer. Measured acceptance 0.000 on all
+    // three, so radialPlacement returned null every time and no phenomenon had
+    // ever been placed on any of his screens (his report, ledger 2283). The
+    // exclusion has to be the material an event would shine through, which is
+    // the disk's rim (887 px on DP-3 against a 3041 px lensing reach).
+    function holeReach(): real {
+        if (!_hole.enabled)
+            return 0;
+        const radii = ParticlePhysics.visibleRadius(_hole.bhGeometry.x, {
+            innerRs: _hole.bhDisk.x,
+            outerRs: _hole.bhDisk.y,
+            arcGain: _hole.bhArcs.x,
+            arcRadiusRh: _hole.bhArcs.y,
+            arcSpacingRh: _hole.bhArcs.z,
+            arcCount: _hole.bhArcs.w
+        });
+        return Math.max(radii.arcs, radii.disk);
+    }
+
     function radialPlacement(index: int, salt: real): var {
         const w = width * devicePixelRatio, h = height * devicePixelRatio;
         const shortSide = Math.min(w, h);
         const margin = 0.05 * shortSide;
         const centre = [w * 0.5 + shader.centreOffset.x, h * 0.5 + shader.centreOffset.y];
-        const keepOut = 1.6 * (_hole.enabled ? _hole.bhGeometry.y : 0);
-        for (let attempt = 0; attempt < 8; ++attempt) {
+        const keepOut = 1.25 * holeReach();
+        for (let attempt = 0; attempt < 16; ++attempt) {
             const x = margin + (w - 2 * margin) * random(index, salt + 40 + attempt * 2);
             const y = margin + (h - 2 * margin) * random(index, salt + 41 + attempt * 2);
             if (Math.hypot(x - centre[0], y - centre[1]) >= keepOut)
