@@ -372,7 +372,11 @@ var EVENT_FAMILY_SPEC = {
         dustOpacity: [0.55, "num", 0, 0.9],
         stars: [[1, 3], "pair", 0, 3],
         starGain: [0.45, "num", 0, 0.8],
-        paletteMix: [0.40, "num", 0, 0.45]
+        paletteMix: [0.40, "num", 0, 0.45],
+        // A fraction of the far dust's own rate. 1 is exactly the dust's speed,
+        // which crosses from the edge to the hole in 60-200 s: a fly-past
+        // rather than a passage.
+        driftScale: [0.45, "num", 0.05, 2]
     }
 };
 

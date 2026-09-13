@@ -2035,10 +2035,15 @@ Item {
             s.nebula = null;
         if (s.nebula && s.clock < s.nebula.start && !nebulaEnabled())
             s.nebula = null;
+        // A pushed passage waits for a RUNNING one and replaces a merely
+        // scheduled one, exactly as drainPending does for a radial family: the
+        // next passage is twenty minutes away, and a forced one that waited for
+        // it would be no use to anybody.
+        const running = s.nebula !== null && s.clock >= s.nebula.start;
         if (s.nebulaPending) {
             if (s.clock > s.nebulaPending.start + 120)
                 s.nebulaPending = null;
-            else if (!s.nebula && s.clock >= s.nebulaPending.start) {
+            else if (!running && s.clock >= s.nebulaPending.start) {
                 s.nebulaPending.start = s.clock;
                 s.nebula = s.nebulaPending;
                 s.nebulaPending = null;

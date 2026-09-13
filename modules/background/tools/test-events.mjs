@@ -405,8 +405,194 @@ function tests() {
         }
         check("no placement lands on the drawn hole on " + out.name, inside === 0, inside + " inside " + reach.toFixed(0) + " px");
     }
+    nebulaTests();
     console.log("\n" + (failures ? failures + " failures" : "all " + checks + " checks passed"));
     return failures;
+}
+
+// ---------------------------------------------------------------- nebula
+// The passage has no slot and no place in s.events, so simulate() cannot see
+// it: it is driven here through the same publishNebula() the renderer calls,
+// with the geometric accumulator advanced the way advance() advances it.
+function nebulaHost(options) {
+    const o = Object.assign({ width: 2880, height: 1800, dpr: 1, holeSize: 0.11 }, options || {});
+    const document = validateDocument(o.config || null);
+    const host = makeHost(document, o);
+    host.paletteColors = document.palette.rgb;
+    host._state.palette = new Array(document.palette.rgb.length).fill(1 / document.palette.rgb.length);
+    return host;
+}
+
+// One second of publishes, with geo advancing exactly as advance() does: the
+// nebula's drift is expressed against the same accumulator, so this is the
+// renderer's own clock and not a second model of it.
+function nebulaRun(host, seconds, step) {
+    const dt = step === undefined ? 1 : step;
+    const perSec = -host.nebulaDriftPerSec() / host.nebulaFlowRate();
+    const seen = [];
+    for (let t = 0; t <= seconds; t += dt) {
+        host._state.clock = t;
+        host._state.geo[0] = perSec * t;
+        host.publishNebula();
+        const head = host.shader.nebulaHead;
+        if (head && head.w > 0)
+            seen.push({ t: t, x: head.x, y: head.y, semi: head.z, gain: head.w,
+                bounds: host.shader.nebulaBounds, shape: host.shader.nebulaShape,
+                episode: host._state.nebula });
+    }
+    return seen;
+}
+
+function nebulaTests() {
+    console.log("\n-- nebula passage");
+    const frag = readFileSync(join(root, "modules", "background", "shaders", "starfield.frag"), "utf8");
+    // Composite order, read off the shader rather than asserted: the cloud
+    // joins the far field BEFORE the shadow is subtracted from it and before
+    // the disk and the particles composite over it, which is the whole of
+    // "behind the disk, in front of the far dust, never over the shadow".
+    const composite = frag.indexOf("far = far*(1.0-nebula.a)+nebula.rgb;");
+    const shadow = frag.indexOf("if (hole) far *= 1.0-bhShadowMask(pixel);", composite);
+    const particles = frag.indexOf("vec3 linearColour = disk.rgb+(1.0-disk.a)*far", composite);
+    check("the cloud joins the far field", composite > 0);
+    check("the shadow is subtracted after it", shadow > composite);
+    check("the disk and the particles composite over it", particles > shadow);
+
+    // Rate and spacing, one day of scheduling on the tablet.
+    {
+        const host = nebulaHost();
+        const starts = [];
+        for (let t = 0; t < 86400; t += 5) {
+            host._state.clock = t;
+            host._state.geo[0] = t;
+            host.publishNebula();
+            const e = host._state.nebula;
+            if (e && starts[starts.length - 1] !== e.start) starts.push(e.start);
+        }
+        const gaps = starts.slice(1).map((s, i) => s - starts[i]).filter(g => g > 0);
+        const mean = gaps.reduce((a, b) => a + b, 0) / Math.max(1, gaps.length);
+        check("one passage every 20-45 min at rateScale 1",
+            gaps.length > 20 && Math.min(...gaps) >= 1200 - 1 && mean >= 1500 && mean <= 2900,
+            gaps.length + " passages, mean " + (mean / 60).toFixed(1) + " min, min " + (Math.min(...gaps) / 60).toFixed(1) + " min");
+    }
+    // Never beside a supernova: both families write the same familyLast.drama.
+    {
+        const host = nebulaHost();
+        let worst = 1e9, pairs = 0;
+        for (let t = 0; t < 6 * 3600; t += 5) {
+            host._state.clock = t;
+            host._state.geo[0] = t;
+            host.publishEvents();
+            host.publishNebula();
+            const n = host._state.nebula, s = host._state.events[8];
+            if (n && s) {
+                const overlap = Math.min(n.start + n.duration, s.start + s.duration) - Math.max(n.start, s.start);
+                if (overlap > -1e9) { worst = Math.min(worst, -overlap); ++pairs; }
+            }
+        }
+        check("a passage and a supernova never overlap", pairs > 0 && worst > 0,
+            "closest approach " + worst.toFixed(0) + " s apart over 6 h");
+    }
+    // Geometry and both regimes.
+    for (const out of [
+        { name: "tablet 2880x1800", width: 2880, height: 1800 },
+        { name: "DP-3 2160x3840", width: 2160, height: 3840 }
+    ]) {
+        const short = Math.min(out.width, out.height);
+        for (const regime of ["hole", "camera"]) {
+            const camera = regime === "camera";
+            const host = nebulaHost(Object.assign({}, out, camera
+                ? { hole: false, cameraBlend: 1, cameraOutward: 1 }
+                : {}));
+            const e = host.captureNebula(11, 0);
+            host._state.nebula = e;
+            const frames = nebulaRun(host, e.duration, 1);
+            const label = out.name + " " + regime;
+            check("a passage lasts 3-8 minutes on " + label,
+                e.duration >= 150 && e.duration <= 500, e.duration.toFixed(0) + " s");
+            check("it is drawn for most of it on " + label,
+                frames.length > e.duration * 0.55, frames.length + " of " + e.duration.toFixed(0) + " s");
+            const peak = frames.reduce((a, b) => a.gain > b.gain ? a : b);
+            check("its size is 40-110 % of the short side on " + label,
+                2 * peak.semi >= 0.40 * short && 2 * peak.semi <= 1.10 * short,
+                (200 * peak.semi / short).toFixed(0) + " % at peak gain");
+            check("its peak linear gain is capped on " + label,
+                peak.gain <= 0.35 + 1e-6, peak.gain.toFixed(3));
+            // Entry and exit: it starts and ends at nothing, with no step.
+            let worstStep = 0;
+            for (let i = 1; i < frames.length; ++i)
+                if (frames[i].t - frames[i - 1].t <= 1.001)
+                    worstStep = Math.max(worstStep, Math.abs(frames[i].gain - frames[i - 1].gain));
+            check("the envelope never steps on " + label,
+                worstStep <= 0.02, worstStep.toFixed(4) + " per second");
+            // Motion: it travels with the far layer, in the regime's direction.
+            const first = frames[0], last = frames[frames.length - 1];
+            const r0 = Math.hypot(first.x - out.width / 2, first.y - out.height / 2);
+            const r1 = Math.hypot(last.x - out.width / 2, last.y - out.height / 2);
+            check("it drifts " + (camera ? "outward" : "inward") + " on " + label,
+                camera ? r1 > r0 + 0.1 * short : r1 < r0 - 0.1 * short,
+                "r " + r0.toFixed(0) + " -> " + r1.toFixed(0) + " px");
+            if (camera)
+                check("and grows with its depth on " + label,
+                    last.semi > first.semi * 1.5, first.semi.toFixed(0) + " -> " + last.semi.toFixed(0) + " px");
+            else
+                check("and shears as the tide takes hold on " + label,
+                    last.shape.z < first.shape.z - 0.02, "aspect " + first.shape.z.toFixed(2) + " -> " + last.shape.z.toFixed(2));
+            // Bounds contain the drawn ellipse exactly.
+            const bad = frames.filter(f => {
+                const a = f.semi, b = f.semi * f.shape.z;
+                const bx = Math.sqrt(a * a * f.shape.x * f.shape.x + b * b * f.shape.y * f.shape.y);
+                const by = Math.sqrt(a * a * f.shape.y * f.shape.y + b * b * f.shape.x * f.shape.x);
+                return Math.abs((f.bounds.z - f.bounds.x) / 2 - bx) > 0.5 || Math.abs((f.bounds.w - f.bounds.y) / 2 - by) > 0.5;
+            });
+            check("the CPU bounds are the exact ellipse on " + label, bad.length === 0, bad.length + " frames off");
+            // Under infall it dissolves before its centre reaches the disk.
+            if (!camera) {
+                const reach = host.holeReach();
+                const inside = frames.filter(f => Math.hypot(f.x - out.width / 2, f.y - out.height / 2) < 0.55 * reach);
+                check("it has dissolved before the disk rim on " + label,
+                    inside.length === 0, inside.length + " frames inside " + (0.55 * reach).toFixed(0) + " px");
+            }
+        }
+    }
+    // The reversal: the same episode, walked forward and then backward.
+    {
+        const host = nebulaHost({ hole: false, cameraBlend: 1, cameraOutward: 1 });
+        const e = host.captureNebula(11, 0);
+        e.geo = 0;
+        host._state.nebula = e;
+        const perSec = -host.nebulaDriftPerSec() / host.nebulaFlowRate();
+        host._state.clock = 60;
+        host._state.geo[0] = perSec * 60;
+        const out = host.nebulaState(e);
+        // The camera flips: geo runs the other way from here, and the cloud
+        // walks back in the way it came out rather than continuing. Same
+        // episode, same state function, one accumulator.
+        host._state.clock = 120;
+        host._state.geo[0] = perSec * 20;
+        const back = host.nebulaState(e);
+        const centre = host.width * host.devicePixelRatio / 2;
+        check("a camera reversal walks the cloud back",
+            Math.abs(back.head[0] - centre) < Math.abs(out.head[0] - centre) - 1,
+            "x " + out.head[0].toFixed(0) + " -> " + back.head[0].toFixed(0) + ", centre " + centre.toFixed(0));
+    }
+    // Force-fire, and the switch.
+    {
+        const host = nebulaHost();
+        check("fire nebula queues a passage", host.pushEvent("nebula", 0, null) === true);
+        host._state.clock = 1;
+        host.publishNebula();
+        check("and it is the running episode", host._state.nebula !== null && host._state.nebulaPending === null);
+        const off = nebulaHost({ config: { events: { nebula: { enabled: false } } } });
+        off._state.clock = 4000;
+        off._state.geo[0] = 4000;
+        off.publishNebula();
+        check("enabled:false draws nothing", off.shader.nebulaHead.w === 0);
+        const zero = nebulaHost({ config: { events: { rateScale: 0 } } });
+        zero._state.clock = 8000;
+        zero._state.geo[0] = 8000;
+        zero.publishNebula();
+        check("rateScale 0 draws nothing", zero.shader.nebulaHead.w === 0);
+    }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

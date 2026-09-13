@@ -55,7 +55,7 @@ One validated snapshot owns configuration; the shell never writes it. Full schem
       {"signal":"gpuLoad","enabled":false,"add":{"events":{"tde":0.3}}}, {"signal":"night","enabled":false,"add":{"events":{"starBirth":0.3,"supernova":-0.3}}}]}
 }
 ```
-The eight event families are omitted above only for length: each defaults exactly to the block below, so an absent family *is* that block. `phenomena` is
+The nine event families are omitted above only for length: each defaults exactly to the block below, so an absent family *is* that block. `phenomena` is
 FORWARDED like `blackHole`/`particles` (an absent key keeps the renderer's default); `events` families are defaulted here. Defaults, written out to paste:
 ```json
 "events": {"headCap":3,"phenomenonCap":3,"phenomenonGainCap":1.6,"dramaCooldownSec":900,"rateScale":1,
@@ -66,7 +66,8 @@ FORWARDED like `blackHole`/`particles` (an absent key keeps the renderer's defau
   "kilonova":{"enabled":true,"everyHours":[0.6,1.4],"flashSec":0.6,"gain":1.10,"ringShortSide":0.05,"ringGain":0.34,"ringSec":[8,15]},
   "pulsar":{"enabled":true,"everyHours":[0.5,1.1],"durationSec":[120,260],"periodSec":[0.9,2.2],"gain":0.70,"floorFraction":0.55,"edgeSec":0.14},
   "gammaBurst":{"enabled":true,"everyHours":[0.7,1.8],"riseSec":[0.4,0.7],"flashSec":[0.5,0.8],"gain":1.00,"beamShortSide":[0.10,0.18],"beamGain":0.42,"afterglowSec":[30,90]},
-  "satelliteGlint":{"enabled":true,"gain":2.2,"widthSec":[1.5,3]}},
+  "satelliteGlint":{"enabled":true,"gain":2.2,"widthSec":[1.5,3]},
+  "nebula":{"enabled":true,"everyMinutes":[20,45],"durationSec":[180,480],"fadeSec":[30,60],"sizeShortSide":[0.40,0.80],"gain":0.30,"dustOpacity":0.55,"stars":[1,3],"starGain":0.45,"paletteMix":0.40,"driftScale":0.45}},
 "phenomena": {"tde":{"enabled":true,"everyMinutes":[40,90],"streakPx":[60,140],"stretchSec":[6,12],"fragments":[4,8],"diskFlash":0.15},
   "microlensing":{"enabled":true,"gainCap":2.5}, "moods":{"clearing":0.15,"nebular":0.15}}
 ```
@@ -115,7 +116,7 @@ Family weights 0–1 divide scheduled starts; duration stays within the listed r
 Fragmenting share ≤2%, cooldown ≥7200 s; spiral cooldown ≥14400 s (both ≤604800). Event headCap 1–3; hourly spacing 0.25–168 h; episode duration/gain bounded as shown.
 Event intervals allow up to 86400 s; minima: meteor 3, comet 60, satellite 45. Companions/fireballs 0–1; three is the hard head cap, normally two (renderer).
 phenomenonCap 1–3 (long faint slots, separate from headCap and never spilling into it), phenomenonGainCap 0.3–3, dramaCooldownSec 300–86400 across all dramatic
-families (supernova, kilonova, gamma-ray burst), rateScale 0–4 dividing every interval.
+families (supernova, kilonova, gamma-ray burst and the nebula passage), rateScale 0–4 dividing every interval.
 Schedules: `everyMinutes` ordered pair 1–1440, `everyHours` ordered 0.25–168. Every `gain` is 0–the value listed in the defaults block; shells/rings/nebulae ≤0.25 short
 sides, GRB beams ≤0.25, satelliteGlint gain is a 1–4 multiplier on an existing pass; durations 10–1800 s, sub-envelopes (rise/hold/decay/swell/collapse/echo/afterglow)
 0–600 s, remnant ≤1800 s, cooldowns 600–604800 s, hypernovaShare 0–1, `haloPx` is a from–to span 0.5–96 px and may descend.
@@ -157,6 +158,44 @@ stream and `drainPending()` lands it on that family's entry once the entry is fr
 moment. It never evicts a running episode and obeys exactly the same slot and cap rules. This is the hook a particle merge (kilonova) or any other detection calls.
 `phenomena.tde` is DRAWN, by the particles alone — no slot, no uniform, no shader change; PARTICLES.md owns it. One doomed particle's packed streak is ramped to `streakPx` over `stretchSec` while its core dims and reddens, it splits into `fragments` siblings
 along its own orbit, and its head's trail then eases back over six seconds. `streakPx` is clamped to 120 px by the renderer whatever the service validates up to 160: 120 is what the packed streak byte carries. `diskFlash` rides the hole's brightness channel for 20 s.
+
+**v9, THE NEBULA PASSAGE (`events.nebula`).** The only large-scale thing on the sky was `moods.nebular`, which changes which stars take a colour and which nobody has
+ever noticed; a force-fired supernova measured ~40 px on the 2880 px tablet (`starfield-v2/evidence/v8-fire-supernova-tablet-tiny.png`). This is the other end of that
+scale, and the first event that takes light AWAY instead of adding it: a ragged cloud **40–80 % of the short side** across (`sizeShortSide` is its DIAMETER as a fraction
+of the short side), 3–8 minutes long, one every **20–45 min** at rateScale 1. It is NOT a slot and not in `s.events` — a cloud is not a point source — so it carries its
+own 112 B uniform block (`nebulaHead/Shape/Tone0/Tone1/Stars/Stars2/Bounds`, UBO 1600 → 1712 B of 16384) and its own entry in `_state`. `nebulaHead.w <= 0` is the whole
+switch; `density: 0` also turns it off, because it shares the far field's pass.
+**Shape.** One bounding ellipse, then three texture fetches. `blackhole-noise.png` is already bound (binding 2, linear) whatever the hole is doing, and one hardware-bilinear
+tap of it IS a C1 value-noise lattice when the fractional part is pre-eased — the trick `bhNoiseRow` already uses on the same texture. Its R and G channels have x periods
+of 32 and 64 texels and a y period of 127 with the last row duplicated, so folding the integer part by (64, 127) keeps BOTH continuous across the fold and yields two
+decorrelated fields per fetch: a warp octave, a medium octave and a fine octave give a soft fbm for the body, a ridged layer for the filaments, a low band for the dust
+lanes — which are dark AND opaque — and a two-octave bite that makes the rim ragged at two scales while the hard ellipse stays the cost bound. Colour is two palette tones
+(`paletteMix` 0–0.45 of the way from a cold neutral to a listed hue, so no unlisted hue is generated and the saturation cap still holds) mixed to their ENDS rather than
+linearly: a palette capped at 0.28 saturation has little chroma, and averaging two of those over most of the cloud threw away what there was (measured mean chroma 0.017
+linear against 0.024 after the change). `stars` 0–3 embedded young stars have a hot core and a halo that only lights the material around them, so the scattering reads as
+the cloud glowing. The body's 0.36 internal factor is a CALIBRATION: it makes the cloud's 99th linear percentile equal `gain`, so the 0.35 ceiling on that key is the q99
+the sky actually gets. The star cores are deliberately outside it — an embedded young star is meant to be a star.
+**Motion.** Its position is not captured and replayed: it follows the far layer's own flow law (u = r²/2, du/d`geo` from `stars()` layer 0 at depth 0.10 and the dust
+boost), at `driftScale` 0.45 of the dust's own rate. At 1.0 the far layer crosses from the screen edge to the hole in 60–200 s, which is a fly-past rather than a passage;
+0.45 is the same direction, the same reversal and the same regime crossfade at a speed that reads as something large and far away. Because the signed accumulator
+`_state.geo[0]` already carries the camera's rate and sign, the cloud drifts inward under infall, outward under the camera, and turns around mid-passage when the camera
+reverses — for one subtraction a frame, with no second model of the flow. Under infall it arrives from off the edge along a direction that is REJECTED, not clamped, when
+there is no room in it (the hole's material reaches 740 px against the tablet's 900 px half-height, so a cloud on the short axis would dissolve before its centre crossed
+the edge), the tide stretches it radially and squeezes it tangentially as it approaches, and it dissolves across the last stretch into the rim it is feeding. Under the
+camera it is a body at a DEPTH: it fades in small, grows with its own screen radius (the configured size is what it is at mid-passage) and passes partly off-screen.
+Internal turbulence is three octaves advected at three different velocities by the EPISODE's age, so the structure shears through itself over minutes; the age keeps that
+phase bounded and starts every passage at the same place in its own evolution.
+**Order.** It composites into the far field — `far = far*(1-a) + rgb`, evaluated at the same lensed source coordinate the far stars use — so it is lensed with the
+background it belongs to, its lanes extinct the dust behind it, the particles and the disk are in front of it, and `bhShadowMask` is subtracted from it: it can never be
+drawn over the hole. Like every event it ignores `brightness`. It takes its turn in the SHARED dramatic cooldown (`dramaCooldownSec`, `familyLast.drama`), so a passage and
+a supernova remnant never occupy the same screen — 900 s against a ≤480 s passage and a ≤333 s supernova separates them in both directions with no second mechanism.
+`caelestia shell starfield fire nebula [screen]` forces one through the same `pushEvent`; it waits for a running passage and is dropped two minutes later, exactly as a
+pushed phenomenon waits for its family's entry.
+Bounds: `everyMinutes` 1–1440, `durationSec` 60–1800 (a crossing that reaches the rim sooner ends there), `fadeSec` 5–300 (capped at 0.45 of the duration), `sizeShortSide`
+0.15–1.2, `gain` 0–0.35, `dustOpacity` 0–0.9, `stars` 0–3 (the renderer rounds), `starGain` 0–0.8, `paletteMix` 0–0.45, `driftScale` 0.05–2. Measured through the shipped
+kernel offscreen (`tools/nebula_sheet.py`, llvmpipe, the real noise texture, his palette): q99 0.21–0.30 linear at the shipped gain, q999 0.34, peak 229/255 in the star
+cores alone, extent 45–68 % of the short side on the tablet and 27–53 % on DP-3, mean dust opacity 0.15–0.27. `tools/nebula_harness.qml` drives the real QML headlessly
+through a passage in both regimes.
 
 **A comet is style 5 (`cometField`), not a wider meteor.** v6 drew it as one Gaussian polyline behind the nucleus: measured on DP-3, a slow comet peaked at 116/255 with
 2566 lit pixels — the same shape as a meteor, only slower (his report, ledger 2283). It is now a nucleus inside a two-stage coma, a straight narrow bluish **ion tail**
