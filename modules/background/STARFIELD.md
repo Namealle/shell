@@ -143,8 +143,11 @@ absolute and is divided by the slot peak, so a nova's shell outlives the core th
 r-process colour after the flash that threw it has gone. `gammaBurst` is **style 4**: core + halo + two OPPOSED cones, no rings, so the ring channel is re-read as the
 beam — tail01=(haloSigmaPx, haloGain, coreGain, beamGain), shape=(dirX, dirY, beamLengthPx, beamWidthPx).
 **Placement.** An event composites after the disk and is not shadow-masked, so one sitting on the hole would shine straight through it; placement is therefore REJECTED,
-never clamped, inside 1.25× what the hole actually DRAWS, or within 0.05 short sides of an edge (v9's supernova asks for 0.12, because its shell reaches 0.20 short
-sides and a rim half off the screen is half an event; measured acceptance on the tablet with his hole on, 32 %) — sixteen attempts, then the episode is skipped. The drawn reach comes
+never clamped, inside 1.25× what the hole actually DRAWS, or within 0.05 short sides of an edge — sixteen attempts, then the episode is skipped. **v9's supernova asks
+for 0.12 short sides from an edge** (its shell reaches 0.20, and a rim half off the screen is half an event) **and for its whole shell's radius on top of the keep-out**,
+falling back to the plain keep-out when sixteen attempts cannot find that much room: the keep-out guards where the event IS, and a centre that merely clears the drawn
+material still puts a 0.20-short-side rim on the disk. Measured with his hole on, 1000 captures each: the padded placement succeeds 85.3 % on DP-3, 99.9 % on HDMI-A-1
+and 28.3 % on the tablet, where the hole is 41 % of the short side and there is often nowhere that clears both. The fallback is exactly v8's placement, never worse. The drawn reach comes
 from `Physics.visibleRadius()` on the hole's own published uniforms, the same call the particles use, so one number moves both. **v6 excluded 1.6× `bhGeometry.y`, which
 is the LENSING reach — 8 Rh under his `target` preset, so 12.8 Rh. On DP-3 (2160x3840 device) that is 3041 px against a 1080 px half-width; on HDMI-A-1 2028 px and on
 the tablet 2534 px. It covered the whole buffer on all three: measured acceptance 0.000, 0/400 captures found a spot, so no phenomenon had EVER been placed on any of

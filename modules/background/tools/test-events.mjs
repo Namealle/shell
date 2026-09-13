@@ -405,6 +405,13 @@ function tests() {
         let wide = 0;
         for (let i = 0; i < 400; ++i) if (h2.radialPlacement(i, 777, 0.12)) wide++;
         check("a supernova can be placed on " + out.name, wide >= 396, wide + "/400 captures found a spot at a 0.12 margin");
+        // And it PREFERS a spot its whole shell clears, falling back to the
+        // plain keep-out when there is nowhere that does.
+        const pad = 0.5 * 0.40 * Math.min(out.width, out.height);
+        let padded = 0;
+        for (let i = 0; i < 400; ++i) if (h2.radialPlacement(i, 555, 0.12, pad)) padded++;
+        check("the shell-wide keep-out is preferred where it fits on " + out.name, padded > 0,
+            (padded / 4).toFixed(1) + " % of captures clear the hole by the whole shell");
     }
     // v9 WARM START. v8 scheduled every family's FIRST episode a full random
     // interval after the shell started, so a restart put the supernova 21-48
