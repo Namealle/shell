@@ -190,6 +190,9 @@ Item {
             // separate accumulator is what lets the far field reverse without
             // ever running the descriptor history backwards.
             geo: [0, 0, 0],
+            // v9: the camera's share of the far layer's advance, for the one
+            // event that has to travel with the field instead of with a pixel.
+            camFlow: 0,
             birth: [0, 0, 0, 0.5],
             live: [0.5, 0.5, 0.5, 0.5],
             history: history,
@@ -290,6 +293,12 @@ Item {
         s.geo[0] += dFlow * sign * dustRate;
         s.geo[1] += dFlow * sign;
         s.geo[2] += dFlow * sign;
+        // v9: the far layer's advance attributable to the CAMERA, with the
+        // cell-size factor already folded out (see supernovaSite). It is the
+        // same addend geo[0] takes, weighted by the regime blend and multiplied
+        // by the far boost the grid divides out, so it is zero with the hole on
+        // and eases in over the same 30 s crossfade everything else uses.
+        s.camFlow += dFlow * sign * dustRate * farBoost() * _cameraBlend;
         const bucket = Math.floor((s.flow + 1e-7) / 30);
         for (let n = Math.max(s.bucket + 1, bucket - 255); n <= bucket; ++n) {
             const f = clamp((n * 30 - oldFlow) / Math.max(1e-12, s.flow - oldFlow), 0, 1);
@@ -956,10 +965,15 @@ Item {
         return Math.max(radii.arcs, radii.disk);
     }
 
-    function radialPlacement(index: int, salt: real): var {
+    // `marginShare` is how far from an edge, in short sides, a phenomenon may
+    // land; 0.05 is the v6 default. v9's supernova asks for 0.12 because its
+    // shell reaches 0.20 short sides and a rim half off the screen is half an
+    // event. Acceptance measured on the tablet with his hole on: 32 %, so one
+    // placement in 500 exhausts the sixteen attempts.
+    function radialPlacement(index: int, salt: real, marginShare: real): var {
         const w = width * devicePixelRatio, h = height * devicePixelRatio;
         const shortSide = Math.min(w, h);
-        const margin = 0.05 * shortSide;
+        const margin = (marginShare === undefined ? 0.05 : clamp(marginShare, 0, 0.3)) * shortSide;
         const centre = [w * 0.5 + shader.centreOffset.x, h * 0.5 + shader.centreOffset.y];
         const keepOut = 1.25 * holeReach();
         for (let attempt = 0; attempt < 16; ++attempt) {
@@ -975,7 +989,7 @@ Item {
         const name = radialNames[kind - 5];
         const cfg = eventConfig(kind);
         const salt = screenSeed + 5501 + kind * 907;
-        const place = radialPlacement(index, salt);
+        const place = radialPlacement(index, salt, kind === 8 ? 0.12 : 0.05);
         if (!place)
             return null;
         const w = width * devicePixelRatio, h = height * devicePixelRatio;
@@ -1049,23 +1063,58 @@ Item {
             e.nebulaGain = value("nebulaGain", 0.16, 0.20);
             e.warm = [1, 0.80, 0.62];
         } else if (kind === 8) {
+            // ---- v9 SUPERNOVA: a four-phase life cycle ----------------------
+            // 1 precursor: the star brightens, reddens and pulses faster.
+            // 2 core collapse: a white-blue flash that lifts the whole sky.
+            // 3 shell: a filamentary Sedov shock, r ~ t^0.4, cooling as it goes.
+            // 4 remnant: a two-tone turbulent nebula with the neutron star the
+            //   collapse left behind still blinking at its centre.
+            // Every span and every radius is captured here, once, from the same
+            // hash stream, so an edit only reaches the NEXT episode.
+            e.precursor = sample("precursorSec", [10, 20], 0, 120, 19);
             e.rise = Math.max(0.8, sample("riseSec", [0.8, 1.5], 0, 600, 3));
             e.hold = sample("holdSec", [0.6, 1.6], 0, 600, 5);
-            e.decay = sample("decaySec", [50, 130], 0, 600, 7);
-            e.remnant = sample("remnantSec", [90, 200], 0, 1800, 9);
-            e.duration = e.rise + e.hold + e.decay + e.remnant;
-            e.shell = sample("shellShortSide", [0.09, 0.15], 0, 0.25, 11) * shortSide;
-            e.shellGain = value("shellGain", 0.24, 0.30);
-            e.echoGain = value("echoGain", 0.10, 0.20);
-            e.echoDelay = sample("echoDelaySec", [40, 90], 0, 600, 13);
-            e.echoScale = 2 + random(index, salt + 15);
+            e.decay = sample("decaySec", [25, 60], 1, 600, 7);
+            e.shellSpan = sample("shellSec", [30, 90], 5, 600, 21);
+            e.remnant = sample("remnantSec", [120, 300], 1, 1800, 9);
+            e.duration = e.precursor + e.rise + e.hold + e.shellSpan + e.remnant;
+            // Both are the drawn DIAMETER as a share of the short side, halved
+            // here into the radius everything downstream works in.
+            e.flash = 0.5 * sample("flashShortSide", [0.15, 0.25], 0, 0.6, 23) * shortSide;
+            e.shell = 0.5 * sample("shellShortSide", [0.25, 0.40], 0, 0.6, 11) * shortSide;
+            e.shellGain = value("shellGain", 0.55, 0.80);
+            e.skyLift = value("skyLift", 0.35, 1);
+            e.spikeGain = value("spikeGain", 0.55, 1.5);
+            e.filaments = value("filaments", 0.55, 1);
+            e.remnantGain = value("remnantGain", 0.26, 0.40);
+            e.pulsarGain = value("pulsarGain", 0.30, 0.60);
+            e.pulsarPeriod = Math.max(0.8, clamp(cfg.pulsarPeriodSec === undefined ? 1.4 : cfg.pulsarPeriodSec, 0, 60));
+            // Birth-frozen orientation for the diffraction spikes and the
+            // filament web, so two supernovae never break the same way.
+            e.spin = (random(index, salt + 25) * 2 - 1) * Math.PI;
+            // Where the far layer's streamline was when this was captured. See
+            // supernovaSite(): the site travels with the far dust in the camera
+            // regime and is fixed with the hole on, exactly as the far field is.
+            e.camFlow = _state.camFlow === undefined ? 0 : _state.camFlow;
             const share = clamp(cfg.hypernovaShare === undefined ? 0.15 : cfg.hypernovaShare, 0, 1);
             const cooldown = Math.max(600, Math.min(604800, Number(cfg.hypernovaCooldownSec) || 10800));
             const last = _state.familyLast.hypernova === undefined ? -1e12 : _state.familyLast.hypernova;
             e.hyper = random(index, salt + 17) < share && start - last >= cooldown;
             e.gain = e.hyper ? value("hypernovaGain", 1.60, 1.60) : value("gain", 1.35, 1.35);
-            if (e.hyper)
-                e.peakColour = [0.82, 0.90, 1];
+            if (e.hyper) {
+                e.flash *= 1.25;
+                e.shell *= 1.20;
+            }
+            // The physics colours. `e.colour` (the palette-mixed one) stays the
+            // PRECURSOR's, because that phase is a star and a star is where his
+            // palette belongs; the collapse, the shock and the remnant are what
+            // the temperature says they are.
+            e.peakColour = e.hyper ? [0.78, 0.87, 1] : [0.84, 0.90, 1];
+            e.precursorColour = [1, 0.66, 0.45];
+            e.shellWarm = [1, 0.92, 0.60];
+            e.shellCool = [1, 0.46, 0.28];
+            e.remnantHot = [0.52, 0.95, 0.88];
+            e.remnantTone = [1, 0.42, 0.36];
         } else if (kind === 9) {
             // A pulsar MODULATES; the validator floors (period >= 0.8 s, trough
             // >= 0.5 of peak, edge >= 0.10 s) make a square blink unreachable.
@@ -1203,6 +1252,231 @@ Item {
         return e;
     }
 
+    function mixColour(a: var, b: var, t: real): var {
+        const k = clamp(t, 0, 1);
+        return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+    }
+
+    // ---- v9 SUPERNOVA -------------------------------------------------------
+    // WHERE IT IS. Every other phenomenon is nailed to the pixel it was placed
+    // on. In the camera regime that makes the supernova the one thing on the
+    // screen that is not moving while the field streams past it, so it travels
+    // on the FAR layer's own streamline: it is the most distant object on the
+    // sky and the far layer is where a supernova belongs.
+    //
+    // The far field advances at a constant rate in u = (r/R)^2/2 (the shader's
+    // `radialCoordinates`), and the grid's own cell factor invU cancels between
+    // `advanceCells` and u, so the motion is exactly
+    //     u(t) = u0 - (camFlow(t) - camFlow(capture)) * (6/1080) * 0.10
+    // with r = R*sqrt(2u). That reverses with `motion.camera.direction`, freezes
+    // with `speed` 0 and slows as 1/r with radius, because it IS the far layer's
+    // motion rather than a copy of it. `camFlow` carries the regime blend, so
+    // with the hole on the site is fixed exactly as it has always been and the
+    // 30 s crossfade eases the drift in without a step.
+    //
+    // It does NOT scale with the drift. That flow is area-preserving - it
+    // stretches a patch tangentially by r'/r and squashes it radially by r/r' -
+    // so its isotropic magnification is exactly 1, and the remnant's apparent
+    // size is its own expansion, which is the truth for a source that far away.
+    // The particles' z/z' perspective was the other candidate and it cannot
+    // carry a life cycle at all: at the shipped speed 6 and depth 16 the camera
+    // crosses the whole depth in 60 active seconds, so a 3-D-anchored event
+    // would leave the screen before its shell finished, let alone its remnant.
+    function supernovaSite(e: var): var {
+        const s = _state;
+        const w = width * devicePixelRatio, h = height * devicePixelRatio;
+        const R = Math.min(w, h) / 2;
+        // The shared wander enters the far layer at the layer's own depth, 0.10,
+        // exactly as stars() applies it for layer 0.
+        const cx = w * 0.5 + shader.centreOffset.x * 0.10;
+        const cy = h * 0.5 + shader.centreOffset.y * 0.10;
+        const flow = (s.camFlow === undefined ? 0 : s.camFlow) - (e.camFlow === undefined ? 0 : e.camFlow);
+        const dx = e.x - cx, dy = e.y - cy;
+        const r0 = Math.hypot(dx, dy);
+        if (!flow || r0 < 1e-3)
+            return [e.x, e.y];
+        const q0 = r0 / R;
+        const u = 0.5 * q0 * q0 - flow * (6 / 1080) * 0.10;
+        if (!(u > 1e-9))
+            return [cx, cy];
+        const r = R * Math.sqrt(2 * u);
+        return [cx + dx * r / r0, cy + dy * r / r0];
+    }
+
+    // The whole life cycle, on shader style 6 (`supernovaField`). The CPU owns
+    // every envelope, every radius and every colour; the shader owns the
+    // structure - the filament web, the diffraction spikes, the rim brightening
+    // and the advected turbulence. Five phases share one continuous set of
+    // channels, and every handover is a crossfade in EVERY channel rather than
+    // only in the total, so no frame of it is a cut:
+    //   head    = (x, y, coreSigmaPx, peak)
+    //   colour  = (r, g, b, 6)                       the phase's primary colour
+    //   tail01  = (haloSigmaPx, haloGain, coreGain, shellGain)
+    //   shape   = (shellRadiusPx, shellWidthPx, filamentAmp, toneWeight)
+    // plus four vectors of its own, because one supernova is alive at a time
+    // (the dramatic cooldown is 900 s against a ~290 s life) and a phenomenon
+    // slot's five vectors cannot carry a flash, a shock and a nebula at once:
+    //   snFlash = (x, y, skyLiftGain, skyLiftRadiusPx)   read by main(), global
+    //   snTone  = (secondR, secondG, secondB, turbulencePhase)
+    //   snShell = (innerRadiusPx, innerGain, nebulaRadiusPx, nebulaGain)
+    //   snExtra = (spikeGain, spikeLengthPx, pulsarGain, seedAngle)
+    // Every gain except the sky lift is a FRACTION of head.w, the same
+    // convention style 3 uses, so one multiply in the shader reproduces them.
+    function supernovaState(e: var, age: real): var {
+        const w = width * devicePixelRatio, h = height * devicePixelRatio;
+        const flashAt = e.precursor + e.rise, flashEnd = flashAt + e.hold;
+        const site = supernovaSite(e);
+        // The precursor's ceiling, and the level the collapse rises FROM. Every
+        // gain in this file is in DISPLAY units, not linear: main() decodes the
+        // event sum before adding it to the linear sky, so 0.95 is the 243/255
+        // an ordinary bright star renders at and 1.35 is a clipped white core.
+        const base = e.gain * 0.50;
+        let core = e.core, halo = 0, coreAbs = 0, haloAbs = 0;
+        let shellR = 0, shellW = 0, shellAbs = 0, innerR = 0, innerAbs = 0;
+        // The remnant's radius is published from the FIRST frame, whatever the
+        // remnant's own gain is doing: it is the unit the shader's filament
+        // field is measured in, and that field has to stay put while the shock
+        // sweeps through it rather than expanding with the front. Only the GAIN
+        // enlarges the box the shader pays for (see `reach` below).
+        let nebulaR = e.shell * 0.92, nebulaAbs = 0, pulsarAbs = 0, spikeAbs = 0, spikeLen = 0;
+        let lift = 0, filaments = 0, tone = 0;
+        let colour = e.colour, second = e.peakColour;
+        if (age < e.precursor) {
+            // 1. PRECURSOR (10-20 s). The star that is about to die brightens,
+            // reddens and pulses FASTER. The pulse phase is the integral of
+            // 1/period, so the period can shorten without the pulse ever
+            // jumping, and its amplitude eases to nothing over the last 1.5 s:
+            // a swing left mid-stroke when the collapse takes over would be a
+            // step, and 0.9 s is the shortest period, above the 0.8 s floor.
+            // The field's own stars cannot be addressed individually (they are
+            // a procedural hash grid), so this star is DRAWN at the site the
+            // shell will use - it is the same object, one phase earlier.
+            const t = clamp(age / Math.max(0.001, e.precursor), 0, 1);
+            const T0 = 3.2, T1 = 1.0;
+            const phase = 2 * Math.PI * (e.precursor / (T1 - T0)) * Math.log((T0 + (T1 - T0) * t) / T0);
+            const pulse = 1 + (0.15 + 0.30 * t) * ease((e.precursor - age) / 1.5) * Math.sin(phase);
+            const env = base * (0.55 + 0.45 * t * t) * pulse * ease(age / 2.5);
+            core = e.core * (0.9 + 0.5 * t);
+            halo = e.core * (2.4 + 2.2 * t);
+            coreAbs = env * 0.69;
+            haloAbs = env * 0.31;
+            colour = mixColour(e.colour, e.precursorColour, ease(t));
+        } else if (age < flashEnd) {
+            // 2. CORE COLLAPSE (0.5-1.5 s). A hard white-blue flash. The rise is
+            // >= 0.8 s and eased, the core/halo split and both sigmas ease with
+            // it from exactly where the precursor left them, and the sky lift
+            // below is what makes it read as light arriving rather than as a
+            // bright dot appearing.
+            const k = ease((age - e.precursor) / e.rise);
+            const env = base + (e.gain - base) * k;
+            core = e.core * (1.4 + 2.2 * k);
+            // sigma = flash/1.6 is what puts the disc's 64/255 contour at
+            // exactly `flashShortSide` across: a Gaussian at 0.89 display units
+            // falls to 0.25 at 1.594 sigma.
+            halo = e.core * 4.6 + (e.flash / 1.6 - e.core * 4.6) * k;
+            coreAbs = env * (0.69 - 0.35 * k);
+            haloAbs = env * (0.31 + 0.35 * k);
+            colour = mixColour(e.precursorColour, e.peakColour, k);
+        } else {
+            // 3/4. The core fades into the shock over `decaySec`, its bloom
+            // shrinking back to a point, while the shell leaves and the remnant
+            // grows out of it.
+            const d = age - flashEnd;
+            const fade = Math.exp(-3 * d / Math.max(0.001, e.decay));
+            const k = ease(d / Math.max(0.001, e.decay * 0.8));
+            core = e.core * (3.6 - 2.4 * k);
+            halo = (e.flash / 1.6) * (1 - k) + e.core * 4.5 * k;
+            coreAbs = e.gain * fade * 0.34;
+            haloAbs = e.gain * fade * 0.66;
+            colour = e.peakColour;
+            const u = clamp(d / Math.max(0.001, e.shellSpan), 0, 1);
+            if (u > 0) {
+                // 3. SHELL (30-90 s). Sedov-Taylor: a blast wave into a uniform
+                // medium decelerates as r ~ t^0.4, which is the whole reason it
+                // reads as an explosion slowing down rather than a ring being
+                // scaled up. It broadens and breaks into filaments as it ages,
+                // cools white -> yellow -> orange-red, and carries a hotter,
+                // narrower inner rim that dies sooner than the front does.
+                shellR = e.shell * Math.pow(u, 0.4);
+                shellW = Math.max(2, e.shell * 0.030 * (1 + 3.4 * u));
+                shellAbs = e.shellGain * ease(u / 0.05) * Math.pow(1 - u, 1.1);
+                innerR = shellR * 0.66;
+                innerAbs = e.shellGain * 0.50 * ease(u / 0.05) * Math.pow(1 - u, 2.4);
+                filaments = e.filaments * ease(u / 0.35);
+                colour = mixColour(mixColour(e.peakColour, e.shellWarm, ease(u / 0.40)), e.shellCool, ease((u - 0.35) / 0.65));
+                second = mixColour(e.peakColour, e.remnantTone, ease((u - 0.55) / 0.40));
+            }
+            // 4. REMNANT (2-5 min). It grows out of the shell's last 40 % rather
+            // than replacing it, so there is no moment where one ends: a faint
+            // two-tone filament web, slowly advected, with the neutron star the
+            // collapse left behind blinking at the centre. The blink obeys the
+            // pulsar family's own floors - period >= 0.8 s, trough >= 0.55 of
+            // peak - so it modulates instead of flashing.
+            const remnantAt = flashEnd + 0.6 * e.shellSpan;
+            const remnantSpan = 0.4 * e.shellSpan + e.remnant;
+            const rv = clamp((age - remnantAt) / Math.max(0.001, remnantSpan), 0, 1);
+            nebulaR = e.shell * (0.92 + 0.42 * rv);
+            if (rv > 0) {
+                nebulaAbs = e.remnantGain * ease(rv / 0.16) * ease((1 - rv) / 0.55);
+                const turn = modulo(d, e.pulsarPeriod) / e.pulsarPeriod;
+                pulsarAbs = e.pulsarGain * (0.55 + 0.45 * (0.5 - 0.5 * Math.cos(2 * Math.PI * turn)))
+                    * ease(rv / 0.08) * ease((1 - rv) / 0.60);
+                filaments = Math.max(filaments, e.filaments);
+                tone = ease(rv / 0.20);
+                colour = mixColour(colour, e.remnantHot, ease((rv - 0.05) / 0.35));
+                second = mixColour(second, e.remnantTone, ease(rv / 0.30));
+            }
+        }
+        // The spikes and the sky lift belong to the collapse alone. The lift is
+        // ABSOLUTE (main() multiplies the sky it already has by 1 + 2.5*lift and
+        // adds a flat haze of 0.09*lift), which is why it can light the whole
+        // screen and still return to exactly #000000: it scales what is there.
+        if (age >= e.precursor && age < flashEnd + 2.5) {
+            const rising = ease((age - e.precursor) / e.rise);
+            const falling = age < flashEnd ? 1 : ease((flashEnd + 2.5 - age) / 2.5);
+            spikeAbs = e.gain * e.spikeGain * 0.45 * rising * falling;
+            spikeLen = e.flash * 2.6;
+            lift = e.skyLift * rising * (age < flashEnd ? 1 : ease((flashEnd + 1.8 - age) / 1.8));
+        }
+        const peak = Math.max(Math.max(coreAbs + haloAbs, spikeAbs), Math.max(shellAbs + innerAbs, nebulaAbs + pulsarAbs));
+        if (peak <= 0.0004)
+            return {
+                head: [0, 0, 0, 0],
+                colour: [0, 0, 0, 3],
+                tail01: [0, 0, 0, 0],
+                shape: [0, 0, 0, 0],
+                bounds: [0, 0, 0, 0],
+                exempt: 0
+            };
+        // nebulaR is live from the first frame as the filament field's unit, so
+        // only its GAIN may enlarge the box the shader actually pays for.
+        const reach = Math.max(Math.max(nebulaAbs > 0 ? nebulaR * 1.45 : 0, shellR + 3.5 * shellW),
+            Math.max(Math.max(3.6 * halo, 6 * core), spikeAbs > 0 ? spikeLen * 1.05 : 0));
+        return {
+            head: [site[0], site[1], core, peak],
+            colour: colour.concat(6),
+            tail01: [halo, haloAbs / peak, coreAbs / peak, shellAbs / peak],
+            shape: [shellR, shellW, filaments, tone],
+            bounds: [site[0] - reach, site[1] - reach, site[0] + reach, site[1] + reach],
+            // The flash spends its gain outside the combined phenomenon cap and
+            // eases back inside it over three seconds, as it always has.
+            exempt: ease((flashEnd + 3 - age) / 3),
+            extras: {
+                // 0.55 of the long side leaves the corners at 56 % of the
+                // centre: global, but with a gradient, so it reads as light
+                // arriving from somewhere rather than as a flat wash.
+                flash: [site[0], site[1], lift, 0.55 * Math.max(w, h)],
+                // The advection phase is the episode's own age and is NEVER
+                // wrapped: it indexes a noise field, where a wrap is a jump. An
+                // episode is bounded well under 2000 s, so 0.05 * age stays
+                // inside 100 and float32 carries it to five decimal places.
+                tone: second.concat(age * 0.05),
+                shell: [innerR, innerAbs / peak, nebulaR, nebulaAbs / peak],
+                extra: [spikeAbs / peak, spikeLen, pulsarAbs / peak, e.spin]
+            }
+        };
+    }
+
     // Head, colour, tail01, shape and bounds for shader style 3. `exempt` is
     // the share of the gain that a supernova flash may spend outside the
     // combined phenomenon cap; it eases with the flash rather than switching.
@@ -1220,6 +1494,9 @@ Item {
         const age = _state.clock - e.start;
         if (age < 0 || age > e.duration)
             return off;
+        // v9: the supernova is its own kernel (style 6) and its own life cycle.
+        if (e.kind === 8)
+            return supernovaState(e, age);
         // Every component carries an ABSOLUTE linear gain here and is turned
         // into a fraction of the slot's peak at the end. A shell that was
         // scaled by the core's own decay could never outlive it, which is
@@ -1279,41 +1556,6 @@ Item {
                 ringRadius = e.nebula * u;
                 ringWidth = Math.max(1.5, e.core * (1 + 3 * u));
                 ringAbs = e.nebulaGain * ease(u / 0.25) * (1 - u);
-            }
-        } else if (e.kind === 8) {
-            const flash = e.rise + e.hold;
-            let env;
-            if (age < e.rise)
-                env = e.gain * ease(age / e.rise);
-            else if (age < flash)
-                env = e.gain;
-            else {
-                const d = (age - flash) / Math.max(0.001, e.decay + e.remnant);
-                env = e.gain * Math.exp(-4.0 * d) * ease((1 - d) / 0.25);
-            }
-            // The flash exemption eases away over three seconds of the decay,
-            // so the combined phenomenon cap takes hold without a step.
-            exempt = ease((flash + 3 - age) / 3);
-            if (e.hyper && e.peakColour) {
-                const peak = ease((flash + 1.5 - age) / 1.5);
-                colour = [e.colour[0] + (e.peakColour[0] - e.colour[0]) * peak, e.colour[1] + (e.peakColour[1] - e.colour[1]) * peak, e.colour[2] + (e.peakColour[2] - e.colour[2]) * peak];
-            }
-            coreAbs = env;
-            haloAbs = 0.18 * env;
-            halo = e.core * 4;
-            const span = e.decay + e.remnant;
-            const u = clamp((age - flash) / Math.max(0.001, span), 0, 1);
-            if (u > 0) {
-                ringRadius = e.shell * Math.pow(u, 0.55);
-                // The ring widens as it fades, which is what makes it read as
-                // dissipating rather than simply going away.
-                ringWidth = Math.max(2, e.core * (1 + 9 * u));
-                ringAbs = e.shellGain * ease(u / 0.08) * (1 - u) * (1 - u);
-                const delayed = (age - flash - e.echoDelay) / Math.max(0.001, span - e.echoDelay);
-                if (delayed > 0 && delayed < 1) {
-                    echoRadius = ringRadius * e.echoScale;
-                    echoAbs = e.echoGain * ease(delayed / 0.15) * (1 - delayed);
-                }
             }
         } else if (e.kind === 9) {
             // Pulsar: a raised cosine with guaranteed edges and a trough that
@@ -1711,6 +1953,20 @@ Item {
                 capped += state.head[3] * (1 - state.exempt);
         const ceiling = clamp(Number((eventFamilies || {}).phenomenonGainCap) || phenomenonGainCeiling, 0.3, 3);
         const scale = capped > ceiling ? ceiling / capped : 1;
+        // v9: the supernova's four extra vectors. Whichever slot holds one owns
+        // them; at most one is ever alive, because the dramatic cooldown is
+        // 900 s against a ~290 s life and publishEvents replaces an episode only
+        // after it has ended. Its per-component gains are fractions of the
+        // slot's peak, so the combined-gain scale below reaches them for free;
+        // the sky lift is absolute and is covered by the flash exemption.
+        let extras = null;
+        for (const state of live)
+            if (state && state.extras && !extras)
+                extras = state.extras;
+        shader.snFlash = extras ? Qt.vector4d(extras.flash[0], extras.flash[1], extras.flash[2], extras.flash[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snTone = extras ? Qt.vector4d(extras.tone[0], extras.tone[1], extras.tone[2], extras.tone[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snShell = extras ? Qt.vector4d(extras.shell[0], extras.shell[1], extras.shell[2], extras.shell[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snExtra = extras ? Qt.vector4d(extras.extra[0], extras.extra[1], extras.extra[2], extras.extra[3]) : Qt.vector4d(0, 0, 0, 0);
         for (let i = 0; i < phenomenonSlotCount; ++i) {
             const state = live[i];
             const head = state ? [state.head[0], state.head[1], state.head[2], state.head[3] * (state.exempt + (1 - state.exempt) * scale)] : [0, 0, 0, 0];
@@ -2403,6 +2659,12 @@ Item {
         property vector4d event5Tail01: Qt.vector4d(0, 0, 0, 0)
         property vector4d event5Shape: Qt.vector4d(0, 0, 0, 0)
         property vector4d event5Bounds: Qt.vector4d(0, 0, 0, 0)
+        // v9 supernova extras, 64 B. One supernova is alive at a time, so these
+        // ride beside the phenomenon slots rather than inside one.
+        property vector4d snFlash: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snTone: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snShell: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snExtra: Qt.vector4d(0, 0, 0, 0)
         property vector2d activeStamp: Qt.vector2d(0, 0)
         property var bhTransfer: root._hole.bhTransfer
         property var bhNoise: root._hole["bhNoise"] || root._hole.bhTransfer

@@ -92,6 +92,18 @@ layout(std140, binding = 0) uniform buf {
     vec4 event5Tail01;
     vec4 event5Shape;
     vec4 event5Bounds;
+    // v9 SUPERNOVA extras, 64 B (UBO reflection 1600 -> 1664 B of 16384). One
+    // supernova is alive at a time - the dramatic cooldown is 900 s against a
+    // ~290 s life - so the life cycle's fifth through eighth vectors ride beside
+    // the phenomenon slots instead of costing a slot nothing else would use.
+    //   snFlash = (x, y, skyLiftGain, skyLiftRadiusPx)   read by main(), global
+    //   snTone  = (secondR, secondG, secondB, turbulencePhase)
+    //   snShell = (innerRadiusPx, innerGain, nebulaRadiusPx, nebulaGain)
+    //   snExtra = (spikeGain, spikeLengthPx, pulsarGain, seedAngle)
+    vec4 snFlash;
+    vec4 snTone;
+    vec4 snShell;
+    vec4 snExtra;
 #define BH_UNIFORMS
 #include "blackhole.glsl"
 #undef BH_UNIFORMS
@@ -719,6 +731,121 @@ vec3 cometField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, ve
     }
     return head.w * max(sum, vec3(0.0));
 }
+// v9 SUPERNOVA. Value noise on a POLAR grid: `N` cells around the circle, so
+// the angular index wraps exactly and nothing tears at atan's branch cut, and
+// cells counted in radius, so its features are elongated the way a shock's
+// filaments are. Three angular harmonics were tried first and are the wrong
+// tool: locked harmonics make a rosette, and warping them by radius to break it
+// makes either a kaleidoscope or a pinwheel, and this sky has no spiral in it.
+// Two channels per call, so the filament ridge and the two-tone pick share the
+// four hashes instead of paying for eight.
+vec2 snPolar(vec2 c, float N) {
+    vec2 i = floor(c), f = c - i;
+    f = f * f * (3.0 - 2.0 * f);
+    vec2 a = hash4(vec2(mod(i.x, N), i.y)).xy;
+    vec2 b = hash4(vec2(mod(i.x + 1.0, N), i.y)).xy;
+    vec2 u = hash4(vec2(mod(i.x, N), i.y + 1.0)).xy;
+    vec2 v = hash4(vec2(mod(i.x + 1.0, N), i.y + 1.0)).xy;
+    return mix(mix(a, b, f.x), mix(u, v, f.x), f.y);
+}
+// Style 6, supernova: precursor star, core-collapse flash with diffraction
+// spikes, filamentary Sedov shock shell with a hotter inner rim, and a two-tone
+// advected remnant nebula with the neutron star still blinking at its centre.
+// One kernel, because every phase is the same geometry at different radii and
+// gains; the CPU owns which of them are alive.
+//   head    = (x, y, coreSigmaPx, peak)
+//   colour  = (r, g, b, 6)                      the phase's primary colour
+//   tail01  = (haloSigmaPx, haloGain, coreGain, shellGain)
+//   shape   = (shellRadiusPx, shellWidthPx, filamentAmp, toneWeight)
+// plus ubuf.snTone / snShell / snExtra. Every gain is a fraction of head.w.
+vec3 supernovaField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 shape) {
+    vec2 p = pixel - head.xy;
+    float r2 = dot(p, p);
+    float sigma2 = head.z * head.z;
+    float variance = sigma2 + 0.0833333;
+    vec3 hot = colour.rgb, second = ubuf.snTone.rgb;
+    // The point: the precursor star, the collapse core, and the halo that grows
+    // into the flash's bloom and shrinks back out of it.
+    float value = tail01.z * exp2(-0.7213475 * r2 / variance) * sigma2 / variance;
+    if (tail01.y > 0.0 && tail01.x > 0.0)
+        value += tail01.y * exp2(-0.7213475 * r2 / (tail01.x * tail01.x));
+    vec3 sum = value * hot;
+    // Diffraction spikes: four cardinal rays and four at 45 degrees at half the
+    // gain, on the episode's frozen angle. A long anisotropic Gaussian tapered
+    // along its own length reads as a ray; without the taper it is a bar.
+    if (ubuf.snExtra.x > 0.0 && ubuf.snExtra.y > 0.0) {
+        float c = cos(ubuf.snExtra.w), s = sin(ubuf.snExtra.w);
+        vec2 a1 = vec2(c * p.x + s * p.y, c * p.y - s * p.x);
+        vec2 a2 = vec2(a1.x + a1.y, a1.y - a1.x) * 0.70710678;
+        float wd = max(head.z * 0.85, 1.2);
+        vec2 t1 = max(vec2(0.0), 1.0 - abs(a1) / ubuf.snExtra.y);
+        vec2 t2 = max(vec2(0.0), 1.0 - abs(a2) / ubuf.snExtra.y);
+        float ray = exp2(-1.4426950 * a1.y * a1.y / (wd * wd)) * t1.x * t1.x
+                  + exp2(-1.4426950 * a1.x * a1.x / (wd * wd)) * t1.y * t1.y
+                  + 0.45 * exp2(-1.4426950 * a2.y * a2.y / (wd * wd)) * t2.x * t2.x
+                  + 0.45 * exp2(-1.4426950 * a2.x * a2.x / (wd * wd)) * t2.y * t2.y;
+        sum += ubuf.snExtra.x * ray * vec3(0.82, 0.89, 1.0);
+    }
+    float far = max(shape.x + 3.5 * shape.y, ubuf.snShell.z * 1.45);
+    if ((tail01.w > 0.0 || ubuf.snShell.y > 0.0 || ubuf.snShell.w > 0.0) && r2 < far * far) {
+        float d = sqrt(r2);
+        float ang = atan(p.y, p.x) + ubuf.snExtra.w;
+        float amp = shape.z;
+        // ONE filament field for the whole life cycle, in units of the REMNANT's
+        // radius rather than the shell's: the medium's inhomogeneity does not
+        // expand, the shock lights it up as it passes, so the pattern has to
+        // stay put while the front sweeps through it. snShell.z is published
+        // from the first frame for exactly that reason, whatever the nebula's
+        // own gain is doing. Two octaves, ridged, advected in radius and angle.
+        float turn = ang * 0.15915494;
+        float nd = d / max(ubuf.snShell.z, 1.0);
+        float ph = ubuf.snTone.w;
+        vec2 c1 = snPolar(vec2(turn * 24.0 + 0.15 * ph, nd * 3.0 - 0.35 * ph), 24.0);
+        vec2 c2 = snPolar(vec2(turn * 48.0 - 0.22 * ph, nd * 7.0 + 0.50 * ph), 48.0);
+        // Ridged: 1 along the noise's own mid-level contours, which is what
+        // turns a field of blobs into a field of filaments.
+        float ridge = 1.0 - abs(2.0 * (0.62 * c1.x + 0.38 * c2.x) - 1.0);
+        float web = 2.0 * ridge - 1.0;
+        if (tail01.w > 0.0 && shape.y > 0.0) {
+            // Rim brightening: a thin spherical shell seen in projection is
+            // brightest at its limb, which is exactly what a Gaussian in
+            // (d - radius) is. The inner side is 2.2x broader, so the filaments
+            // trail INWARD from the front instead of making a symmetric ring,
+            // and the same web breaks the radius as well as the brightness -
+            // a ring broken only in brightness still reads as a circle.
+            float rr = shape.x * (1.0 + 0.055 * amp * web);
+            float t = (d - rr) / (shape.y * (d < rr ? 2.2 : 1.0));
+            sum += tail01.w * exp2(-1.4426950 * t * t) * max(0.0, 1.0 + 0.9 * amp * web) * hot;
+        }
+        if (ubuf.snShell.y > 0.0) {
+            // The hotter inner rim: narrower, its own radius, and it dies first.
+            float ir = ubuf.snShell.x * (1.0 + 0.045 * amp * web);
+            float t = (d - ir) / max(shape.y * 0.55, 1.0);
+            sum += ubuf.snShell.y * exp2(-1.4426950 * t * t) * max(0.0, 1.0 + 0.6 * amp * web) * second;
+        }
+        if (ubuf.snShell.w > 0.0) {
+            // The remnant: the same filament field, weighted by a soft body and
+            // warped by the coarse octave, so the nebula's EDGE moves with the
+            // advection and not only its brightness. The tone comes off that
+            // octave's second channel, sharpened, so a filament is teal OR red
+            // instead of the brown their average would be.
+            float warp = 1.0 + 0.16 * (2.0 * c1.x - 1.0);
+            float body = exp2(-1.4426950 * 1.7 * nd * nd * warp * warp);
+            // The polar grid has a singularity at its own centre, where every
+            // cell converges: fade the filament contrast out over the inner
+            // quarter so the middle reads as a bright core rather than as the
+            // hub of a wheel.
+            float fil = mix(0.85, 0.30 + 1.15 * ridge * ridge, smoothstep(0.06, 0.30, nd));
+            float pick = smoothstep(0.38, 0.62, c1.y);
+            sum += ubuf.snShell.w * body * fil * mix(hot, second, shape.w * pick);
+        }
+    }
+    // The neutron star the collapse left behind: a hard blue-white point on the
+    // core's own sigma, blinking on the CPU's raised cosine.
+    if (ubuf.snExtra.z > 0.0)
+        sum += ubuf.snExtra.z * exp2(-0.7213475 * r2 / variance) * sigma2 / variance * vec3(0.76, 0.85, 1.0);
+    return head.w * max(sum, vec3(0.0));
+}
 // Style 3, radial: core + halo + ring + echo ring. One kernel draws nova,
 // supernova, hypernova, star birth, red giant, a pulsar's point and a light
 // echo; they differ only in the CPU envelope, colour, size and schedule. Three
@@ -730,6 +857,8 @@ vec3 cometField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, ve
 // re-tints it and a family can be as warm or as neutral as its envelope wants.
 vec3 radialField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 shape, vec4 bounds) {
     if (head.w <= 0.0 || pixel.x < bounds.x || pixel.y < bounds.y || pixel.x > bounds.z || pixel.y > bounds.w) return vec3(0.0);
+    // Style 6, v9's supernova: its own kernel, its own four vectors.
+    if (colour.w > 5.5) return supernovaField(pixel, head, colour, tail01, shape);
     vec2 p = pixel - head.xy;
     float r2 = dot(p, p);
     float sigma2 = head.z * head.z;
@@ -777,7 +906,7 @@ vec3 radialField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 shape, ve
 }
 vec3 eventSlot(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec2 tail4, vec4 shape, vec4 bounds) {
     if (head.w <= 0.0 || pixel.x < bounds.x || pixel.y < bounds.y || pixel.x > bounds.z || pixel.y > bounds.w) return vec3(0.0);
-    if (colour.w > 4.5) return cometField(pixel, head, colour, tail01, tail23, tail4, shape);
+    if (colour.w > 4.5 && colour.w < 5.5) return cometField(pixel, head, colour, tail01, tail23, tail4, shape);
     if (colour.w > 2.5) return radialField(pixel, head, colour, tail01, shape, bounds);
     vec2 p = pixel - head.xy;
     float r2 = dot(p, p);
@@ -1073,6 +1202,16 @@ void main() {
     // coverage, not by the alpha its shading left: a middle star crossing the
     // material sinks into it instead of riding over the top of it.
     vec3 linearColour = disk.rgb+(1.0-disk.a)*far+(1.0-diskOcclusion)*material+ahead*shadowPass;
+    // v9 SUPERNOVA, the core-collapse flash: for a second or two the whole sky
+    // is lit by it. The lift SCALES the sky already there (which is what light
+    // arriving at dust and stars does) and adds a flat haze on top, so it can
+    // reach every pixel and still return to exactly #000000 - a multiply leaves
+    // a black pixel black, and both terms ease to zero with the flash.
+    if (ubuf.snFlash.z>0.0) {
+        vec2 q = pixel-ubuf.snFlash.xy;
+        float lift = ubuf.snFlash.z*exp2(-0.7213475*dot(q,q)/(ubuf.snFlash.w*ubuf.snFlash.w));
+        linearColour = linearColour*(1.0+2.5*lift)+lift*0.09*vec3(0.72,0.84,1.0);
+    }
     vec3 events = eventSlot(pixel,ubuf.event0Head,ubuf.event0Colour,ubuf.event0Tail01,ubuf.event0Tail23,ubuf.event0Tail4,ubuf.event0Shape,ubuf.event0Bounds);
     events += eventSlot(pixel,ubuf.event1Head,ubuf.event1Colour,ubuf.event1Tail01,ubuf.event1Tail23,ubuf.event1Tail4,ubuf.event1Shape,ubuf.event1Bounds);
     events += eventSlot(pixel,ubuf.event2Head,ubuf.event2Colour,ubuf.event2Tail01,ubuf.event2Tail23,ubuf.event2Tail4,ubuf.event2Shape,ubuf.event2Bounds);

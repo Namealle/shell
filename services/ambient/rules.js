@@ -307,18 +307,32 @@ var EVENT_FAMILY_SPEC = {
         nebulaShortSide: [0.030, "num", 0, 0.25],
         nebulaGain: [0.16, "num", 0, 0.20]
     },
+    // v9 SUPERNOVA. A force-fired v8 supernova on his 2880x1800 tablet was a
+    // ~40 px dot with a soft halo (evidence/v8-fire-supernova-tablet-tiny.png):
+    // nobody spots that. It is a four-phase LIFE CYCLE now and the keys are its
+    // phases -- precursor, core collapse, Sedov shock shell, remnant nebula --
+    // so a sky where one happens is a sky where something happened.
+    // `flashShortSide` and `shellShortSide` are the drawn DIAMETER as a share of
+    // the short side, not a radius: 0.25 is a quarter of the screen across.
     supernova: {
         enabled: [true, "bool"],
-        everyHours: [[0.35, 0.8], "hours"],
+        everyHours: [[0.5, 1], "hours"],
+        precursorSec: [[10, 20], "pair", 0, 120],
         riseSec: [[0.8, 1.5], "pair", RISE_FLOOR, 30],
         holdSec: [[0.6, 1.6], "pair", 0, 30],
-        decaySec: [[50, 130], "pair", 1, 600],
+        decaySec: [[25, 60], "pair", 1, 600],
+        flashShortSide: [[0.15, 0.25], "pair", 0, 0.6],
+        skyLift: [0.35, "num", 0, 1],
+        spikeGain: [0.55, "num", 0, 1.5],
         gain: [1.35, "num", 0, 1.35],
-        remnantSec: [[90, 200], "pair", 1, 1800],
-        shellShortSide: [[0.09, 0.15], "pair", 0, 0.25],
-        shellGain: [0.24, "num", 0, 0.30],
-        echoGain: [0.10, "num", 0, 0.20],
-        echoDelaySec: [[40, 90], "pair", 1, 600],
+        shellSec: [[30, 90], "pair", 5, 600],
+        shellShortSide: [[0.25, 0.40], "pair", 0, 0.6],
+        shellGain: [0.55, "num", 0, 0.80],
+        filaments: [0.55, "num", 0, 1],
+        remnantSec: [[120, 300], "pair", 1, 1800],
+        remnantGain: [0.26, "num", 0, 0.40],
+        pulsarGain: [0.30, "num", 0, 0.60],
+        pulsarPeriodSec: [1.4, "num", PERIOD_FLOOR, 60],
         hypernovaShare: [0.15, "num", 0, 1],
         hypernovaGain: [1.60, "num", 0, 1.60],
         hypernovaCooldownSec: [10800, "num", 600, 604800],

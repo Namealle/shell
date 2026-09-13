@@ -44,7 +44,7 @@ function extract(name) {
     return "host[\"" + name + "\"] = function " + args + " " + qml.slice(open, i + 1) + ";";
 }
 
-const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "warmStart", "scheduleRadial", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena"];
+const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "warmStart", "scheduleRadial", "mixColour", "supernovaSite", "supernovaState", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena"];
 
 // Readonly root constants the scheduler reads by bare name, taken from the
 // same source rather than restated here.
@@ -138,6 +138,7 @@ export function makeHost(document, options) {
         clock: 0,
         live: [0.5, 0.5, 0.5, 0.5],
         palette: [],
+        camFlow: 0,
         events: new Array(12).fill(null),
         eventIds: new Array(12).fill(0),
         familyLast: {},
@@ -450,6 +451,121 @@ function tests() {
             check("a retired family does not warm-start twice", h2._state.events[8].start >= 1800 - 1e-6,
                 "first " + first.toFixed(1) + " s, reschedule " + h2._state.events[8].start.toFixed(1) + " s");
         }
+    }
+    // v9 SUPERNOVA: the life cycle. A force-fired v8 supernova on his tablet was
+    // a ~40 px dot with a soft halo; these bounds are what replaced it.
+    {
+        const h2 = makeHost(validateDocument(null), { width: 2880, height: 1800, screenSeed: 20260913, hole: false });
+        let e = null;
+        for (let a = 0; a < 40 && !e; ++a) e = h2.captureRadial(8, a, 0);
+        check("a supernova captures four phases", !!e && e.precursor >= 10 && e.precursor <= 20
+            && e.shellSpan >= 30 && e.shellSpan <= 90 && e.remnant >= 120 && e.remnant <= 300,
+            e ? "precursor " + e.precursor.toFixed(1) + " s, shell " + e.shellSpan.toFixed(1)
+                + " s, remnant " + e.remnant.toFixed(1) + " s, total " + e.duration.toFixed(1) + " s" : "no capture");
+        // The whole life cycle fits inside the dramatic cooldown, which is what
+        // makes "one supernova at a time" a fact rather than a hope: the four
+        // extra uniform vectors live outside the slot on exactly that basis.
+        check("the life cycle fits inside the dramatic cooldown", e.duration < 900,
+            e.duration.toFixed(1) + " s < 900 s");
+        // Sizes, in SHORT SIDES across, against the brief: flash 15-25 %, shell
+        // 25-40 %. Both keys are diameters, so this is the captured value.
+        const shortSide = 1800;
+        check("the flash is 15-25 % of the short side across", 2 * e.flash / shortSide >= 0.15 && 2 * e.flash / shortSide <= 0.25,
+            (2 * e.flash / shortSide * 100).toFixed(1) + " % (" + (2 * e.flash).toFixed(0) + " px)");
+        check("the shell reaches 25-40 % of the short side across", 2 * e.shell / shortSide >= 0.25 && 2 * e.shell / shortSide <= 0.40,
+            (2 * e.shell / shortSide * 100).toFixed(1) + " % (" + (2 * e.shell).toFixed(0) + " px)");
+        // Every channel is continuous at 30 Hz, not only the total: a phase
+        // handover that steps in the halo sigma or in the colour is a visible
+        // cut even when head.w never moves. The bound on each is generous
+        // compared with a cut and tight compared with a phase change.
+        const dt = 1 / 30;
+        let worst = { channel: "", step: 0, at: 0 };
+        let previous = null;
+        const limits = { gain: 0.09, sigma: 0.06, colour: 0.10, radius: 0.06, lift: 0.09 };
+        for (let f = 0; f * dt <= e.duration; ++f) {
+            h2._state.clock = e.start + f * dt;
+            const s = h2.radialState(e);
+            const x = s.extras || { flash: [0, 0, 0, 1], tone: [0, 0, 0, 0], shell: [0, 0, 0, 0], extra: [0, 0, 0, 0] };
+            const now = {
+                // Absolute gains, so a change of the peak that the fractions
+                // exactly cancel is correctly read as no change at all.
+                gain: s.head[3] * (s.tail01[1] + s.tail01[2]),
+                shell: s.head[3] * s.tail01[3],
+                inner: s.head[3] * x.shell[1],
+                nebula: s.head[3] * x.shell[3],
+                spike: s.head[3] * x.extra[0],
+                sigma: s.head[2] / 100,
+                halo: s.tail01[0] / 100,
+                radius: s.shape[0] / 1000,
+                nebulaR: x.shell[2] / 1000,
+                colourR: s.colour[0],
+                colourG: s.colour[1],
+                colourB: s.colour[2],
+                lift: x.flash[2]
+            };
+            if (previous && s.head[3] > 0 && previous.gain + previous.shell + previous.nebula > 0)
+                for (const key of Object.keys(now)) {
+                    const step = Math.abs(now[key] - previous[key]);
+                    const limit = key.startsWith("colour") ? limits.colour : key === "lift" ? limits.lift
+                        : key === "sigma" || key === "halo" ? limits.sigma
+                            : key === "radius" || key === "nebulaR" ? limits.radius : limits.gain;
+                    if (step > limit && step / limit > worst.step) worst = { channel: key, step: step / limit, at: f * dt, value: step, limit };
+                }
+            previous = s.head[3] > 0 ? now : null;
+        }
+        check("no channel of the life cycle steps between two frames", worst.step === 0,
+            worst.step ? worst.channel + " stepped " + worst.value.toFixed(4) + " (limit " + worst.limit + ") at " + worst.at.toFixed(2) + " s" : "13 channels, " + Math.round(e.duration * 30) + " frames");
+        // The sky lift is the one absolute term, and it has to return to zero:
+        // the sky must be #000000 again the moment the flash is over.
+        let liftAfter = 0, liftPeak = 0;
+        for (let f = 0; f * dt <= e.duration; ++f) {
+            h2._state.clock = e.start + f * dt;
+            const x = h2.radialState(e).extras;
+            const lift = x ? x.flash[2] : 0;
+            liftPeak = Math.max(liftPeak, lift);
+            if (f * dt > e.precursor + e.rise + e.hold + 4) liftAfter = Math.max(liftAfter, lift);
+        }
+        check("the sky lift peaks and then returns to exactly zero", liftPeak > 0.3 && liftAfter === 0,
+            "peak " + liftPeak.toFixed(3) + ", zero from 4 s after the flash");
+        // Sedov: r ~ t^0.4 within the shell phase, measured off the published
+        // radius rather than asserted from the source.
+        const flashEnd = e.precursor + e.rise + e.hold;
+        const at = (u) => {
+            h2._state.clock = e.start + flashEnd + u * e.shellSpan;
+            return h2.radialState(e).shape[0];
+        };
+        const r1 = at(0.2), r2 = at(0.8);
+        const exponent = Math.log(r2 / r1) / Math.log(4);
+        check("the shell decelerates on the Sedov exponent", Math.abs(exponent - 0.4) < 0.02,
+            "r ~ t^" + exponent.toFixed(3) + " over u 0.2 -> 0.8");
+        check("the shell reaches its captured radius", Math.abs(at(1) - e.shell) < 1,
+            at(1).toFixed(1) + " px of " + e.shell.toFixed(1));
+        // The site travels with the far layer in the camera regime and is fixed
+        // with the hole on, which is what every other phenomenon does.
+        {
+            h2._state.clock = e.start + 30;
+            const still = h2.radialState(e).head.slice(0, 2);
+            h2._state.camFlow = -400;        // 400 flow seconds of camera "out"
+            const moved = h2.radialState(e).head.slice(0, 2);
+            const centre = [1440, 900];
+            const r0 = Math.hypot(still[0] - centre[0], still[1] - centre[1]);
+            const r1c = Math.hypot(moved[0] - centre[0], moved[1] - centre[1]);
+            // u = r^2/(2R^2) advances by -flow*(6/1080)*0.10, so the drifted
+            // radius is exactly R*sqrt(2u). This checks the law, not a number.
+            const R = 900, u = 0.5 * (r0 / R) * (r0 / R) + 400 * (6 / 1080) * 0.10;
+            check("the supernova drifts on the far layer's own streamline",
+                Math.abs(r1c - R * Math.sqrt(2 * u)) < 0.5 && r1c > r0 + 10,
+                r0.toFixed(1) + " -> " + r1c.toFixed(1) + " px from the centre");
+            h2._state.camFlow = 0;
+            const back = h2.radialState(e).head.slice(0, 2);
+            check("with no camera the site does not move at all",
+                back[0] === still[0] && back[1] === still[1], "fixed at " + back.map(x => x.toFixed(1)).join(", "));
+        }
+        // The episode ends dark: no residue, no ring left on the screen.
+        h2._state.clock = e.start + e.duration - 0.05;
+        const last = h2.radialState(e);
+        check("the supernova ends at nothing", last.head[3] * (last.tail01[1] + last.tail01[2] + last.tail01[3]) < 0.004,
+            "final published gain " + (last.head[3] * (last.tail01[1] + last.tail01[2] + last.tail01[3])).toFixed(5));
     }
     console.log("\n" + (failures ? failures + " failures" : "all " + checks + " checks passed"));
     return failures;

@@ -37,9 +37,9 @@ function fragFunction(src, name) {
     return src.slice(m.index, i + 1);
 }
 
-function previewShader() {
+export function previewShader() {
     const src = readFileSync(FRAG, "utf8");
-    const kernels = ["tailSegment", "cometField", "radialField", "eventSlot"]
+    const kernels = ["hash4", "tailSegment", "cometField", "snPolar", "supernovaField", "radialField", "eventSlot"]
         .filter(n => src.indexOf(n + "(") >= 0)
         .map(n => fragFunction(src, n)).join("\n\n");
     return `#version 450 core
@@ -56,6 +56,7 @@ layout(std140, binding = 0) uniform buf {
     vec4 event3Head; vec4 event3Colour; vec4 event3Tail01; vec4 event3Shape; vec4 event3Bounds;
     vec4 event4Head; vec4 event4Colour; vec4 event4Tail01; vec4 event4Shape; vec4 event4Bounds;
     vec4 event5Head; vec4 event5Colour; vec4 event5Tail01; vec4 event5Shape; vec4 event5Bounds;
+    vec4 snFlash; vec4 snTone; vec4 snShell; vec4 snExtra;
     float qt_Opacity;
 } ubuf;
 
@@ -79,7 +80,17 @@ void main() {
     events += radialField(pixel, ubuf.event5Head, ubuf.event5Colour, ubuf.event5Tail01, ubuf.event5Shape, ubuf.event5Bounds);
     // main() treats the event sum as display-encoded before adding it to the
     // linear sky, which on a #000000 sky is exactly this.
-    fragColor = vec4(clamp(encodeDisplay(decodeDisplay(events)), 0.0, 1.0), 1.0);
+    // v9's supernova sky lift, in main()'s own order: the lift scales the SKY,
+    // the events are added to it afterwards. On this harness's #000000 sky the
+    // multiplicative half has nothing to scale, so what shows is the flat haze
+    // alone -- which is the term that has to return to #000000.
+    vec3 sky = vec3(0.0);
+    if (ubuf.snFlash.z > 0.0) {
+        vec2 q = pixel - ubuf.snFlash.xy;
+        float lift = ubuf.snFlash.z * exp2(-0.7213475 * dot(q, q) / (ubuf.snFlash.w * ubuf.snFlash.w));
+        sky = sky * (1.0 + 2.5 * lift) + lift * 0.09 * vec3(0.72, 0.84, 1.0);
+    }
+    fragColor = vec4(clamp(encodeDisplay(sky + decodeDisplay(events)), 0.0, 1.0), 1.0);
 }
 `;
 }
@@ -154,7 +165,7 @@ export function families(width, height, configPath) {
 }
 
 // ---------------------------------------------------------------- rendering
-function uniformText(width, height, entry) {
+export function uniformText(width, height, entry) {
     const s = entry.best.state;
     const slot = entry.slot;
     const lines = ["resolution " + width + " " + height, "qt_Opacity 1"];
@@ -168,6 +179,11 @@ function uniformText(width, height, entry) {
     }
     v("Shape", s.shape);
     v("Bounds", s.bounds);
+    // v9 supernova extras: four vectors beside the slot, zero for every other
+    // family, so one uniforms file format covers the whole catalogue.
+    const x = s.extras || { flash: [0, 0, 0, 1], tone: [0, 0, 0, 0], shell: [0, 0, 0, 0], extra: [0, 0, 0, 0] };
+    for (const [name, vec] of [["snFlash", x.flash], ["snTone", x.tone], ["snShell", x.shell], ["snExtra", x.extra]])
+        lines.push(name + " " + vec.map(y => y.toFixed(6)).join(" "));
     return lines.join("\n") + "\n";
 }
 
