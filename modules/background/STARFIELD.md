@@ -203,7 +203,7 @@ phase bounded and starts every passage at the same place in its own evolution.
 background it belongs to, its lanes extinct the dust behind it, the particles and the disk are in front of it, and `bhShadowMask` is subtracted from it: it can never be
 drawn over the hole. Like every event it ignores `brightness`. It takes its turn in the SHARED dramatic cooldown (`dramaCooldownSec`, `familyLast.drama`), so a passage and
 a supernova remnant never occupy the same screen — 900 s against a ≤480 s passage and a ≤333 s supernova separates them in both directions with no second mechanism.
-`caelestia shell starfield fire nebula [screen]` forces one through the same `pushEvent`; it waits for a running passage and is dropped two minutes later, exactly as a
+`caelestia shell starfield fire nebula <screen> ''` forces one through the same `pushEvent`; it waits for a running passage and is dropped two minutes later, exactly as a
 pushed phenomenon waits for its family's entry.
 The two directions of "never beside a supernova remnant" are covered differently and deliberately: a dramatic family scheduled AFTER a passage is placed reads
 `familyLast.drama`, which a passage writes exactly as they do, so it takes its turn in the shared cooldown; a dramatic episode already on the books is RESERVED against
@@ -216,7 +216,7 @@ Bounds: `everyMinutes` 1–1440, `durationSec` 60–1800 (a crossing that reache
 0.15–1.2, `gain` 0–0.35, `dustOpacity` 0–0.9, `stars` 0–3 (the renderer rounds), `starGain` 0–0.8, `paletteMix` 0–0.45, `driftScale` 0.05–2. Measured through the shipped
 kernel offscreen (`tools/nebula_sheet.py`, llvmpipe, the real noise texture, his palette): q99 0.21–0.30 linear at the shipped gain, q999 0.34, peak 229/255 in the star
 cores alone, extent 45–68 % of the short side on the tablet and 27–53 % on DP-3, mean dust opacity 0.15–0.27. `tools/nebula_harness.qml` drives the real QML headlessly
-through a passage in both regimes. LIVE on his tablet (2880x1800, `caelestia shell starfield fire nebula tablet`, `grim -o tablet` every 5 s): a camera passage takes
+through a passage in both regimes. LIVE on his tablet (2880x1800, `caelestia shell starfield fire nebula tablet ''`, `grim -o tablet` every 5 s): a camera passage takes
 the lit pixels (>= 8/255) from a 25 836 px sky to 553 246 px at peak — 10.7 % of the buffer against 0.5 %, a 21x rise — over 24 captured frames that rise and fall
 without a step, and an infall passage adds up to 50 % on top of a sky that already has the hole in it. `qs` CPU and `nvidia-smi` over 30 s during a passage: GPU 4 %
 in the camera regime and 6 % with the hole on, against v8's documented 2 % and 3 % — measured with two other agents running heavy offscreen renders on the same box,
@@ -287,6 +287,13 @@ that keeps all three true at once.
   minutes out from pushing the first passage to 92 minutes. It still WRITES `familyLast.drama`, so it takes its turn in the shared cooldown. `publishEvents()` runs
   before `publishNebula()`, so the warm start is placed first and the passage queues around it.
 
+**v9-merged, LIVE on his tablet (2880x1800), all three fired into the same sky.** `starfield fire supernova tablet '{"precursor":3,"shellSpan":30,"remnant":45}'`
+over a running passage and a running storm: the flash lit the whole screen, the storm's streaks crossed it, and the cloud took the sky lift with everything else --
+which is the lift doing what it says, SCALING the sky already there rather than being pasted over it. `nvidia-smi` over 24 s with all three alive against the same
+shell idle: **22 W / 4 % -> 23-25 W / 5-6 %**, and `qs` 37.3 % -> 34.2 % of one core (no measurable change). Captures:
+`starfield-v2/evidence/v9-merged-live-tablet-{supernova,storm,nebula,all-three}.png`, and `v9-merged-sheet.png` is the whole catalogue -- all twenty families, the
+storm and the passage included -- rendered offscreen through the merged kernels in main()'s own composite order.
+
 v9, THE WARM START: v8 based every schedule on `previous ? previous.start : s.clock`, so a family with no previous episode waited a FULL random interval from the moment
 the shell started — after a restart the supernova was 21–48 minutes away, the kilonova 36–84 and the burst 42–108, and the first minutes of every session, the ones he
 actually watches, could not contain a dramatic event at all (his report, ledger 2284). The FIRST episode of each family now lands uniformly in **[0.3, 1] × that
@@ -335,8 +342,9 @@ v9 supernova key changes: `precursorSec`, `flashShortSide`, `skyLift`, `spikeGai
 `everyHours` becomes [0.5, 1] (one every 30–60 min at rateScale 1), `shellShortSide` [0.25, 0.40], `shellGain` 0.55 (cap 0.80), `decaySec` [25, 60] and `remnantSec`
 [120, 300]; `shellShortSide` and `flashShortSide` are the drawn DIAMETER as a share of the short side, not a radius. `echoGain` and `echoDelaySec` are DROPPED — the
 remnant replaces the light echo — and a file carrying either warns with its index and is otherwise unaffected.
-`caelestia shell starfield fire <family> [screen] ['{"key":value}']` takes a third argument now: a JSON object written straight onto the captured episode, which is how
-a phase is addressed. A supernova's duration is recomputed from its phases afterwards, so `fire supernova tablet '{"precursor":4,"shellSpan":20,"remnant":40}'` is the
+`caelestia shell starfield fire <family> <screen> '{"key":value}'` takes a third argument now: a JSON object written straight onto the captured episode, which is how
+a phase is addressed. All three arguments are REQUIRED -- Quickshell checks the arity and QML will not take a default on an annotated parameter -- so `''` is how you
+say "every screen" and "no overrides": `starfield fire shower tablet ''`. A supernova's duration is recomputed from its phases afterwards, so `fire supernova tablet '{"precursor":4,"shellSpan":20,"remnant":40}'` is the
 same shapes in a quarter of the time rather than a life cycle truncated mid-phase. Invalid JSON is ignored; this is a test hook.
 `modules/background/tools/supernova-sheet.mjs` + `supernova_sheet.py` render and measure the life cycle offscreen through the real kernels and the real CPU envelope,
 one frame per named phase moment, reporting peak/255, lit pixels and both the 2/255 and 64/255 contours as a share of the short side. Measured that way on a
@@ -390,8 +398,9 @@ Storm keys CLAMP like the rest of the v4 shower block rather than rejecting. Bou
 `rampFraction` 0.1-0.6, `peakRate` 0.2-8, `radiantBias` 0-0.45, `paletteMix` 0-0.45, `streakShortSide` ordered 0-0.45, `headPx` ordered 1-12, `fireballs` ordered 0-6 (rounded),
 `trainSec` ordered 0-60, `earthgrazerShare` and `fragmentShare` 0-0.35. v8's three keys keep their names, their meaning and their clamping; only their bounds widened, which
 cannot reject a file that used to validate.
-`caelestia shell starfield fire <family> [screen]` now takes the TRANSIENT families too - `fire storm tablet`, `fire shower tablet`, `fire meteors`, `fire comet`,
-`fire satellites`, `fire slowWanderer` - as well as the seven radial names. v8 only knew the radial names, so `fire shower` did nothing.
+`caelestia shell starfield fire <family> <screen> <overrides>` now takes the TRANSIENT families too - `fire storm tablet ''`, `fire shower tablet ''`,
+`fire meteors '' ''`, `fire comet '' ''`, `fire satellites '' ''`, `fire slowWanderer '' ''` - as well as the seven radial names and `nebula`. v8 only knew the radial
+names, so `fire shower` did nothing.
 Storm evidence, all measured rather than described: `modules/background/tools/test-storm.mjs` (55 checks, `--report` for the per-output table),
 `tools/storm-sheet.mjs` + `tools/storm_sheet.py` (offscreen frames across the hump through the real kernels, then streak counts and lengths),
 `starfield-v2/evidence/v9-storm-offscreen-sheet.png`, and live on the tablet: `v9-storm-live-tablet-peak.png`, `-trails.png` (a 36 s max composite - the radiant is the point

@@ -10,12 +10,19 @@ import "ambient/rules.js" as Rules
 Singleton {
     id: root
 
-    // Testing: `caelestia shell starfield fire <family> [screen] [overrides]`
+    // Testing: `caelestia shell starfield fire <family> <screen> <overrides>`
     // queues one episode of a phenomenon family (starBirth, nova, redGiant,
     // supernova, pulsar, kilonova, gammaBurst), a transient (meteors, comet,
     // satellites, shower/storm, slowWanderer) or `nebula` on one screen, or on
-    // every screen when the name is empty. It goes through pushEvent, so it
+    // every screen when the screen is empty. It goes through pushEvent, so it
     // obeys the same slot and cap rules as a scheduled one.
+    //
+    // ALL THREE arguments are required -- Quickshell's IpcHandler checks the
+    // arity and QML rejects a default value on an annotated parameter (`Type
+    // annotations are not supported (yet)`), so an empty string is how you say
+    // "no screen" and "no overrides":
+    //     starfield fire nebula tablet ''
+    //     starfield fire shower '' ''
     //
     // `overrides` is a JSON object written straight onto the captured episode,
     // which is how a phase is addressed: a v9 supernova's whole life cycle is
