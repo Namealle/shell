@@ -11,7 +11,10 @@ import "modules/areapicker"
 import "modules/lock"
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import qs.services
+import qs.services as Services
+import qs.utils
 
 ShellRoot {
     id: root
@@ -24,10 +27,33 @@ ShellRoot {
         value: root
     }
 
+    // The sky pauses while the session is locked (rules.js runningFor), and
+    // which process needs to hear that depends on where the sky runs. In-shell
+    // it is a plain binding; out of process (the default) it is the one-byte
+    // file starfield.qml watches. Naming Ambient only in the in-shell branch is
+    // what keeps the whole reactive poller -- a 250 ms timer, /proc reads,
+    // nvidia-smi -- out of this process while the sky is elsewhere.
     Binding {
-        target: Ambient
+        target: Services.Starfield.inShell ? Ambient : null
         property: "locked"
         value: lock.lock.locked
+    }
+
+    FileView {
+        id: lockState
+
+        path: `${Paths.state}/starfield-lock`
+        printErrors: false
+    }
+
+    QtObject {
+        id: lockPublisher
+
+        readonly property bool locked: lock.lock.locked
+
+        onLockedChanged: lockState.setText(locked ? "1" : "0")
+        // A shell that died while locked would otherwise leave the sky paused.
+        Component.onCompleted: lockState.setText(locked ? "1" : "0")
     }
 
     GSFLoader {}

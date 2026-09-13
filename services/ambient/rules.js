@@ -1265,6 +1265,10 @@ function validateDocument(value, warn) {
     }
     return {
         screens: screens,
+        // Which process draws the sky. "separate" is the second Quickshell
+        // instance (starfield.qml); "shell" is the old in-shell path, kept for
+        // A/B. Either way this document is the only configuration.
+        process: d.process === "shell" ? "shell" : "separate",
         density: number(d.density, 1, 0, 3),
         driftSpeed: number(d.driftSpeed, 3.5, 0, 30),
         driftDirection: number(d.driftDirection, 165, -360, 360),

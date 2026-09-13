@@ -10,8 +10,12 @@ import "ambient/rules.js" as Rules
 Singleton {
     id: root
 
-    // Testing: `caelestia shell starfield fire <family> <screen> <overrides>`
-    // queues one episode of a phenomenon family (starBirth, nova, redGiant,
+    // Testing: `starfield-shell fire <family> [screen] [overrides]` -- which is
+    // `qs -p ~/.config/quickshell/caelestia/starfield.qml ipc call starfield
+    // fire ...`, because the sky is its own process now. `caelestia shell
+    // starfield fire ...` reaches this handler in the SHELL's instance, which
+    // only draws anything when starfield.json says `"process": "shell"`.
+    // It queues one episode of a phenomenon family (starBirth, nova, redGiant,
     // supernova, pulsar, kilonova, gammaBurst), a transient (meteors, comet,
     // satellites, shower/storm, slowWanderer) or `nebula` on one screen, or on
     // every screen when the screen is empty. It goes through pushEvent, so it
@@ -53,6 +57,12 @@ Singleton {
 
     // One validated snapshot: deleted keys cannot retain old adapter values.
     readonly property var document: state.document
+    // "separate" (the default) draws the sky in its own Quickshell process, so
+    // the shell's main thread never waits on the sky's per-frame JS; "shell"
+    // restores the in-process path. Changing it needs both processes restarted:
+    // `starfield-shell restart` and `caelestia shell -r`.
+    readonly property string process: document.process
+    readonly property bool inShell: document.process === "shell"
     readonly property real density: document.density
     readonly property real driftSpeed: document.driftSpeed
     readonly property real driftDirection: document.driftDirection
