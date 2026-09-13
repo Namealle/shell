@@ -208,6 +208,8 @@ function advance(bank, now, dt) {
         values[name] = state.value * weight;
         rates[name] = rate01(state.velocity);
         values[name + "Rising"] = Math.max(0, 2 * rates[name] - 1) * weight;
+        // Same derivation mirrored: the negative half of the same normalised slope.
+        values[name + "Falling"] = Math.max(0, 1 - 2 * rates[name]) * weight;
     }
     return {
         values: values,
@@ -232,6 +234,10 @@ function derive(values, processWeight, bank, weights) {
     var ram = bank.ram ? smoothstep(0.70, 0.95, bank.ram.value) * weights.ram : 0;
     var vram = bank.vram ? smoothstep(0.75, 0.95, bank.vram.value) * weights.vram : 0;
     values.memoryPressure = Math.max(ram, vram);
-    values.agent = Math.max(value("agentWindow"), processWeight * value("agentProcess"));
+    var windowPresence = value("agentWindow"), processPresence = processWeight * value("agentProcess");
+    values.agent = Math.max(windowPresence, processPresence);
+    // The slope of the term that currently owns the maximum, so "a long build
+    // finished" reads as falling without a second smoothing state.
+    values.agentFalling = windowPresence >= processPresence ? value("agentWindowFalling") : value("agentProcessFalling");
     return values;
 }

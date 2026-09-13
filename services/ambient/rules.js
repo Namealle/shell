@@ -14,7 +14,10 @@ var ROLE_HUES = {
     purple: 270,
     teal: 180
 };
-var SIGNALS = ["cpuLoad", "cpuHeat", "gpuLoad", "gpuHeat", "vram", "ram", "network", "rain", "wind", "humidity", "temperature", "weatherNight", "night", "media", "idle", "agentProcess", "agentWindow", "load", "heat", "loadRising", "memoryPressure", "agent", "cpuLoadRising", "gpuLoadRising", "notifications", "workspaceActivity"];
+var SIGNALS = ["cpuLoad", "cpuHeat", "gpuLoad", "gpuHeat", "vram", "ram", "network", "rain", "wind", "humidity", "temperature", "weatherNight", "night", "media", "idle", "agentProcess", "agentWindow", "load", "heat", "loadRising", "memoryPressure", "agent", "agentFalling", "cpuLoadRising", "gpuLoadRising", "notifications", "workspaceActivity"];
+// Rule-addressable schedules. A signal biases the NEXT interval of one of these
+// and never triggers an event, so nothing on screen maps 1:1 to a notification.
+var EVENT_TARGETS = ["meteors", "comet", "satellites", "shower", "slowWanderer", "starBirth", "nova", "redGiant", "supernova", "kilonova", "pulsar", "gammaBurst", "tde"];
 
 function own(obj, key) {
     return Object.prototype.hasOwnProperty.call(obj, key);
@@ -40,6 +43,20 @@ function interval(value, fallback, minimum, maximum) {
     var cap = maximum === undefined ? 86400 : maximum;
     var low = clamp(value[0], minimum, cap);
     return [low, Math.max(low, clamp(value[1], minimum, cap))];
+}
+// v6 schedules reject instead of repairing, so an inverted or out-of-range pair
+// falls back to its documented default rather than to a silently clamped one.
+function orderedPair(value, minimum, maximum) {
+    if (!Array.isArray(value) || value.length !== 2 || !finite(value[0]) || !finite(value[1]) || value[0] > value[1])
+        return undefined;
+    return value[0] >= minimum && value[1] <= maximum ? [value[0], value[1]] : undefined;
+}
+function everyMinutes(value) {
+    // Minutes, not seconds: one minute to a full day.
+    return orderedPair(value, 1, 1440);
+}
+function everyHours(value) {
+    return orderedPair(value, 0.25, 168);
 }
 
 function normalize(values, fallback) {
@@ -229,9 +246,200 @@ function validateFamilies(value, comet) {
     return out;
 }
 
-function validateEvents(value) {
+// The anti-strobe floors are the taste contract, not documentation. A rise
+// faster than RISE_FLOOR, a pulsar period under PERIOD_FLOOR, a trough below
+// FLOOR_FRACTION of peak or an edge shorter than EDGE_FLOOR is rejected, so no
+// enabled family can produce a blink the renderer would then have to defend.
+var RISE_FLOOR = 0.8;
+var PERIOD_FLOOR = 0.8;
+var FLOOR_FRACTION = 0.5;
+var EDGE_FLOOR = 0.10;
+
+// Every row is [default, kind, low, high]. Kinds: bool, num, int, pair (ordered),
+// span (a from-to pair, which may descend), minutes, hours. A malformed or
+// out-of-range value is REJECTED, never clamped: the documented default applies
+// and only the key's index warns, exactly as PARTICLE_SPEC does.
+var EVENT_SPEC = {
+    phenomenonCap: [2, "int", 1, 2],
+    dramaCooldownSec: [4500, "num", 600, 86400]
+};
+
+var EVENT_FAMILY_SPEC = {
+    starBirth: {
+        enabled: [true, "bool"],
+        everyMinutes: [[20, 45], "minutes"],
+        durationSec: [[180, 360], "pair", 10, 1800],
+        gain: [0.22, "num", 0, 0.22],
+        condenseSec: [[40, 90], "pair", 1, 600],
+        haloPx: [[18, 4], "span", 0.5, 64],
+        paletteMix: [0.30, "num", 0, 0.45]
+    },
+    nova: {
+        enabled: [true, "bool"],
+        everyMinutes: [[25, 50], "minutes"],
+        riseSec: [[1.5, 3], "pair", RISE_FLOOR, 30],
+        holdSec: [[0.5, 1.5], "pair", 0, 30],
+        decaySec: [[25, 60], "pair", 1, 600],
+        gain: [0.45, "num", 0, 0.45],
+        shellShortSide: [[0.02, 0.04], "pair", 0, 0.15],
+        shellGain: [0.12, "num", 0, 0.12],
+        paletteMix: [0.30, "num", 0, 0.45]
+    },
+    redGiant: {
+        enabled: [true, "bool"],
+        everyMinutes: [[45, 90], "minutes"],
+        durationSec: [[240, 480], "pair", 10, 1800],
+        gain: [0.28, "num", 0, 0.28],
+        swellSec: [[90, 150], "pair", 1, 600],
+        collapseSec: [[45, 75], "pair", 1, 600],
+        nebulaShortSide: [0.015, "num", 0, 0.15],
+        nebulaGain: [0.06, "num", 0, 0.06]
+    },
+    supernova: {
+        enabled: [true, "bool"],
+        everyHours: [[1.5, 3], "hours"],
+        riseSec: [[0.8, 1.5], "pair", RISE_FLOOR, 30],
+        holdSec: [[0.5, 1.5], "pair", 0, 30],
+        decaySec: [[90, 240], "pair", 1, 600],
+        gain: [0.70, "num", 0, 0.70],
+        remnantSec: [[180, 360], "pair", 1, 1800],
+        shellShortSide: [[0.06, 0.11], "pair", 0, 0.15],
+        shellGain: [0.10, "num", 0, 0.10],
+        echoGain: [0.04, "num", 0, 0.04],
+        echoDelaySec: [[60, 120], "pair", 1, 600],
+        hypernovaShare: [0.15, "num", 0, 1],
+        hypernovaGain: [0.78, "num", 0, 0.78],
+        hypernovaCooldownSec: [21600, "num", 600, 604800],
+        paletteMix: [0.35, "num", 0, 0.45]
+    },
+    kilonova: {
+        enabled: [false, "bool"],
+        minSpacingSec: [3600, "num", 600, 604800],
+        maxPerHour: [1, "int", 0, 4],
+        flashSec: [0.4, "num", 0.1, 5],
+        gain: [0.55, "num", 0, 0.55],
+        ringShortSide: [0.03, "num", 0, 0.15],
+        ringSec: [[8, 15], "pair", 1, 120]
+    },
+    pulsar: {
+        enabled: [false, "bool"],
+        everyHours: [[2, 4], "hours"],
+        durationSec: [[240, 600], "pair", 10, 1800],
+        periodSec: [[0.8, 2.0], "pair", PERIOD_FLOOR, 60],
+        gain: [0.30, "num", 0, 0.30],
+        floorFraction: [0.60, "num", FLOOR_FRACTION, 1],
+        edgeSec: [0.12, "num", EDGE_FLOOR, 5]
+    },
+    gammaBurst: {
+        enabled: [false, "bool"],
+        everyHours: [[4, 12], "hours"],
+        flashSec: [[0.5, 0.8], "pair", 0.1, 5],
+        gain: [0.45, "num", 0, 0.45],
+        beamShortSide: [[0.10, 0.18], "pair", 0, 0.25],
+        afterglowSec: [[30, 90], "pair", 1, 600],
+        cooldownSec: [14400, "num", 600, 604800]
+    },
+    satelliteGlint: {
+        enabled: [true, "bool"],
+        gain: [2.2, "num", 1, 4],
+        widthSec: [[1.5, 3], "pair", 0.5, 30]
+    }
+};
+
+// Closed and sparse, like PARTICLE_SPEC: only a key the file carries reaches the
+// renderer, so an absent key keeps the renderer's own documented default.
+var PHENOMENA_SPEC = {
+    tde: {
+        group: {
+            enabled: {
+                boolean: true
+            },
+            everyMinutes: {
+                pair: [1, 1440]
+            },
+            // The maximum feeds the one-time particle atlas ceiling; see PARTICLES.md.
+            streakPx: {
+                pair: [0, 160]
+            },
+            stretchSec: {
+                pair: [1, 120]
+            },
+            fragments: {
+                pair: [1, 16]
+            },
+            diskFlash: {
+                number: [0, 0.5]
+            }
+        }
+    },
+    microlensing: {
+        group: {
+            enabled: {
+                boolean: true
+            },
+            gainCap: {
+                number: [1, 3]
+            }
+        }
+    },
+    moods: {
+        group: {
+            clearing: {
+                number: [0, 1]
+            },
+            nebular: {
+                number: [0, 1]
+            }
+        }
+    }
+};
+
+function familyValue(value, kind, low, high) {
+    if (kind === "bool")
+        return typeof value === "boolean" ? value : undefined;
+    if (kind === "num")
+        return finite(value) && value >= low && value <= high ? value : undefined;
+    if (kind === "int")
+        return integral(value) && value >= low && value <= high ? value : undefined;
+    if (kind === "minutes")
+        return everyMinutes(value);
+    if (kind === "hours")
+        return everyHours(value);
+    if (kind === "pair")
+        return orderedPair(value, low, high);
+    // A span runs from its first value to its second and may descend (a halo that
+    // condenses), so only the bounds apply, never the ordering.
+    if (!Array.isArray(value) || value.length !== 2 || !finite(value[0]) || !finite(value[1]))
+        return undefined;
+    return Math.min(value[0], value[1]) >= low && Math.max(value[0], value[1]) <= high ? [value[0], value[1]] : undefined;
+}
+
+// A family object is closed; the events root is not, because its siblings belong
+// to the v4 validators above, so `open` skips a key this spec does not own.
+function validateFamily(value, spec, warn, open) {
+    var input = object(value), keys = Object.keys(input), taken = {}, out = {}, i;
+    for (i = 0; i < keys.length; i++) {
+        var key = keys[i], row = own(spec, key) ? spec[key] : null;
+        if (!row && open)
+            continue;
+        var accepted = row ? familyValue(input[key], row[1], row[2], row[3]) : undefined;
+        if (accepted === undefined)
+            warned(warn, i);
+        else
+            taken[key] = accepted;
+    }
+    var names = Object.keys(spec);
+    for (i = 0; i < names.length; i++) {
+        var name = names[i], fallback = spec[name][0];
+        out[name] = own(taken, name) ? taken[name] : (Array.isArray(fallback) ? fallback.slice() : fallback);
+    }
+    return out;
+}
+
+function validateEvents(value, warn) {
     var e = object(value), s = object(e.shower), w = object(e.slowWanderer);
-    return {
+    // v4 keys keep their v4 clamping; every v6 key rejects instead.
+    var out = {
         headCap: Math.round(number(e.headCap, 3, 1, 3)),
         shower: {
             enabled: boolean(s.enabled, true),
@@ -246,6 +454,17 @@ function validateEvents(value) {
             gain: number(w.gain, 0.40, 0, 0.40)
         }
     };
+    var caps = validateFamily(e, EVENT_SPEC, warn, true);
+    out.phenomenonCap = caps.phenomenonCap;
+    out.dramaCooldownSec = caps.dramaCooldownSec;
+    var names = Object.keys(EVENT_FAMILY_SPEC);
+    for (var i = 0; i < names.length; i++)
+        out[names[i]] = validateFamily(e[names[i]], EVENT_FAMILY_SPEC[names[i]], warn);
+    return out;
+}
+
+function validatePhenomena(value, warn) {
+    return validateGroup(value, PHENOMENA_SPEC, false, warn);
 }
 
 // Closed-object schemas. A key is forwarded only when the file carries it, so a
@@ -784,6 +1003,43 @@ function defaultReactive() {
                         brightness: -0.15
                     }
                 }
+            },
+            {
+                signal: "agentFalling",
+                enabled: false,
+                add: {
+                    events: {
+                        nova: 0.6
+                    }
+                }
+            },
+            {
+                signal: "heat",
+                enabled: false,
+                add: {
+                    events: {
+                        redGiant: 0.4
+                    }
+                }
+            },
+            {
+                signal: "gpuLoad",
+                enabled: false,
+                add: {
+                    events: {
+                        tde: 0.3
+                    }
+                }
+            },
+            {
+                signal: "night",
+                enabled: false,
+                add: {
+                    events: {
+                        starBirth: 0.3,
+                        supernova: -0.3
+                    }
+                }
             }
         ]
     };
@@ -843,12 +1099,17 @@ function validateReactive(value) {
                 if (finite(add[key]))
                     clean[key] = clamp(add[key], -1, 1);
             }
-            var groups = ["palette", "archetypes", "hole"];
+            var groups = ["palette", "archetypes", "hole", "events"];
+            var lists = {
+                archetypes: ARCHETYPES,
+                hole: HOLE,
+                events: EVENT_TARGETS
+            };
             for (var g = 0; g < groups.length; g++) {
                 var group = groups[g], nested = object(add[group]), keys = Object.keys(nested), accepted = {};
-                for (var k = 0; k < Math.min(keys.length, group === "palette" ? 32 : 6); k++) {
+                for (var k = 0; k < Math.min(keys.length, group === "palette" ? 32 : lists[group].length); k++) {
                     var name = keys[k];
-                    var allowed = group === "palette" ? (validId(name) || /^(0|[1-9][0-9]{0,5})$/.test(name)) : (group === "archetypes" ? ARCHETYPES : HOLE).indexOf(name) !== -1;
+                    var allowed = group === "palette" ? (validId(name) || /^(0|[1-9][0-9]{0,5})$/.test(name)) : lists[group].indexOf(name) !== -1;
                     if (allowed && finite(nested[name]))
                         accepted[name] = clamp(nested[name], -1, 1);
                 }
@@ -935,7 +1196,8 @@ function validateDocument(value, warn) {
         },
         palette: validatePalette(d.palette, warn),
         archetypes: validateArchetypes(d.archetypes),
-        events: validateEvents(d.events),
+        events: validateEvents(d.events, warn),
+        phenomena: validatePhenomena(d.phenomena, warn),
         blackHole: validateBlackHole(d.blackHole, warn),
         particles: validateParticles(d.particles, warn),
         particlesEnabled: boolean(d.particlesEnabled, true),
@@ -1090,7 +1352,7 @@ function evaluate(config, signals, palette, archetypes) {
     palette = palette || validatePalette(null);
     archetypes = archetypes || validateArchetypes(null);
     var target = [0, 0, 0, 0.5, 0.5, 0.5, 0.5, 0.5, palette.mix];
-    var weights = palette.baseWeights.slice(), types = [], hole = [0.5, 0.5, 0.5, 0.5], steadyAdd = 0;
+    var weights = palette.baseWeights.slice(), types = [], hole = [0.5, 0.5, 0.5, 0.5], steadyAdd = 0, eventAdds = {};
     for (var a = 0; a < ARCHETYPES.length; a++)
         types.push(archetypes.weights[ARCHETYPES[a]]);
     if (config.enabled) {
@@ -1129,8 +1391,19 @@ function evaluate(config, signals, palette, archetypes) {
             for (a = 0; a < HOLE.length; a++)
                 if (finite(holeAdds[HOLE[a]]))
                     hole[a] += strength * holeAdds[HOLE[a]];
+            var eventTargets = object(rule.add.events);
+            for (var t = 0; t < EVENT_TARGETS.length; t++) {
+                var family = EVENT_TARGETS[t];
+                if (finite(eventTargets[family]))
+                    eventAdds[family] = (own(eventAdds, family) ? eventAdds[family] : 0) + strength * eventTargets[family];
+            }
         }
     }
+    // A bias scales the NEXT scheduled interval and nothing else: a positive add
+    // shortens it, and a summed add of +-1 is exactly the 0.5x-2x clamp.
+    var eventBias = {}, biased = Object.keys(eventAdds);
+    for (var b = 0; b < biased.length; b++)
+        eventBias[biased[b]] = clamp(Math.pow(2, -eventAdds[biased[b]]), 0.5, 2);
     for (var j = 0; j < target.length; j++)
         target[j] = clamp(target[j], 0, 1);
     var total = target[0] + target[1] + target[2], budget = number(config.paletteBudget, 0.45, 0, 0.45);
@@ -1149,7 +1422,8 @@ function evaluate(config, signals, palette, archetypes) {
         calm: target[3],
         hole: hole.map(function (v) {
             return clamp(v, 0, 1);
-        })
+        }),
+        eventBias: eventBias
     };
 }
 
@@ -1168,7 +1442,8 @@ function serializeProfile(profile) {
         archetypeWeights: profile.archetypeWeights.map(rounded),
         mix: rounded(profile.mix),
         calm: rounded(profile.calm),
-        hole: vectorArray(profile.hole).map(rounded)
+        hole: vectorArray(profile.hole).map(rounded),
+        eventBias: serializeNumbers(object(profile.eventBias))
     };
 }
 function serializeNumbers(values) {

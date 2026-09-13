@@ -37,11 +37,24 @@ Singleton {
             foregroundWhite: palette.foregroundWhite
         }
     })
+    // One object reaches the renderer, so a v6 family, the phenomena block and the
+    // two new caps travel on the binding Background.qml already forwards.
     readonly property var eventFamilies: ({
             comet: document.comet,
             meteors: document.meteors,
             shower: document.events.shower,
-            slowWanderer: document.events.slowWanderer
+            slowWanderer: document.events.slowWanderer,
+            starBirth: document.events.starBirth,
+            nova: document.events.nova,
+            redGiant: document.events.redGiant,
+            supernova: document.events.supernova,
+            kilonova: document.events.kilonova,
+            pulsar: document.events.pulsar,
+            gammaBurst: document.events.gammaBurst,
+            satelliteGlint: document.events.satelliteGlint,
+            phenomena: document.phenomena,
+            phenomenonCap: document.events.phenomenonCap,
+            dramaCooldownSec: document.events.dramaCooldownSec
         })
     readonly property int eventHeadCap: document.events.headCap
     // Sparse pass-throughs: an absent key is the renderer's documented default.

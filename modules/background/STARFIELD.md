@@ -1,4 +1,4 @@
-# Starfield v4
+# Starfield v6
 `~/.config/caelestia/starfield.json` is watched with 150 ms debounce (XDG_CONFIG_HOME respected).
 Missing/invalid JSON, a non-object document or missing screens disables every output; deleted keys restore defaults.
 One validated snapshot owns configuration; the shell never writes it. Full schema and defaults:
@@ -28,9 +28,10 @@ One validated snapshot owns configuration; the shell never writes it. Full schem
     "curved":{"weight":0.20,"durationSec":[0.9,1.7],"gain":0.80,"tailShortSide":[0.04,0.10],"bendShortSide":[0.005,0.02]},
     "skipping":{"weight":0.05,"durationSec":[1.2,2.2],"gain":0.70,"tailShortSide":[0.08,0.14],"bendShortSide":[0,0]}}},
   "satellites": {"enabled":true,"interval":[240,480]},
-  "events": {"headCap":3,"shower":{"enabled":true,"everyHours":[2,5],"durationSec":[30,60],"gain":0.60},
+  "events": {"headCap":3,"phenomenonCap":2,"dramaCooldownSec":4500,
+    "shower":{"enabled":true,"everyHours":[2,5],"durationSec":[30,60],"gain":0.60},
     "slowWanderer":{"enabled":true,"everyHours":[2,6],"durationSec":[180,360],"gain":0.40}},
-  "blackHole": {}, "particles": {}, "particlesEnabled": true,
+  "phenomena": {}, "blackHole": {}, "particles": {}, "particlesEnabled": true,
   "reactive": {"enabled":true,"contextScope":"perScreen","processPresenceWeight":0.35,"paletteBudget":0.45,
     "birthTauSec":60,"liveTauSec":90,"maxChangePerSec":0.005,
     "matchers":[
@@ -48,8 +49,32 @@ One validated snapshot owns configuration; the shell never writes it. Full schem
       {"signal":"network","enabled":false,"add":{"archetypes":{"glint":0.002}}},
       {"signal":"notifications","enabled":false,"add":{"archetypes":{"pulsator":0.003}}},
       {"signal":"gpuLoad","add":{"hole":{"activity":0.25}}}, {"signal":"heat","add":{"hole":{"warmth":0.15,"brightness":0.20}}},
-      {"signal":"agent","add":{"hole":{"structure":0.10}}}, {"signal":"night","add":{"hole":{"brightness":-0.15}}}]}
+      {"signal":"agent","add":{"hole":{"structure":0.10}}}, {"signal":"night","add":{"hole":{"brightness":-0.15}}},
+      {"signal":"agentFalling","enabled":false,"add":{"events":{"nova":0.6}}}, {"signal":"heat","enabled":false,"add":{"events":{"redGiant":0.4}}},
+      {"signal":"gpuLoad","enabled":false,"add":{"events":{"tde":0.3}}}, {"signal":"night","enabled":false,"add":{"events":{"starBirth":0.3,"supernova":-0.3}}}]}
 }
+```
+The eight v6 event families are omitted above only for length: each defaults exactly to the calm block below, so an absent family *is* that block. `phenomena` is
+FORWARDED like `blackHole`/`particles` (an absent key keeps the renderer's default); `events` families are defaulted here. Calm defaults, written out to paste:
+```json
+"events": {"headCap":3,"phenomenonCap":2,"dramaCooldownSec":4500,
+  "starBirth":{"enabled":true,"everyMinutes":[20,45],"durationSec":[180,360],"gain":0.22,"condenseSec":[40,90],"haloPx":[18,4],"paletteMix":0.30},
+  "nova":{"enabled":true,"everyMinutes":[25,50],"riseSec":[1.5,3],"holdSec":[0.5,1.5],"decaySec":[25,60],"gain":0.45,"shellShortSide":[0.02,0.04],"shellGain":0.12,"paletteMix":0.30},
+  "redGiant":{"enabled":true,"everyMinutes":[45,90],"durationSec":[240,480],"gain":0.28,"swellSec":[90,150],"collapseSec":[45,75],"nebulaShortSide":0.015,"nebulaGain":0.06},
+  "supernova":{"enabled":true,"everyHours":[1.5,3],"riseSec":[0.8,1.5],"holdSec":[0.5,1.5],"decaySec":[90,240],"gain":0.70,"remnantSec":[180,360],"shellShortSide":[0.06,0.11],"shellGain":0.10,"echoGain":0.04,"echoDelaySec":[60,120],"hypernovaShare":0.15,"hypernovaGain":0.78,"hypernovaCooldownSec":21600,"paletteMix":0.35},
+  "kilonova":{"enabled":false,"minSpacingSec":3600,"maxPerHour":1,"flashSec":0.4,"gain":0.55,"ringShortSide":0.03,"ringSec":[8,15]},
+  "pulsar":{"enabled":false,"everyHours":[2,4],"durationSec":[240,600],"periodSec":[0.8,2],"gain":0.30,"floorFraction":0.60,"edgeSec":0.12},
+  "gammaBurst":{"enabled":false,"everyHours":[4,12],"flashSec":[0.5,0.8],"gain":0.45,"beamShortSide":[0.10,0.18],"afterglowSec":[30,90],"cooldownSec":14400},
+  "satelliteGlint":{"enabled":true,"gain":2.2,"widthSec":[1.5,3]}},
+"phenomena": {"tde":{"enabled":true,"everyMinutes":[40,90],"streakPx":[60,140],"stretchSec":[6,12],"fragments":[4,8],"diskFlash":0.15},
+  "microlensing":{"enabled":true,"gainCap":2.5}, "moods":{"clearing":0.15,"nebular":0.15}}
+```
+Lively (notable every ~3 min, dramatic every ~35 min). Same blocks with these keys replaced; everything else keeps the calm value:
+```json
+"events": {"dramaCooldownSec":2100, "starBirth":{"everyMinutes":[10,20]}, "nova":{"everyMinutes":[8,18]},
+  "redGiant":{"everyMinutes":[20,35]}, "supernova":{"everyHours":[0.67,1.33]},
+  "pulsar":{"enabled":true,"everyHours":[0.75,1.5]}, "gammaBurst":{"enabled":true,"everyHours":[6,6]}},
+"phenomena": {"tde":{"everyMinutes":[15,30]}}
 ```
 `blackHole` and `particles` are FORWARDED, not defaulted: only keys the file carries reach the renderer, so an absent
 key keeps the renderer's own default and a `preset` keeps supplying its fallbacks. Recommended for this machine:
@@ -73,6 +98,7 @@ IDs: unique letters followed by letters/digits/underscore, ≤48 characters; con
 Palette weights 0–1000000 normalize; all-zero base becomes uniform. lightness/whitening 0–1, saturationCap 0–0.28, mix/event paletteMix 0–0.45.
 `paletteWeights[i]=max(0,normalizedBase[i]+sum(signal*add[i]))`, then normalize; all-zero conditional weights fall back to the normalized base.
 Rule add accepts `palette:{idOrIndex:add}`, `archetypes:{steady|pulsator|decayer|glint|wanderer|binary:add}`, `hole:{activity|warmth|brightness|structure:add}`.
+`events:{family:add}` biases a SCHEDULE and never triggers an event: families meteors/comet/satellites/shower/slowWanderer/starBirth/nova/redGiant/supernova/kilonova/pulsar/gammaBurst/tde, add −1–1, multiplier 2^−sum on the NEXT interval only, clamped 0.5×–2× (positive = sooner). The four shipped examples are off.
 Scalar adds: green/violet/warm (legacy), calm/twinkle/brightness/flow/meteor, mix; all coefficients −1–1. Arrays replace defaults, including empty rules/matchers.
 Semantic IDs resolve exactly first, then green/yellow/red/blue/pink/orange/purple/teal choose nearest listed hue at 120/60/0/240/330/30/270/180° within 30°.
 Legacy green/violet/warm always choose nearest hue at 120/270/30° within 30°; absent hues contribute nothing. Custom explicit IDs survive reordering.
@@ -84,6 +110,13 @@ Wanderer period 30–600 s/offset ≤8 px; binary period 12–360 s/separation 0
 Family weights 0–1 divide scheduled starts; duration stays within the listed range, gain/tail/bend within 0–listed maximum; ranges are ordered two-number arrays.
 Fragmenting share ≤2%, cooldown ≥7200 s; spiral cooldown ≥14400 s (both ≤604800). Event headCap 1–3; hourly spacing 2–168 h; episode duration/gain bounded as shown.
 Event intervals allow up to 86400 s; minima: meteor 3, comet 60, satellite 45. Companions/fireballs 0–1; three is the hard head cap, normally two (renderer).
+v6 adds phenomenonCap 1–2 (long faint slots, separate from headCap and never spilling into it) and dramaCooldownSec 600–86400 across all dramatic families.
+Schedules: `everyMinutes` ordered pair 1–1440, `everyHours` ordered 0.25–168. Every `gain` is 0–the value listed in the calm block; shells/rings/nebulae ≤0.15 short
+sides, GRB beams ≤0.25, satelliteGlint gain is a 1–4 multiplier on an existing pass; durations 10–1800 s, sub-envelopes (rise/hold/decay/swell/collapse/echo/afterglow)
+0–600 s, remnant ≤1800 s, cooldowns 600–604800 s, hypernovaShare 0–1, kilonova maxPerHour 0–4, `haloPx` is a from–to span 0.5–64 px and may descend.
+Anti-strobe floors are VALIDATOR-ENFORCED, not advice: `riseSec` ≥0.8 s (nova and supernova), pulsar `periodSec` ≥0.8 s, `floorFraction` ≥0.5 (the trough never drops below half the peak, so a pulsar modulates instead of blinking), `edgeSec` ≥0.10 s, glint `widthSec` ≥0.5 s. A value under a floor is rejected, not raised.
+Every v6 key REJECTS instead of repairing — a bad type, an out-of-range number, an inverted pair or an unknown key inside a family drops with an index-only warning and that key's documented default applies — while the v4 keys beside them (headCap, shower, slowWanderer) keep their v4 clamping, unchanged.
+`phenomena` is a closed sparse object like `particles`: tde{enabled, everyMinutes 1–1440, streakPx [0,160] — the maximum feeds the one-time particle atlas ceiling, see PARTICLES.md — stretchSec [1,120], fragments [1,16] (renderer rounds), diskFlash 0–0.5}, microlensing{enabled, gainCap 1–3}, moods{clearing, nebular 0–1}.
 Black hole: `modules/background/BLACKHOLE.md` owns every default, the taste caps and the shader's own limiters; missing blackHole is disabled.
 Flat bounds: size 0.01–0.2 short sides, tilt 1–35° (the renderer accepts 80, only 35 is silhouette-verified), intensity/warmth/halos 0–1,
 spin 0–2 (pattern speed), inner 3–6 rs, outer max(inner+0.5, 3.5)–12 rs, beam 0–0.2, photonWidth 0.001–0.02 shadow radii,
@@ -112,14 +145,16 @@ Matchers/rules: first 32 entries, matcher IDs unique and built-in signals reserv
 Backreferences/lookarounds/repeated groups are rejected; invalid matchers or unknown-signal rules disable only that entry. Compile only on config reload.
 Signals: cpuLoad/cpuHeat/gpuLoad/gpuHeat/vram/ram/network/rain/wind/humidity/temperature/weatherNight/night/media/idle/agentProcess/agentWindow/notifications and matcher IDs.
 Derived load/heat = CPU/GPU maxima; cpuLoadRising/gpuLoadRising/loadRising are positive slopes; memoryPressure uses RAM/VRAM; agent=max(agentWindow,processPresenceWeight*agentProcess), weight 0–1.
+agentFalling is the mirrored negative slope of whichever term owns that maximum, 0 while agent is steady or rising — "a long build finished", not "an agent started".
 Workspace activity counts only workspacev2, adds 0.15 up to 1, decays with τ=120 active s; rule off initially. Notifications have no source; no raw input or new network inspection.
 Gradualness: source smoothing/freshness remains; stale inputs fade over 120 s, weather stale at 3 h. Targets filter in renderer: birth 60 s, live 90 s, events 120 s, max change 0.005/s.
 The frozen renderer contract keeps filter metadata at these constants; hole filtering is 120 s, max change 0.002/s. Enabling/disabling the hole takes ≥30 active seconds.
 New births freeze palette, archetype and parameters (including colour-shifter trajectory); event edits affect future schedules. Renderer owns descriptor history and phase continuity.
-Glue passes archetypes/farWeights plus `archetypeParams.palette.{variationWhite,foregroundWhite}`; eventFamilies contains comet, meteors, shower and slowWanderer objects.
+Glue passes archetypes/farWeights plus `archetypeParams.palette.{variationWhite,foregroundWhite}`. `eventFamilies` is the single object Background.qml forwards: comet,
+meteors, shower, slowWanderer, the eight v6 families, `phenomena`, `phenomenonCap` and `dramaCooldownSec`. Only headCap travels separately, as `eventHeadCap`.
 Privacy: match class first, read at most 512 title chars locally; retain only category strengths, never titles/URLs/history/media metadata/notification content. No title hashing or transmission.
 Context: mapped active/open-special/pinned windows on that output; focused weight 1, other visible 0.6, hidden/minimized 0. Visibility is approximate, not pixel occlusion.
-`ambient dump` includes rounded birth/live, paletteWeights[16], archetypeWeights[6], mix/calm/hole[4], numeric signals and availability; no window titles.
+`ambient dump` includes rounded birth/live, paletteWeights[16], archetypeWeights[6], mix/calm/hole[4], eventBias{family:multiplier}, numeric signals and availability; no titles.
 Pause: lock or visible fullscreen>1 freezes that output's targets and renderer active time/history, retaining Loader; other outputs continue. All paused stops polling and releases ServiceRefs.
 Config watching/event subscriptions remain; paused profiles preserve all fields through edits. Suspend resets baselines/derivatives with no catch-up; workspace activity freezes while paused.
 `background.enabled` still gates windows. Density is static, never reactive. Keep backgroundColor #000000 for exact-black empty pixels.

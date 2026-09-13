@@ -61,6 +61,8 @@ Singleton {
             mix: target.mix,
             calm: target.calm,
             hole: Qt.vector4d(target.hole[0], target.hole[1], target.hole[2], target.hole[3]),
+            // Family name to interval multiplier, 0.5-2; an absent family means 1.
+            eventBias: target.eventBias,
             running: running
         };
     }
