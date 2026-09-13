@@ -261,7 +261,19 @@ remnant replaces the light echo — and a file carrying either warns with its in
 a phase is addressed. A supernova's duration is recomputed from its phases afterwards, so `fire supernova tablet '{"precursor":4,"shellSpan":20,"remnant":40}'` is the
 same shapes in a quarter of the time rather than a life cycle truncated mid-phase. Invalid JSON is ignored; this is a test hook.
 `modules/background/tools/supernova-sheet.mjs` + `supernova_sheet.py` render and measure the life cycle offscreen through the real kernels and the real CPU envelope,
-one frame per named phase moment, reporting peak/255, lit pixels and both the 2/255 and 64/255 contours as a share of the short side.
+one frame per named phase moment, reporting peak/255, lit pixels and both the 2/255 and 64/255 contours as a share of the short side. Measured that way on a
+2880x1800 buffer, one episode (precursor 12.7 s, shell 88.4 s, remnant 129.6 s, 232.9 s in all), lit DIAMETER as a share of the short side at the 2/255 contour and the
+64/255 disc contour: precursor 0.06 / 0.01, flash peak **1.89 / 0.24** (the 1.89 is the sky lift reaching the corners of the screen), shell at 5 s 0.32 / 0.15, at
+25 % 0.20 / 0.18, at 50 % 0.27 / 0.24, remnant mid 0.48 / 0.01, remnant end 0.00 — it ends at exactly black.
+LIVE on his tablet (2880x1800), `fire supernova tablet '{"precursor":6,"shellSpan":24,"remnant":45}'`, 85 `grim` frames 0.72 s apart, camera regime: the flash lit
+**5,181,430 of 5,184,000 pixels** and took the whole screen's mean to **43.4/255** for about two seconds, then the sky returned to #000000. The site DRIFTED with the
+far layer over the shell and the remnant, 882 → 938 px from the screen centre in 36 s against 935.6 px predicted by u = u0 + rate·t — the streamline law, measured, not
+asserted. With the hole on and the same fire, the episode landed at r ≈ 1100 px, its shell never touched the disk, and the flash still took the whole screen to
+36.7/255 and brightened the disk with it. Cost on the same shell, same three outputs, `nvidia-smi` and `qs` process CPU over 20 s with a supernova running on ALL
+THREE outputs at once against 20 s with none: GPU **3.9 % → 4.0 %** at **22.7 W → 22.7 W**, `qs` **33.1 % → 32.7 %** of one core — no measurable change in either.
+On the offscreen rig at 2160x3840 (llvmpipe, min of three runs of 200 fenced draws, `BHRENDER_REPEAT`): empty 0.624 ms, flash peak 0.713, shell half 0.673, remnant mid
+0.689 — the whole life cycle is +0.05 to +0.09 ms per 4K frame on a SOFTWARE rasteriser. Captures: `starfield-v2/evidence/v9-supernova-live-tablet-{sheet,precursor,
+flash,shell,remnant,trails}.png`, `v9-supernova-live-tablet-holeon-{sheet,flash,remnant}.png`, `v9-supernova-lifecycle-offscreen.png` and `v9-supernova-metrics.json`.
 Black hole: `modules/background/BLACKHOLE.md` owns every default, the taste caps and the shader's own limiters; missing blackHole is disabled.
 Flat bounds: size 0.01–0.2 short sides, tilt 1–35° (the renderer accepts 80, only 35 is silhouette-verified), intensity/warmth/halos 0–1,
 spin 0–2 (pattern speed), inner 3–6 rs, outer max(inner+0.5, 3.5)–12 rs, beam 0–0.2, photonWidth 0.001–0.02 shadow radii,
