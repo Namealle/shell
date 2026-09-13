@@ -884,7 +884,7 @@ vec4 nebulaField(vec2 pixel) {
     float opacity = clamp(ubuf.nebulaTone0.w * (0.70 * density + 0.85 * env * (1.0 - lane)), 0.0, 0.94);
     // Two tones, mixed by the medium octave rather than by position, so the
     // colour is patchy like real emission instead of a gradient across a disc.
-    // Two tones. The mix is pushed to its ends rather than left linear: a
+    // The mix is pushed to its ENDS rather than left linear: a
     // palette that is saturation-capped to 0.28 has very little chroma to
     // begin with, and averaging two of those over most of the cloud threw away
     // what there was (measured mean chroma 0.017 linear, against 0.05 for the
@@ -901,11 +901,11 @@ vec4 nebulaField(vec2 pixel) {
         vec2 a = nebulaStar(pixel, ubuf.nebulaStars.xy, core, scatter);
         a += nebulaStar(pixel, ubuf.nebulaStars.zw, core, scatter);
         a += nebulaStar(pixel, ubuf.nebulaStars2.xy, core, scatter);
-        // The halo is cut well inside the bounding ellipse, so a star near the
-        // rim cannot leave a hard circle where the cloud ends.
         // The core is NOT normalized with the body: an embedded young star is
         // meant to be a star. 4.0 puts it at 0.54 linear (199/255) at the
-        // shipped gains, against an ordinary near star's 243/255.
+        // shipped gains, against an ordinary near star's 243/255. The halo is
+        // cut well inside the bounding ellipse, so a star near the rim cannot
+        // leave a hard circle where the cloud ends.
         emission += (mix(tint, vec3(1.0), 0.62) * a.x * 4.0
                   + tint * a.y * (0.08 + 1.10 * density))
                   * ubuf.nebulaTone1.w * smoothstep(1.0, 0.55, rr);
