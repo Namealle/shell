@@ -101,7 +101,7 @@ function storm(h) {
     // The kernel's own lifetimes: ordinary 0.55-1.60 s, earthgrazer 2.8-5.4 s.
     // Alive count is rate * mean life, and the window has to cover the longest.
     const frag = readFileSync(join(repo, "modules", "background", "shaders", "starfield.frag"), "utf8");
-    check("the kernel's loop is hard-bounded", /for \(int j = 0; j < 40; \+\+j\)/.test(frag) && /if \(j >= window\) break;/.test(frag));
+    check("the kernel's loop is hard-bounded", /for \(int j = 0; j < 48; \+\+j\)/.test(frag) && /if \(j >= window\) break;/.test(frag));
     let worstWindow = 0, peakAlive = 0, short = 0;
     for (let t = 0.5; t < e.duration; t += 0.5) {
         h._state.clock = t;
@@ -109,12 +109,12 @@ function storm(h) {
         const span = h.shader.stormSpan, head = h.shader.stormHead;
         if (head.w <= 0) continue;
         worstWindow = Math.max(worstWindow, span.x);
-        peakAlive = Math.max(peakAlive, head.w * 1.075);       // rate * mean ordinary life
-        if (span.x < Math.min(40, Math.ceil(head.w * 5.4))) short++;
+        peakAlive = Math.max(peakAlive, head.w * 1.30);        // rate * mean ordinary life
+        if (span.x < Math.min(48, Math.ceil(head.w * 5.4))) short++;
     }
-    check("the window always covers the longest streak alive", short === 0 && worstWindow > 0 && worstWindow <= 40,
+    check("the window always covers the longest streak alive", short === 0 && worstWindow > 0 && worstWindow <= 48,
         `peak window ${worstWindow} candidates, ${short} frames short`);
-    check("3-6 ordinary streaks are in the air at the peak", peakAlive >= 2.5 && peakAlive <= 9,
+    check("5-10 ordinary streaks are in the air at the peak", peakAlive >= 4 && peakAlive <= 12,
         peakAlive.toFixed(1) + " concurrent");
 
     // First-order phase inversion: a streak's apparent clock runs at
@@ -285,7 +285,7 @@ for (const out of OUTPUTS) {
     check("a disabled storm publishes nothing", off.shader.stormShape.w === 0);
     const quiet = host({ width: 2160, height: 3840 }, { events: { rateScale: 0.5 } });
     const qe = storm(quiet);
-    check("rateScale divides the storm's peak rate", Math.abs(qe.rateMax - 2) < 1e-9, qe.rateMax.toFixed(2) + "/s at rateScale 0.5");
+    check("rateScale divides the storm's peak rate", Math.abs(qe.rateMax - 3) < 1e-9, qe.rateMax.toFixed(2) + "/s at rateScale 0.5");
 }
 
 // ------------------------------------------------------------------- the IPC

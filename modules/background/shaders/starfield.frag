@@ -872,7 +872,10 @@ vec3 meteorStorm(vec2 pixel) {
     float frac = ubuf.stormHead.z - top;
     int window = int(ubuf.stormSpan.x);
     vec3 sum = vec3(0.0);
-    for (int j = 0; j < 40; ++j) {
+    // 48 is the hard bound: the CPU never asks for more than ceil(8*5.5)+3 =
+    // 47 candidates, because peakRate is validated at 8 a second and 5.5 s is
+    // the longest life in here. Candidates past `window` are not iterated.
+    for (int j = 0; j < 48; ++j) {
         if (j >= window) break;
         float k = top - float(j);
         float a = stormHash(k, seed) * 6.2831853;
@@ -885,11 +888,19 @@ vec3 meteorStorm(vec2 pixel) {
         // An earthgrazer is the same streak drawn slowly and far from the
         // radiant: long, shallow, and alive for seconds instead of one.
         float grazer = step(h.x, ubuf.stormSpan.y);
-        float omega = mix(0.42 + 0.90 * h.y, 0.09 + 0.11 * h.y, grazer);
-        float life = mix(0.55 + 1.05 * h.z, 2.8 + 2.6 * h.z, grazer);
+        // 0.30-0.90 rad/s is a meteor crossing twenty to forty degrees of sky in
+        // its own second, and it is also what keeps one ON the buffer: the short
+        // side spans about fifty degrees here, so a faster streak would cross it
+        // in a third of its life and the storm would look emptier than its rate.
+        float omega = mix(0.30 + 0.60 * h.y, 0.08 + 0.10 * h.y, grazer);
+        float life = mix(0.65 + 1.30 * h.z, 3.0 + 2.5 * h.z, grazer);
         float age = (frac + float(j)) / rate;
         if (age > life) continue;
-        float theta = min(mix(0.05, 0.95, h.w * h.w) + mix(0.0, 0.35, grazer) + omega * age, 1.35);
+        // A fast streak starts nearer the radiant, so it has room to run before
+        // it leaves the sky; an earthgrazer starts furthest out, which is where
+        // one is seen. Both are the same draw, biased by the speed it made.
+        float fast = clamp((omega - 0.30) / 0.60, 0.0, 1.0);
+        float theta = min(mix(0.05, 0.95, h.w * h.w) * (1.0 - 0.45 * fast) + mix(0.0, 0.40, grazer) + omega * age, 1.35);
         float dh = focal * tan(theta);
         float trail = mix(ubuf.stormShape.y, ubuf.stormShape.z, g.x) * mix(1.0, 2.2, grazer);
         float dt = focal * tan(max(theta - min(trail, omega * age + 0.004), 0.004));
@@ -899,8 +910,10 @@ vec3 meteorStorm(vec2 pixel) {
         // a streak never appears or vanishes on a frame.
         float env = smoothstep(0.0, 0.06 * life, age) * smoothstep(0.0, 0.28 * life, life - age);
         // Cubed uniform: many faint, few bright. This is the distribution, not
-        // a taste dial - a real shower is mostly meteors you almost miss.
-        float bright = (0.16 + 0.84 * g.y * g.y * g.y) * env;
+        // a taste dial - a real shower is mostly meteors you almost miss. The
+        // floor is where a head still clears 139/255 against a bright star's
+        // 243: faint enough to be the many, bright enough to be seen at all.
+        float bright = (0.28 + 0.72 * g.y * g.y * g.y) * env;
         float span = max(dh - dt, 1.0);
         float u = clamp((dh - d) / span, 0.0, 1.0);
         float w = sigma * (1.0 + 2.4 * u);

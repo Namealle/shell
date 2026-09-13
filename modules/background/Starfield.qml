@@ -916,7 +916,7 @@ Item {
         e.ramp = e.duration * rampFraction;
         e.decay = (e.duration - e.ramp) * 0.62;
         e.peakSec = Math.max(0, e.duration - e.ramp - e.decay);
-        e.rateMax = stormValue(cfg, "peakRate", 4, 0.2, 8) * Math.max(0.05, rateScale());
+        e.rateMax = stormValue(cfg, "peakRate", 6, 0.2, 8) * Math.max(0.05, rateScale());
         // The hump starts and ends at the ORDINARY meteor rate, so a storm
         // arrives out of the sky the viewer already has rather than switching
         // one on: 1/82 s against a peak of four a second, the same ratio a real
@@ -930,7 +930,7 @@ Item {
         // The shader spreads each streak's sigma over 0.66..1.33 of this, which
         // reproduces the pair exactly when its ends are a factor of two apart.
         e.headSigma = (headPx[0] + headPx[1]) * 0.5 * shortSide / 2160;
-        e.stormGain = stormValue(cfg, "gain", 0.85, 0, 1.2);
+        e.stormGain = stormValue(cfg, "gain", 1, 0, 1.5);
         e.grazers = stormValue(cfg, "earthgrazerShare", 0.08, 0, 0.35);
         e.fragments = stormValue(cfg, "fragmentShare", 0.06, 0, 0.35);
         e.stormMix = stormValue(cfg, "paletteMix", 0.30, 0, 0.45);
@@ -971,12 +971,21 @@ Item {
             const flight = 1.6 + 1.6 * pick(91);
             const train = trainSpan[0] + (trainSpan[1] - trainSpan[0]) * pick(101);
             const at = from + (to - from) * (i + 0.15 + 0.7 * pick(141)) / Math.max(1, count);
+            // A fireball is AIMED, not drawn like the others. Its ray and its
+            // angular speed are solved so the terminal flash lands on a point
+            // inside the buffer: a free draw flares off the corner most of the
+            // time, because the radiant is off-centre and tan() runs away.
+            const target = [w * (0.17 + 0.66 * pick(61)), h * (0.17 + 0.66 * pick(62))];
+            const ray = [target[0] - centre[0] - e.radiantOffset[0], target[1] - centre[1] - e.radiantOffset[1]];
+            const reach = Math.max(shortSide * 0.08, Math.hypot(ray[0], ray[1]));
+            const thetaEnd = Math.min(Math.atan(reach / shortSide), 1.15);
+            const theta0 = Math.max(0.05, thetaEnd - (0.22 + 0.26 * pick(81)) * flight);
             const child = {
                 fireball: true,
                 at: at,
-                angle: pick(61) * Math.PI * 2,
-                theta0: 0.16 + 0.50 * pick(71),
-                omega: 0.26 + 0.30 * pick(81),
+                angle: Math.atan2(ray[1], ray[0]),
+                theta0: theta0,
+                omega: (thetaEnd - theta0) / flight,
                 flight: flight,
                 train: train,
                 sigma: e.headSigma * (1.7 + 0.7 * pick(111)),
@@ -1060,7 +1069,7 @@ Item {
         // is still alive: the longest life in the kernel is 5.4 s (an
         // earthgrazer), so rate*5.4 candidates plus a margin, and the loop is
         // hard-bounded at 40 in the shader whatever this says.
-        const window = Math.min(40, Math.max(4, Math.ceil(rate * 5.5) + 3));
+        const window = Math.min(48, Math.max(4, Math.ceil(rate * 5.5) + 3));
         return {
             head: [place[0], place[1], stormPhase(e, age), rate],
             shape: [e.headSigma, e.trailLo, e.trailHi, e.stormGain],
