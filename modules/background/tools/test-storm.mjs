@@ -145,11 +145,12 @@ for (const out of OUTPUTS) {
         keepOut = 1.25 * h.holeReach();
         if (r < keepOut) inside++;
         if (r > 0.12 * shortSide) offCentre++;
-        if (place[0] > -shortSide && place[0] < out.width + shortSide && place[1] > -shortSide && place[1] < out.height + shortSide) onScreen++;
+        const margin = shortSide * 0.04;
+        if (place[0] > margin && place[0] < out.width - margin && place[1] > margin && place[1] < out.height - margin) onScreen++;
     }
     check("no radiant lands on the drawn hole on " + out.name, inside === 0, `${inside} inside ${keepOut.toFixed(0)} px, ${captures} captures`);
     check("every radiant is off-centre on " + out.name, offCentre === captures, `${offCentre}/${captures} beyond 0.12 short sides`);
-    check("every radiant stays near the buffer on " + out.name, onScreen === captures);
+    check("every radiant is ON the buffer on " + out.name, onScreen === captures, `${onScreen}/${captures} inside a 0.04 short-side margin`);
 }
 
 // A shower meteor's apparent length is f*(tan(theta) - tan(theta - trail)):
@@ -189,6 +190,7 @@ for (const out of OUTPUTS) {
     const h = host({ width: 2880, height: 1800, hole: false });
     const e = storm(h);
     check("a storm carries 1-3 fireballs", e.children.length >= 1 && e.children.length <= 3, e.children.length + " fireballs");
+    check("the fireball list is never empty by accident", e.children.every(c => c.flight > 0 && c.train > 0));
     const shortSide = 1800;
     let worstFlashStep = 0, sawFlash = false, sawTrain = 0, worstSlots = 0, peak = 0;
     const c = e.children[0];
@@ -238,6 +240,30 @@ for (const out of OUTPUTS) {
         growingR = r;
     }
     check("a fireball diverges from the radiant", radial, "on its own ray, monotonically outward");
+
+    // A fireball is a slot, composited after the disk and not shadow-masked, so
+    // its flash must not land on the drawn hole. 200 captures per output.
+    for (const out of OUTPUTS) {
+        let onHole = 0, offBuffer = 0, total = 0, keepOut = 0;
+        for (let seed = 0; seed < 200; ++seed) {
+            const g = host({ width: out.width, height: out.height, screenSeed: seed * 53 + 7 });
+            const s2 = storm(g);
+            const place = g.stormRadiant(s2);
+            keepOut = 1.25 * g.holeReach();
+            for (const child of s2.children) {
+                const d = out.width * 0 + Math.min(out.width, out.height) * Math.tan(Math.min(child.theta0 + child.omega * child.flight, 1.35));
+                const x = place[0] + Math.cos(child.angle) * d, y = place[1] + Math.sin(child.angle) * d;
+                total++;
+                // The whole ray, radiant to flash: the train covers all of it.
+                const vx = x - place[0], vy = y - place[1], len = vx * vx + vy * vy;
+                const t = len > 0 ? Math.max(0, Math.min(1, ((out.width / 2 - place[0]) * vx + (out.height / 2 - place[1]) * vy) / len)) : 0;
+                if (Math.hypot(place[0] + vx * t - out.width / 2, place[1] + vy * t - out.height / 2) < keepOut) onHole++;
+                if (x < 0 || y < 0 || x > out.width || y > out.height) offBuffer++;
+            }
+        }
+        check("no fireball crosses the drawn hole on " + out.name, onHole === 0, `${onHole}/${total} inside ${keepOut.toFixed(0)} px`);
+        check("every fireball flares on the buffer on " + out.name, offBuffer === 0, `${total - offBuffer}/${total} on screen`);
+    }
 
     // And they take the transient heads, which the v8 shower used for plain
     // meteors and the storm no longer needs.

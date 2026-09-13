@@ -953,7 +953,14 @@ Item {
             // every streak then crosses the whole buffer.
             const r = clamp(Math.max(shortSide * bias * (0.72 + 0.56 * draw(40 + attempt)), _hole.enabled ? keepOut * 1.05 : 0), 0, 0.75 * shortSide);
             e.radiantOffset = [Math.cos(a) * r, Math.sin(a) * r];
-            if (!_hole.enabled || Math.hypot(centre[0] + e.radiantOffset[0] - _hole.bhCentre.x, centre[1] + e.radiantOffset[1] - _hole.bhCentre.y) >= keepOut)
+            const px = centre[0] + e.radiantOffset[0], py = centre[1] + e.radiantOffset[1];
+            const clear = !_hole.enabled || Math.hypot(px - _hole.bhCentre.x, py - _hole.bhCentre.y) >= keepOut;
+            // ON the buffer, not merely near it. Pushing the radiant past the
+            // hole's keep-out can send it off the short edge, and a shower whose
+            // convergence point is off-screen reads as meteors going one way
+            // rather than as a storm. The angle is what the retries vary.
+            const margin = shortSide * 0.04;
+            if (clear && px > margin && px < w - margin && py > margin && py < h - margin)
                 break;
         }
         // Fireballs are the one part of a storm the shader does NOT generate:
@@ -975,8 +982,47 @@ Item {
             // angular speed are solved so the terminal flash lands on a point
             // inside the buffer: a free draw flares off the corner most of the
             // time, because the radiant is off-centre and tan() runs away.
-            const target = [w * (0.17 + 0.66 * pick(61)), h * (0.17 + 0.66 * pick(62))];
-            const ray = [target[0] - centre[0] - e.radiantOffset[0], target[1] - centre[1] - e.radiantOffset[1]];
+            // ...and never onto the hole. A fireball is a SLOT, composited
+            // after the disk and not shadow-masked, so one flaring on the disk
+            // would shine straight through it - the same reason the phenomena
+            // reject a placement inside the drawn material. The procedural
+            // streaks have no such problem: they are evaluated at the lensed
+            // source, so they bend around the hole and sink behind the disk.
+            // Drawn in POLAR coordinates about the hole, because on the tablet
+            // the keep-out circle covers most of the buffer: a rejection loop
+            // over a rectangle fails a third of the time, a radius that starts
+            // outside it never does. The angle is what the retries vary, until
+            // the point is on the buffer too.
+            const edge = shortSide * 0.05;
+            const origin = [centre[0] + e.radiantOffset[0], centre[1] + e.radiantOffset[1]];
+            // The whole RAY has to miss the hole, not only its far end: the
+            // train runs all the way back to the radiant, and a train drawn
+            // across the shadow shines through it exactly as a flash would.
+            const misses = point => {
+                if (!_hole.enabled)
+                    return true;
+                const vx = point[0] - origin[0], vy = point[1] - origin[1];
+                const len = vx * vx + vy * vy;
+                const t = len > 0 ? clamp(((_hole.bhCentre.x - origin[0]) * vx + (_hole.bhCentre.y - origin[1]) * vy) / len, 0, 1) : 0;
+                return Math.hypot(origin[0] + vx * t - _hole.bhCentre.x, origin[1] + vy * t - _hole.bhCentre.y) >= keepOut;
+            };
+            let target = null;
+            for (let attempt = 0; attempt < 40; ++attempt) {
+                const ta = pick(201 + attempt) * Math.PI * 2;
+                const tr = Math.max(_hole.enabled ? keepOut * 1.06 : 0, shortSide * (0.12 + 0.34 * pick(241 + attempt)));
+                const point = [_hole.bhCentre.x + Math.cos(ta) * tr, _hole.bhCentre.y + Math.sin(ta) * tr];
+                if (point[0] > edge && point[0] < w - edge && point[1] > edge && point[1] < h - edge && misses(point)) {
+                    target = point;
+                    break;
+                }
+            }
+            // No clear ray in forty tries means the radiant sits so close to the
+            // keep-out that the hole blocks most of the sky from it. Drop THIS
+            // fireball rather than aim it through the disk: a storm with one
+            // fireball is a storm; one shining through the hole is a bug.
+            if (!target)
+                continue;
+            const ray = [target[0] - origin[0], target[1] - origin[1]];
             const reach = Math.max(shortSide * 0.08, Math.hypot(ray[0], ray[1]));
             const thetaEnd = Math.min(Math.atan(reach / shortSide), 1.15);
             const theta0 = Math.max(0.05, thetaEnd - (0.22 + 0.26 * pick(81)) * flight);
@@ -992,7 +1038,11 @@ Item {
                 flashSigma: shortSide * (0.010 + 0.010 * pick(121)),
                 trainWidth: e.headSigma * (2.4 + 1.6 * pick(151)),
                 gain: e.stormGain * (1.45 + 0.55 * pick(131)),
-                drift: [pick(161), pick(162), pick(163), pick(164)].map(x => x * Math.PI * 2),
+                // The wind as a SHEAR, not four independent bearings: one base
+                // direction plus a twist along the train's length. Four random
+                // angles put an elbow in the polyline, which is what the first
+                // live capture showed - a train bends, it does not hinge.
+                drift: [pick(161) * Math.PI * 2, (pick(162) - 0.5) * 1.8],
                 colour: e.colour.slice()
             };
             e.children.push(child);
@@ -1117,8 +1167,8 @@ Item {
         const points = [];
         for (let i = 0; i < 4; ++i) {
             const p = at(flown * (1 - i / 3));
-            const bearing = c.drift[i] + 0.55 * Math.sin(0.42 * trainAge + c.drift[i]);
-            const pull = shortSide * 0.045 * life * (0.55 + 0.45 * i / 3);
+            const bearing = c.drift[0] + c.drift[1] * i / 3 + 0.30 * Math.sin(0.42 * trainAge + c.drift[0] + i * 0.5);
+            const pull = shortSide * 0.045 * life * (0.30 + 0.70 * i / 3);
             points.push([p[0] + Math.cos(bearing) * pull, p[1] + Math.sin(bearing) * pull]);
         }
         let length = 0;
