@@ -92,6 +92,18 @@ layout(std140, binding = 0) uniform buf {
     vec4 event5Tail01;
     vec4 event5Shape;
     vec4 event5Bounds;
+    // ---- NEBULA PASSAGE (v9) ------------------------------------------
+    // One cloud, so one block rather than a slot: it is not a point source and
+    // it composites at a different stage (into the far field, under everything
+    // else). 112 B. head.w <= 0 is the whole switch.
+    vec4 nebulaHead;   // x, y, semiMajorPx, gain
+    vec4 nebulaShape;  // majorDirX, majorDirY (unit), aspect (minor/major), turbPhase
+    vec4 nebulaTone0;  // emission tone A rgb, dust opacity
+    vec4 nebulaTone1;  // emission tone B rgb, embedded-star gain
+    vec4 nebulaStars;  // star0 x, y, star1 x, y (absolute px; far off = absent)
+    vec4 nebulaStars2; // star2 x, y, coreSigmaPx, scatterSigmaPx
+    vec4 nebulaBounds; // x0, y0, x1, y1
+    // -------------------------------------------------------------------
 #define BH_UNIFORMS
 #include "blackhole.glsl"
 #undef BH_UNIFORMS
@@ -803,6 +815,105 @@ vec3 eventSlot(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec
     return head.w * (nucleus + shape.y * tail * colour.rgb);
 }
 
+// ---- NEBULA PASSAGE ----------------------------------------------------
+// A cloud, not a point: a ragged domain-warped field inside one ellipse, with
+// its own extinction. It is the only event that takes light AWAY, so it is
+// composited into the far layer (before the shadow, under the particles and
+// under the disk) rather than added at the end like every slot event.
+//
+// One hardware-bilinear tap IS a C1 value-noise lattice when the fractional
+// part is pre-eased: the filter then interpolates the four texels with a
+// smoothstep weight instead of a linear one, which is the same trick
+// bhNoiseRow uses on the same texture. blackhole-noise.png's R channel has an
+// x period of 32 texels and G one of 64 - both divide 64 - and both have a y
+// period of 127 with the last row duplicated, so folding the integer part by
+// (64, 127) keeps BOTH channels continuous across the fold and no wrap mode is
+// relied on. Two decorrelated fields for one fetch.
+vec2 nebulaTap(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    vec2 c = vec2(mod(i.x, 64.0), mod(i.y, 127.0)) + f + 0.5;
+    return texture(bhNoise, c / 128.0).rg;
+}
+// An embedded young star: a hot core, and the light it scatters back out of
+// the material around it. Returns (core, scatter) so the caller can weight the
+// scatter by the local density - that is what makes it read as the CLOUD
+// glowing rather than a star pasted on top of one.
+vec2 nebulaStar(vec2 p, vec2 star, float core, float scatter) {
+    vec2 d = p - star;
+    float r2 = dot(d, d);
+    float variance = core * core + 0.0833333;
+    return vec2(exp2(-0.7213475 * r2 / variance) * core * core / variance,
+                exp2(-r2 / (scatter * scatter)));
+}
+// rgb = linear emission, a = the dust column's opacity to whatever is behind.
+// Three texture fetches and ~70 ALU inside the ellipse, one compare outside.
+vec4 nebulaField(vec2 pixel) {
+    if (ubuf.nebulaHead.w <= 0.0 || pixel.x < ubuf.nebulaBounds.x || pixel.y < ubuf.nebulaBounds.y
+        || pixel.x > ubuf.nebulaBounds.z || pixel.y > ubuf.nebulaBounds.w) return vec4(0.0);
+    vec2 d = pixel - ubuf.nebulaHead.xy;
+    vec2 e = ubuf.nebulaShape.xy;
+    // Cloud frame: x along the major axis, y across it, both in semi-axes.
+    vec2 q = vec2(dot(d, e), dot(d, vec2(-e.y, e.x)))
+           / vec2(max(ubuf.nebulaHead.z, 1.0), max(ubuf.nebulaHead.z * ubuf.nebulaShape.z, 1.0));
+    float rr = dot(q, q);
+    if (rr >= 1.0) return vec4(0.0);
+    // Each octave is advected at its own velocity, so the structure SHEARS
+    // through itself over minutes instead of sliding across as one picture.
+    float t = ubuf.nebulaShape.w;
+    vec2 p = q * 3.2;
+    vec2 w = nebulaTap(p * 0.80 + vec2(t, -0.62 * t)) - 0.5;
+    vec2 n1 = nebulaTap(p * 1.70 + w * 1.8 + vec2(-0.41 * t, 0.93 * t));
+    // The boundary is two octaves biting inward, so the rim is ragged and wispy
+    // at two scales while the hard ellipse above stays the cost bound: both
+    // bites are >= 0, so at rr = 1 the envelope has already reached zero and
+    // nothing can step at the edge of the bounding test.
+    float env = 1.0 - smoothstep(0.04, 1.0, rr + 0.34 * (w.x + 0.5) + 0.24 * (n1.x + 0.5) * (n1.x + 0.5));
+    if (env <= 0.0) return vec4(0.0);
+    vec2 n2 = nebulaTap(p * 4.10 + w * 2.4 + vec2(13.7 + 1.7 * t, 5.3 - 1.1 * t));
+    float soft = 0.62 * n1.x + 0.38 * n2.x;
+    // Ridged layer: the filaments and sheets a soft fbm alone never grows.
+    float ridge = 1.0 - abs(2.0 * (0.65 * n1.y + 0.35 * n2.y) - 1.0);
+    // env squared is the denser core; the un-squared term is what keeps the
+    // wisps alive out at the rim.
+    float density = env * env * (0.30 + 1.15 * soft) + env * 0.62 * ridge * ridge;
+    // Dust lane: where the warped medium octave falls away there is material
+    // that absorbs and does not emit. It darkens the emission and it is the
+    // part of the opacity that does not follow the glow.
+    float lane = smoothstep(0.26, 0.56, 0.70 * n1.x + 0.30 * n2.y + 0.18 * w.y);
+    float opacity = clamp(ubuf.nebulaTone0.w * (0.70 * density + 0.85 * env * (1.0 - lane)), 0.0, 0.94);
+    // Two tones, mixed by the medium octave rather than by position, so the
+    // colour is patchy like real emission instead of a gradient across a disc.
+    // Two tones. The mix is pushed to its ends rather than left linear: a
+    // palette that is saturation-capped to 0.28 has very little chroma to
+    // begin with, and averaging two of those over most of the cloud threw away
+    // what there was (measured mean chroma 0.017 linear, against 0.05 for the
+    // pure tones). Large regions of each tone with a transition between them
+    // is both more colour and more like emission.
+    vec3 tint = mix(ubuf.nebulaTone0.rgb, ubuf.nebulaTone1.rgb,
+                    smoothstep(0.34, 0.66, 0.5 + 1.6 * (n1.y - 0.5) + 0.55 * w.y));
+    // 0.36 is a CALIBRATION, not taste: it is what makes the cloud's 99th
+    // linear percentile equal `gain`, so the documented 0.35 ceiling on that
+    // key is the q99 the sky actually gets (measured, tools/nebula_sheet.py).
+    vec3 emission = tint * (density * lane * 0.36);
+    if (ubuf.nebulaTone1.w > 0.0) {
+        float core = max(ubuf.nebulaStars2.z, 0.5), scatter = max(ubuf.nebulaStars2.w, 1.0);
+        vec2 a = nebulaStar(pixel, ubuf.nebulaStars.xy, core, scatter);
+        a += nebulaStar(pixel, ubuf.nebulaStars.zw, core, scatter);
+        a += nebulaStar(pixel, ubuf.nebulaStars2.xy, core, scatter);
+        // The halo is cut well inside the bounding ellipse, so a star near the
+        // rim cannot leave a hard circle where the cloud ends.
+        // The core is NOT normalized with the body: an embedded young star is
+        // meant to be a star. 4.0 puts it at 0.54 linear (199/255) at the
+        // shipped gains, against an ordinary near star's 243/255.
+        emission += (mix(tint, vec3(1.0), 0.62) * a.x * 4.0
+                  + tint * a.y * (0.08 + 1.10 * density))
+                  * ubuf.nebulaTone1.w * smoothstep(1.0, 0.55, rr);
+    }
+    return vec4(emission * ubuf.nebulaHead.w, opacity);
+}
+// ------------------------------------------------------------------------
+
 vec3 decodeDisplay(vec3 c) {
     c = max(c,vec3(0.0));
     if (max(c.r,max(c.g,c.b)) <= 0.04045) return c/12.92;
@@ -952,6 +1063,7 @@ void legacyMain() {
     vec3 material = vec3(0.0), farField = vec3(0.0), linearColour = vec3(0.0);
     vec3 legacyColour = colour;
     float localEnvelope = 0.0;
+    vec4 nebula = vec4(0.0);
     if (ubuf.density > 0.0) {
         float scale = max(1.0, sqrt(ubuf.resolution.x * ubuf.resolution.y / (1024.0 * 576.0)));
         scale /= sqrt(max(0.0001, ubuf.density));
@@ -961,6 +1073,9 @@ void legacyMain() {
             // A compile-time legacy specialization: no lens or migration
             // branches in the common, never-enabled sky kernel.
             vec3 field = stars(pixel,baseAngle,scale,0.0,-2.0,pixel,1.0);
+            // Only the far layer is behind the cloud; the other two are not.
+            nebula = nebulaField(pixel);
+            field *= 1.0-nebula.a;
             field += stars(pixel,baseAngle,scale,1.0,-2.0,pixel,1.0);
             field += stars(pixel,baseAngle,scale,2.0,-2.0,pixel,1.0);
             colour += field*ubuf.brightness;
@@ -979,6 +1094,8 @@ void legacyMain() {
         // One common evaluation per layer keeps the disabled render arithmetic
         // intact and avoids duplicating the entire star kernel in each branch.
         if (domain) farField = stars(farSource,farAngle,scale,0.0,-1.0,pixel,1.0);
+        nebula = nebulaField(farSource);
+        farField *= 1.0-nebula.a;
         vec3 middleField = stars(materialSource,materialAngle,scale,1.0,pass,pixel,rimLife);
         vec3 nearField = stars(materialSource,materialAngle,scale,2.0,pass,pixel,rimLife);
         if (pass > 0.5 && ubuf.legacyMaterialAlive > 0.5) {
@@ -992,6 +1109,15 @@ void legacyMain() {
         if (hole) material = middleField+nearField;
         else colour = legacyColour;
         }
+    }
+    // The v3 path accumulates its layers display-encoded, so the cloud's
+    // linear emission is encoded once here and joins the sky the same way a
+    // star does. Both accumulators take it, so the hole's linear composite and
+    // the legacy overlap correction stay in step.
+    if (nebula.a > 0.0 || max(nebula.r,max(nebula.g,nebula.b)) > 0.0) {
+        vec3 glow = encodeDisplay(nebula.rgb);
+        colour += glow;
+        legacyColour += glow;
     }
 
     if (hole) {
@@ -1042,6 +1168,10 @@ void main() {
     float edge = pow(clamp(dot(edgePosition,edgePosition)*0.6,0.0,1.0),1.5);
     vec3 far = ubuf.skyColor.rgb+ubuf.edgeLift*edge*vec3(0.10,0.19,0.30);
     vec3 material = vec3(0.0), ahead = vec3(0.0);
+    // The nebula passage rides with the far field: it is evaluated at the same
+    // (lensed) source coordinate, so it bends with the background it belongs
+    // to, and it is applied to `far` after the decode and before the shadow.
+    vec4 nebula = vec4(0.0);
     // How much of a particle BEHIND the disk the disk eats. disk.a is only the
     // alpha the emissive shading happened to leave; bhDiskAbsorb is the disk's
     // geometric coverage weighted by its own emissivity, which is what actually
@@ -1057,11 +1187,16 @@ void main() {
         if (hole && ubuf.radialMode>0.5) { float weight; source=bhWarpBackground(pixel,weight); }
         if (all(greaterThanEqual(source,vec2(0.0))) && all(lessThan(source,ubuf.resolution)))
             far += stars(source,angle,scale,0.0,-1.0,pixel,1.0)*ubuf.brightness;
+        nebula = nebulaField(source);
         diskOcclusion = particleDiskAbsorb(pixel,disk.a);
         material = particleField(pixel,diskOcclusion,ahead)*ubuf.brightness;
         ahead *= ubuf.brightness;
     }
     far = decodeDisplay(far);
+    // Dust lanes eat the far field; the emission joins it. Both are then
+    // attenuated by (1-disk.a) and cut by the shadow exactly as the far field
+    // is, so the cloud is behind the disk and is never drawn over the shadow.
+    far = far*(1.0-nebula.a)+nebula.rgb;
     if (hole) far *= 1.0-bhShadowMask(pixel);
     // Explicit particles live in the apparent plane. bhWarpMaterial is used
     // only by legacyMain; their swept death remains at Rh, never sqrt(2)*Rh.

@@ -10,11 +10,11 @@ import "ambient/rules.js" as Rules
 Singleton {
     id: root
 
-    // Testing: `caelestia shell ipc call starfield fire <family> [screen]`
+    // Testing: `caelestia shell starfield fire <family> [screen]`
     // queues one episode of a phenomenon family (starBirth, nova, redGiant,
-    // supernova, pulsar, kilonova, gammaBurst) on one screen, or on every
-    // screen when the name is empty. It goes through pushEvent, so it obeys
-    // the same slot and cap rules as a scheduled one.
+    // supernova, pulsar, kilonova, gammaBurst) or `nebula` on one screen, or on
+    // every screen when the name is empty. It goes through pushEvent, so it
+    // obeys the same slot and cap rules as a scheduled one.
     signal fire(string name, string screen)
 
     IpcHandler {
@@ -68,6 +68,7 @@ Singleton {
             pulsar: document.events.pulsar,
             gammaBurst: document.events.gammaBurst,
             satelliteGlint: document.events.satelliteGlint,
+            nebula: document.events.nebula,
             phenomena: document.phenomena,
             phenomenonCap: document.events.phenomenonCap,
             phenomenonGainCap: document.events.phenomenonGainCap,

@@ -44,7 +44,7 @@ function extract(name) {
     return "host[\"" + name + "\"] = function " + args + " " + qml.slice(open, i + 1) + ";";
 }
 
-const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "scheduleRadial", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena"];
+const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "scheduleRadial", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena", "farBoost", "nebulaConfig", "nebulaEnabled", "nebulaFlowRate", "nebulaDrift", "nebulaBoundary", "nebulaDriftPerSec", "nebulaReach", "nebulaSink", "captureNebula", "scheduleNebula", "nebulaState", "pushNebula", "publishNebula"];
 
 // Readonly root constants the scheduler reads by bare name, taken from the
 // same source rather than restated here.
@@ -85,6 +85,8 @@ export function makeHost(document, options) {
     const holeRadius = o.holeRadius === undefined ? holeSize * Math.min(w, h) : o.holeRadius;
     const shader = {
         centreOffset: { x: 0, y: 0 },
+        dustParallax: { x: 0, y: 0 },
+        flowZoom: { x: 1, y: 1, z: 1 },
         mood: Qt.vector4d(0, 0, 0, 0)
     };
     const host = {
@@ -105,6 +107,15 @@ export function makeHost(document, options) {
         fireballChance: document.meteors.fireballChance,
         eventHeadCap: document.events.headCap,
         paletteColors: o.paletteColors || [],
+        // The nebula reads the regime directly: 0 is the inward stream, 1 the
+        // camera flying out. Both are live properties in QML, so a test sets
+        // them the way the shell would rather than through a config key.
+        _cameraBlend: o.cameraBlend === undefined ? 0 : o.cameraBlend,
+        _cameraOutward: o.cameraOutward === undefined ? 0 : o.cameraOutward,
+        cameraDustFlow: o.cameraDustFlow === undefined ? 3 : o.cameraDustFlow,
+        radialSpeed: o.radialSpeed === undefined ? 6 : o.radialSpeed,
+        particlesEnabled: o.particlesEnabled !== false,
+        _particles: o.particles === undefined ? { config: { dust: { farFlow: 24 }, mass: 1 } } : o.particles,
         eventFamilies: {
             comet: document.comet,
             meteors: document.meteors,
@@ -118,6 +129,7 @@ export function makeHost(document, options) {
             pulsar: document.events.pulsar,
             gammaBurst: document.events.gammaBurst,
             satelliteGlint: document.events.satelliteGlint,
+            nebula: document.events.nebula,
             phenomena: document.phenomena,
             phenomenonCap: document.events.phenomenonCap,
             dramaCooldownSec: document.events.dramaCooldownSec,
@@ -129,6 +141,7 @@ export function makeHost(document, options) {
             enabled: o.hole !== false,
             bhCentre: { x: w / 2, y: h / 2 },
             bhGeometry: { x: holeRadius, y: holeRadius * 8, z: 0, w: 0 },
+            bhHalo: { x: 0, y: 0, z: 0, w: o.hole === false ? 0 : 1 },
             bhDisk: { x: 3, y: 11, z: 0, w: 1 },
             bhArcs: { x: 0, y: 1.75, z: 0.6, w: 0 }
         },
@@ -144,7 +157,12 @@ export function makeHost(document, options) {
         moodClock: 0,
         mood: [0, 0, 0, 0],
         phenomenonSlots: [null, null, null],
-        pendingEvents: []
+        pendingEvents: [],
+        geo: [0, 0, 0],
+        nebula: null,
+        nebulaPending: null,
+        nebulaId: 0,
+        nebulaLast: null
     };
     return scheduler(host);
 }

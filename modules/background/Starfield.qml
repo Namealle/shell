@@ -231,6 +231,13 @@ Item {
             mood: [0, 0, 0, 0],
             // Which kind owns phenomenon slot 3 and slot 4, or null.
             phenomenonSlots: [null, null, null],
+            // The nebula passage: one cloud, its own block, outside both slot
+            // classes because it composites into the far field rather than on
+            // top of everything.
+            nebula: null,
+            nebulaPending: null,
+            nebulaId: 0,
+            nebulaLast: null,
             historyWrites: 0,
             publications: 0
         };
@@ -1507,6 +1514,10 @@ Item {
     // push time from the same hash stream, so it is as deterministic as a
     // scheduled one, and it obeys exactly the same slot and cap rules.
     function pushEvent(name: string, delaySec: real, overrides: var): bool {
+        // The nebula is not a radial phenomenon and has no slot, but it is
+        // reached the same way: `caelestia shell starfield fire nebula`.
+        if (name === "nebula")
+            return pushNebula(delaySec, overrides);
         const kind = radialNames.indexOf(name) + 5;
         if (kind < 5 || !_state)
             return false;
@@ -1673,6 +1684,378 @@ Item {
                 shader["event" + (i + 3) + name[0].toUpperCase() + name.slice(1)] = Qt.vector4d(v[0], v[1], v[2], v[3]);
             }
         }
+    }
+
+    // ---- Nebula passage ---------------------------------------------------
+    // The one event that is a CLOUD. It is minutes long, it is most of the
+    // short side across, and it is the only thing on the sky that takes light
+    // AWAY: its dust lanes occlude the far field it passes in front of. So it
+    // gets its own uniform block rather than a slot (nothing about a point
+    // source fits it), its own entry in _state rather than a place in
+    // s.events, and its position is not captured once and replayed but FOLLOWS
+    // the far layer's own flow law. That last choice is what makes it drift
+    // with the regime, reverse when the camera reverses and stay in step with
+    // a field the CPU never simulates, for one subtraction per frame.
+
+    function nebulaConfig(): var {
+        const config = eventFamilies || {};
+        return (config.events || config).nebula || {};
+    }
+
+    function nebulaEnabled(): bool {
+        const cfg = nebulaConfig();
+        return cfg.enabled === undefined ? true : cfg.enabled !== false;
+    }
+
+    // u = r^2/2 in half-short-sides, per unit of the signed geometric
+    // accumulator _state.geo[0]. This is the shader's own far-dust law
+    // (stars(), layer 0, depth 0.10, boosted by the dust flow), so a cloud
+    // advanced by it is travelling WITH the dust rather than beside it.
+    function nebulaFlowRate(): real {
+        return (6 / 1080) * 0.10 * farBoost();
+    }
+
+    // Signed du/dt, for predicting a passage's travel at capture time only:
+    // negative while the stream runs inward, positive while the camera flies
+    // out. The live position never uses this - it reads _state.geo[0], which
+    // already carries the rate, the sign and the crossfade between them.
+    function nebulaDriftPerSec(): real {
+        const dustRate = 1 + _cameraBlend * (clamp(cameraDustFlow, 0, 64) / Math.max(1e-6, farBoost()) - 1);
+        const flowPerSec = clamp(radialSpeed, 0, 26) / 6 * (0.8 + 0.4 * _state.live[2]);
+        return -(1 - 2 * _cameraOutward) * dustRate * flowPerSec * nebulaFlowRate() * nebulaDrift();
+    }
+
+    // A cloud is not a mote. At the dust's own rate the far layer crosses from
+    // the screen edge to the hole in 60-200 s depending on the direction, which
+    // is a fly-past rather than a passage; 0.45 of it is the same direction,
+    // the same reversal and the same regime crossfade at a speed that reads as
+    // something large and far away, and puts a crossing inside the 3-8 min the
+    // family is documented at.
+    function nebulaDrift(): real {
+        const cfg = nebulaConfig();
+        return clamp(cfg.driftScale === undefined ? 0.45 : cfg.driftScale, 0.05, 2);
+    }
+
+    // Distance from the field's centre to the edge of the buffer along one
+    // angle. A passage enters just outside THAT, not outside the corner: the
+    // half-diagonal is 1.9x the half-height on his tablet, so entering at the
+    // corner radius left a third of the episode off-screen.
+    function nebulaBoundary(angle: real): real {
+        const w = width * devicePixelRatio, h = height * devicePixelRatio;
+        return Math.min(0.5 * w / Math.max(0.02, Math.abs(Math.cos(angle))),
+            0.5 * h / Math.max(0.02, Math.abs(Math.sin(angle))));
+    }
+
+    // The hole's drawn material, which is what a passage dissolves into. This
+    // is NOT the phenomenon keep-out: a phenomenon is a point composited after
+    // the disk, so one placed there would shine through the hole, while the
+    // cloud is part of the far field - the disk composites in front of it and
+    // the shadow is subtracted from it. It is therefore allowed to reach the
+    // rim, which is where its material is going, and it fades out over the last
+    // stretch so nothing ever has to be clipped against the hole.
+    function nebulaReach(): real {
+        return _hole.enabled ? holeReach() : 0;
+    }
+
+    // Where a passage is completely gone, and where it begins to dissolve.
+    function nebulaSink(): real {
+        const reach = nebulaReach();
+        return reach > 0 ? 0.55 * reach : 0;
+    }
+
+    function captureNebula(index: int, start: real): var {
+        const cfg = nebulaConfig();
+        const salt = screenSeed + 7717;
+        const w = width * devicePixelRatio, h = height * devicePixelRatio;
+        if (!(w > 0 && h > 0))
+            return null;
+        const shortSide = Math.min(w, h);
+        const radius = shortSide / 2;
+        const optics = Math.max(1, Math.sqrt(w * h / (1024 * 576)));
+        function sample(key, fallback, lo, hi, offset) {
+            const range = parameterRange(cfg, key, fallback, lo, hi);
+            return range[0] + (range[1] - range[0]) * random(index, salt + offset);
+        }
+        const wanted = sample("durationSec", [180, 480], 60, 1800, 3);
+        const entrance = sample("fadeSec", [30, 60], 5, 300, 5);
+        const semi = 0.5 * sample("sizeShortSide", [0.40, 0.80], 0.15, 1.2, 7) * shortSide;
+        // Which way the far field runs when the passage is captured. The camera
+        // regime flies outward, so a cloud begins small and deep and grows past
+        // the edges; the infall regime brings it in from off the edge instead.
+        const outward = _cameraOutward > 0.5;
+        const sink = nebulaSink();
+        const exitU = 0.5 * Math.pow(Math.max(sink, 0.06 * shortSide) / radius, 2);
+        // The entry point is DERIVED from the duration, so the configured
+        // passage length is what a crossing takes rather than a cap on a fixed
+        // speed: at a slower radialSpeed the cloud simply starts nearer.
+        const drift = nebulaDriftPerSec();
+        // Where a passage begins: just outside the buffer under infall, so it
+        // arrives from off-screen; at depth near the centre under the camera,
+        // so it fades in small and grows. The crossing time is then the FLOW's
+        // business, not a captured speed, and the configured duration is what
+        // the cloud has at most - one that reaches the disk edge sooner ends
+        // there rather than lingering invisibly behind its own schedule.
+        // The direction is REJECTED, not clamped, when there is no room in it:
+        // the hole's material reaches 740 px on his tablet against a 900 px
+        // half-height, so a cloud arriving along the short axis would dissolve
+        // into the disk before its centre ever crossed the edge of the buffer.
+        // Sixteen attempts, then whatever the last one was.
+        let angle = 0, boundary = 0;
+        for (let attempt = 0; attempt < 16; ++attempt) {
+            angle = random(index, salt + 9 + attempt * 2) * 2 * Math.PI;
+            boundary = nebulaBoundary(angle);
+            if (outward || boundary >= 1.25 * Math.max(sink, 1))
+                break;
+        }
+        const edgeU = 0.5 * Math.pow((boundary + 0.80 * semi) / radius, 2);
+        const enterU = outward ? 0.012 : Math.min(12, edgeU);
+        const leaveU = outward ? 0.5 * Math.pow((boundary + 1.6 * semi) / radius, 2) : exitU;
+        const crossing = Math.abs(drift) > 1e-9 ? Math.abs(enterU - leaveU) / Math.abs(drift) : 1e9;
+        const duration = Math.max(30, Math.min(wanted, crossing + 0.5 * entrance));
+        const fade = Math.min(entrance, duration * 0.45);
+        // The screen radius the cloud will have at MID-passage. In the camera
+        // regime its apparent size follows its depth, and this is what the
+        // configured size means there: the cloud is that big halfway past,
+        // roughly a third of it when it fades in at depth and half again as
+        // large when it goes by the edge.
+        const midU = Math.max(1e-4, enterU + drift * duration * 0.5);
+        const referenceR = Math.max(0.25 * radius, Math.sqrt(2 * midU) * radius);
+        const colors = paletteSnapshot();
+        const mix = clamp(cfg.paletteMix === undefined ? 0.40 : cfg.paletteMix, 0, 0.45);
+        // Cold interstellar grey-blue. A palette hue is mixed toward it, never
+        // away from it, so no hue the palette does not list is ever generated
+        // and the saturation cap the palette formula applied still holds.
+        const neutral = [0.58, 0.66, 0.80];
+        function pick(offset) {
+            if (!colors.length)
+                return -1;
+            const weights = normalized(_state.palette, colors.length, null);
+            let draw = random(index, salt + offset), chosen = 0;
+            for (; chosen < weights.length - 1; ++chosen) {
+                draw -= weights[chosen];
+                if (draw < 0)
+                    break;
+            }
+            return chosen;
+        }
+        function tone(chosen) {
+            if (chosen < 0)
+                return neutral.slice();
+            const k = mix / 0.45;
+            return [0, 1, 2].map(i => neutral[i] + (colors[chosen][i] - neutral[i]) * k);
+        }
+        const first = pick(21);
+        let second = pick(22);
+        if (second === first && colors.length > 1)
+            second = (first + 1 + Math.floor(random(index, salt + 23) * (colors.length - 1))) % colors.length;
+        const counts = parameterRange(cfg, "stars", [1, 3], 0, 3);
+        const count = Math.round(counts[0] + (counts[1] - counts[0]) * random(index, salt + 25));
+        const stars = [];
+        for (let i = 0; i < count; ++i)
+            stars.push([(random(index, salt + 31 + i * 2) * 2 - 1) * 0.52,
+                (random(index, salt + 32 + i * 2) * 2 - 1) * 0.52]);
+        return {
+            family: "nebula",
+            index: index,
+            start: start,
+            duration: duration,
+            fade: fade,
+            semi: semi,
+            // Set the first time the episode is published with a non-negative
+            // age, so a passage that waited in the schedule does not arrive
+            // already halfway across the sky.
+            geo: null,
+            enterU: enterU,
+            exitU: exitU,
+            referenceR: referenceR,
+            angle: angle,
+            boundary: boundary,
+            tilt: random(index, salt + 11) * Math.PI,
+            aspect: 0.52 + 0.30 * random(index, salt + 13),
+            // Two tones, both listed palette hues pulled toward the same cold
+            // neutral. Teal and a soft pink are what his default palette gives.
+            tone0: tone(first),
+            tone1: tone(second),
+            gain: clamp(cfg.gain === undefined ? 0.30 : cfg.gain, 0, 0.35),
+            dust: clamp(cfg.dustOpacity === undefined ? 0.55 : cfg.dustOpacity, 0, 0.9),
+            starGain: count > 0 ? clamp(cfg.starGain === undefined ? 0.45 : cfg.starGain, 0, 0.8) : 0,
+            starCore: optics * 0.95,
+            stars: stars,
+            shortSide: shortSide,
+            optics: optics
+        };
+    }
+
+    // One passage every 20-45 minutes at rateScale 1, and never on the same
+    // screen as a supernova remnant: it takes its turn in the SHARED dramatic
+    // cooldown (familyLast.drama, dramaCooldownSec), which at 900 s against a
+    // <= 480 s passage and a <= 333 s supernova separates the two in both
+    // directions without a second mechanism.
+    function scheduleNebula(): var {
+        const s = _state;
+        if (!nebulaEnabled())
+            return null;
+        const rate = rateScale();
+        if (rate <= 0)
+            return null;
+        const cfg = nebulaConfig();
+        const index = s.nebulaId++;
+        const salt = screenSeed + 7717;
+        let range = parameterRange(cfg, "everyMinutes", [20, 45], 1, 1440).map(x => x * 60);
+        range = [range[0] / rate, range[1] / rate];
+        const base = s.nebulaLast === null ? s.clock : s.nebulaLast;
+        let start = Math.max(s.clock, base + range[0] + (range[1] - range[0]) * random(index, salt));
+        const cooldown = clamp(Number((eventFamilies || {}).dramaCooldownSec) || 900, 300, 86400) / rate;
+        const last = s.familyLast.drama === undefined ? -1e12 : s.familyLast.drama;
+        start = Math.max(start, last + cooldown);
+        const e = captureNebula(index, start);
+        if (!e)
+            return null;
+        s.familyLast.drama = start;
+        s.nebulaLast = start;
+        return e;
+    }
+
+    // The published uniform block. A pure function of the clock, the geometric
+    // accumulator and the episode, so the offscreen harness can sweep it.
+    function nebulaState(e: var): var {
+        const off = {
+            head: [0, 0, 0, 0],
+            shape: [1, 0, 1, 0],
+            tone0: [0, 0, 0, 0],
+            tone1: [0, 0, 0, 0],
+            stars: [-1e6, -1e6, -1e6, -1e6],
+            stars2: [-1e6, -1e6, 1, 1],
+            bounds: [0, 0, 0, 0]
+        };
+        if (!e || e.geo === null)
+            return off;
+        const age = _state.clock - e.start;
+        if (age < 0 || age > e.duration)
+            return off;
+        const w = width * devicePixelRatio, h = height * devicePixelRatio;
+        const shortSide = Math.min(w, h), radius = shortSide / 2;
+        const zoom = shader.flowZoom === undefined ? 1 : shader.flowZoom.x;
+        // The far layer's own coordinate. geo carries the camera's sign, so a
+        // reversal walks the cloud back out the way it came in.
+        const u = Math.max(1e-6, e.enterU - (_state.geo[0] - e.geo) * nebulaFlowRate());
+        const r = Math.sqrt(2 * u) * radius * zoom;
+        // Exactly the far layer's centre in stars(): the shared wander at the
+        // layer's own depth, plus the far field's bounded parallax.
+        const enable = _hole.bhHalo === undefined ? 0 : _hole.bhHalo.w;
+        const depth = 0.10 + (1 - 0.10) * enable;
+        const parallax = shader.dustParallax === undefined ? {
+            x: 0,
+            y: 0
+        } : shader.dustParallax;
+        const cx = w * 0.5 + shader.centreOffset.x * depth + parallax.x;
+        const cy = h * 0.5 + shader.centreOffset.y * depth + parallax.y;
+        const x = cx + r * Math.cos(e.angle), y = cy + r * Math.sin(e.angle);
+        // Perspective. In the camera regime the cloud is a body at a DEPTH, so
+        // its apparent size follows its screen radius and it swells as it comes
+        // past. Under infall it is not approaching the camera at all - it is
+        // crossing the sky at one distance - so its angular size is CONSTANT
+        // and the tide is the only thing that reshapes it.
+        const scale = clamp(1 + 0.90 * _cameraBlend * (r / Math.max(1, e.referenceR) - 1), 0.12, 2.4);
+        const reach = nebulaReach(), sink = nebulaSink();
+        // Tidal field: radial stretch, tangential squeeze, growing as the cloud
+        // falls in. The major axis turns from its birth-frozen angle toward the
+        // radius as the tide takes hold, so the shear arrives rather than cuts.
+        const shear = reach > 0 ? 0.65 * enable * clamp(Math.pow(1.6 * reach / Math.max(r, 1.6 * reach), 2.0), 0, 1) : 0;
+        let dx = Math.cos(e.tilt) + (Math.cos(e.angle) - Math.cos(e.tilt)) * shear;
+        let dy = Math.sin(e.tilt) + (Math.sin(e.angle) - Math.sin(e.tilt)) * shear;
+        const length = Math.max(1e-6, Math.hypot(dx, dy));
+        dx /= length;
+        dy /= length;
+        const major = Math.min(e.semi * scale * (1 + 0.28 * shear), 0.65 * shortSide);
+        const aspect = Math.max(0.24, e.aspect * (1 - 0.40 * shear));
+        const minor = major * aspect;
+        const envTime = ease(age / Math.max(0.001, e.fade)) * ease((e.duration - age) / Math.max(0.001, e.fade));
+        // It feeds the disk edge: the cloud dissolves across the last stretch
+        // into the rim, is already behind the disk's own composite by then, and
+        // the shader subtracts the shadow from the far field it has joined - so
+        // nothing of it is ever drawn over the hole itself.
+        const envHole = sink > 0 ? ease((r - sink) / Math.max(1, 0.90 * reach)) : 1;
+        // And gone once it has left the buffer entirely, measured along its own
+        // direction rather than at the corner.
+        const outer = e.boundary + 1.05 * major;
+        const envEdge = 1 - ease((r - outer) / Math.max(1, 0.22 * shortSide));
+        const gain = e.gain * envTime * envHole * envEdge;
+        if (gain <= 0.0008)
+            return off;
+        const stars = [-1e6, -1e6, -1e6, -1e6], stars2 = [-1e6, -1e6, Math.max(0.5, e.starCore * (0.6 + 0.4 * scale)), Math.max(2, 0.20 * major)];
+        for (let i = 0; i < e.stars.length && i < 3; ++i) {
+            const px = x + e.stars[i][0] * major * dx + e.stars[i][1] * minor * -dy;
+            const py = y + e.stars[i][0] * major * dy + e.stars[i][1] * minor * dx;
+            if (i < 2) {
+                stars[i * 2] = px;
+                stars[i * 2 + 1] = py;
+            } else {
+                stars2[0] = px;
+                stars2[1] = py;
+            }
+        }
+        // Exact axis-aligned bound of the rotated ellipse.
+        const bx = Math.sqrt(major * major * dx * dx + minor * minor * dy * dy);
+        const by = Math.sqrt(major * major * dy * dy + minor * minor * dx * dx);
+        return {
+            head: [x, y, major, gain],
+            // The turbulence phase is the EPISODE's age, not the session clock:
+            // bounded, exact, and it starts every passage at the same place in
+            // its own evolution rather than wherever the process happened to be.
+            shape: [dx, dy, aspect, age * 0.012],
+            tone0: e.tone0.concat(e.dust),
+            tone1: e.tone1.concat(e.starGain),
+            stars: stars,
+            stars2: stars2,
+            bounds: [x - bx, y - by, x + bx, y + by]
+        };
+    }
+
+    // A forced passage waits for a running one exactly as a pushed phenomenon
+    // waits for its family's entry, and is dropped if it is still waiting two
+    // minutes later.
+    function pushNebula(delaySec: real, overrides: var): bool {
+        const s = _state;
+        if (!s)
+            return false;
+        const e = captureNebula(s.nebulaId++, s.clock + Math.max(0, Number(delaySec) || 0));
+        if (!e)
+            return false;
+        if (overrides)
+            for (const key of Object.keys(overrides))
+                e[key] = overrides[key];
+        s.nebulaPending = e;
+        return true;
+    }
+
+    function publishNebula(): void {
+        const s = _state;
+        if (s.nebula && s.clock > s.nebula.start + s.nebula.duration)
+            s.nebula = null;
+        if (s.nebula && s.clock < s.nebula.start && !nebulaEnabled())
+            s.nebula = null;
+        if (s.nebulaPending) {
+            if (s.clock > s.nebulaPending.start + 120)
+                s.nebulaPending = null;
+            else if (!s.nebula && s.clock >= s.nebulaPending.start) {
+                s.nebulaPending.start = s.clock;
+                s.nebula = s.nebulaPending;
+                s.nebulaPending = null;
+            }
+        }
+        if (!s.nebula)
+            s.nebula = scheduleNebula();
+        if (s.nebula && s.nebula.geo === null && s.clock >= s.nebula.start)
+            s.nebula.geo = s.geo[0];
+        const n = nebulaState(s.nebula);
+        shader.nebulaHead = Qt.vector4d(n.head[0], n.head[1], n.head[2], n.head[3]);
+        shader.nebulaShape = Qt.vector4d(n.shape[0], n.shape[1], n.shape[2], n.shape[3]);
+        shader.nebulaTone0 = Qt.vector4d(n.tone0[0], n.tone0[1], n.tone0[2], n.tone0[3]);
+        shader.nebulaTone1 = Qt.vector4d(n.tone1[0], n.tone1[1], n.tone1[2], n.tone1[3]);
+        shader.nebulaStars = Qt.vector4d(n.stars[0], n.stars[1], n.stars[2], n.stars[3]);
+        shader.nebulaStars2 = Qt.vector4d(n.stars2[0], n.stars2[1], n.stars2[2], n.stars2[3]);
+        shader.nebulaBounds = Qt.vector4d(n.bounds[0], n.bounds[1], n.bounds[2], n.bounds[3]);
     }
 
     // Capture is a scheduling decision. These points and the rim are immutable
@@ -2012,6 +2395,7 @@ Item {
             if (_hole[name] !== undefined)
                 shader[name] = _hole[name];
         publishEvents();
+        publishNebula();
         publishParticles();
         ++s.publications;
     }
@@ -2350,6 +2734,16 @@ Item {
         property vector4d event5Tail01: Qt.vector4d(0, 0, 0, 0)
         property vector4d event5Shape: Qt.vector4d(0, 0, 0, 0)
         property vector4d event5Bounds: Qt.vector4d(0, 0, 0, 0)
+        // The nebula passage. One cloud, so one block instead of a slot; it
+        // composites into the far field, under the particles and under the
+        // disk, because it is the only event with extinction of its own.
+        property vector4d nebulaHead: Qt.vector4d(0, 0, 0, 0)
+        property vector4d nebulaShape: Qt.vector4d(1, 0, 1, 0)
+        property vector4d nebulaTone0: Qt.vector4d(0, 0, 0, 0)
+        property vector4d nebulaTone1: Qt.vector4d(0, 0, 0, 0)
+        property vector4d nebulaStars: Qt.vector4d(-1000000, -1000000, -1000000, -1000000)
+        property vector4d nebulaStars2: Qt.vector4d(-1000000, -1000000, 1, 1)
+        property vector4d nebulaBounds: Qt.vector4d(0, 0, 0, 0)
         property vector2d activeStamp: Qt.vector2d(0, 0)
         property var bhTransfer: root._hole.bhTransfer
         property var bhNoise: root._hole["bhNoise"] || root._hole.bhTransfer
