@@ -313,19 +313,26 @@ const radiusOf = (d, b) => Math.hypot(d[b] - W / 2, d[b + 1] - H / 2);
 // stars disappear too far from the hole, they are disappearing somewhere close
 // to the rings". A star must reach the black core. Crossing the disk band on the
 // way is an occlusion, composited in starfield.frag, not a swallow.
-const TARGET_DISK = {innerRs: 3, outerRs: 10.5, arcGain: 0.013, arcRadiusRh: 1.6, arcSpacingRh: 0.55, arcCount: 4};
+// The live `target` preset as of b0aa32dc: the ring rework turned the outer
+// arcs OFF and widened the disk to 11 Rs, so the material rim and the shadow
+// are the only two boundaries left that describe anything drawn.
+const TARGET_DISK = {innerRs: 3, outerRs: 11, arcGain: 0, arcRadiusRh: 1.6, arcSpacingRh: 0.55, arcCount: 4};
+const ARCS_ON = {innerRs: 3, outerRs: 10.5, arcGain: 0.013, arcRadiusRh: 1.6, arcSpacingRh: 0.55, arcCount: 4};
 {
     // The geometry mirrors bhOuter()/bhImpact()/bhArcReach() in blackhole.glsl.
     // If that file moves, these pin the drift.
     const r = Physics.visibleRadius(RH, TARGET_DISK);
-    check("the shadow is Rh, and the disk and the arcs are separate radii outside it",
-        Math.abs(r.shadow / RH - 1) < 1e-9 && Math.abs(r.disk / RH - 3.567) < 0.01
-        && Math.abs(r.arcs / RH - 3.900) < 0.01,
+    check("the shadow is Rh and the live target preset's material rim is 3.735 Rh",
+        Math.abs(r.shadow / RH - 1) < 1e-9 && Math.abs(r.disk / RH - 3.735) < 0.01,
         `shadow ${(r.shadow / RH).toFixed(3)}, disk ${(r.disk / RH).toFixed(3)}, arcs ${(r.arcs / RH).toFixed(3)} Rh`);
+    // With the arcs off, arcs collapses onto the material rim and describes
+    // nothing extra; the branch still has to work for a preset that draws them.
+    const withArcs = Physics.visibleRadius(RH, ARCS_ON);
+    check("arcs are reported separately only when the disk actually draws them",
+        Math.abs(r.arcs - r.disk) < 1e-9 && Math.abs(withArcs.arcs / RH - 3.900) < 0.01,
+        `arcs off -> ${(r.arcs / RH).toFixed(3)}, arcs on -> ${(withArcs.arcs / RH).toFixed(3)} Rh`);
     check("the v4 default disk gives a smaller material rim, still outside the shadow",
         Math.abs(RIM / RH - 2.783) < 0.01 && RIM > SHADOW, `${(RIM / RH).toFixed(3)} Rh`);
-    check("a disk that draws no arcs reports no reach past its material edge",
-        Math.abs(Physics.visibleRadius(RH, {innerRs: 3, outerRs: 10.5, arcGain: 0}).arcs / RH - 3.567) < 0.01);
     // b_c = 3*sqrt(3)/2 Rs lands exactly on Rh, which is what makes Rh the
     // shadow radius and not the size of the hole.
     check("the screen radius of the photon sphere is Rh itself",
