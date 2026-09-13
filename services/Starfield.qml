@@ -10,6 +10,22 @@ import "ambient/rules.js" as Rules
 Singleton {
     id: root
 
+    // Testing: `caelestia shell ipc call starfield fire <family> [screen]`
+    // queues one episode of a phenomenon family (starBirth, nova, redGiant,
+    // supernova, pulsar, kilonova, gammaBurst) on one screen, or on every
+    // screen when the name is empty. It goes through pushEvent, so it obeys
+    // the same slot and cap rules as a scheduled one.
+    signal fire(string name, string screen)
+
+    IpcHandler {
+        target: "starfield"
+
+        function fire(name: string, screen: string): string {
+            root.fire(name, screen);
+            return `queued ${name} on ${screen || "every screen"}`;
+        }
+    }
+
     // One validated snapshot: deleted keys cannot retain old adapter values.
     readonly property var document: state.document
     readonly property real density: document.density

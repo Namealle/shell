@@ -61,6 +61,15 @@ Variants {
 
                 sourceComponent: BackgroundComponents.Starfield {
                     running: Services.Ambient.forScreen(win.modelData.name).running
+
+                    Connections {
+                        target: Services.Starfield
+
+                        function onFire(name: string, screen: string): void {
+                            if (!screen || screen === win.modelData.name)
+                                starfield.item.pushEvent(name, 0, null);
+                        }
+                    }
                     screenSeed: Services.Ambient.seedFor(win.modelData.name)
                     ambientBirth: Services.Ambient.forScreen(win.modelData.name).birth
                     ambientLive: Services.Ambient.forScreen(win.modelData.name).live
