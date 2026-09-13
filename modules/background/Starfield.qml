@@ -246,6 +246,10 @@ Item {
             nebulaPending: null,
             nebulaId: 0,
             nebulaLast: null,
+            // v10: which supernova episode currently owns a precursor star and
+            // its debris, so the state machine fires its transitions once.
+            novaEpisode: null,
+            cometEpisode: null,
             historyWrites: 0,
             publications: 0
         };
@@ -1622,6 +1626,14 @@ Item {
     // crosses the whole depth in 60 active seconds, so a 3-D-anchored event
     // would leave the screen before its shell finished, let alone its remnant.
     function supernovaSite(e: var): var {
+        // v10. The supernova IS a star: `e.site` is that particle's live
+        // position, written every frame by supernovaParticles() and latched to
+        // the debris anchor once the star has been consumed. The far-layer
+        // drift below is what a supernova with no particle behind it still
+        // does -- the offscreen sweeps, a pool that could not spare a star, and
+        // particlesEnabled false all land there.
+        if (e.site)
+            return e.site;
         const s = _state;
         const w = width * devicePixelRatio, h = height * devicePixelRatio;
         const R = Math.min(w, h) / 2;
@@ -1680,6 +1692,15 @@ Item {
         let nebulaR = e.shell * 0.92, nebulaAbs = 0, pulsarAbs = 0, spikeAbs = 0, spikeLen = 0;
         let lift = 0, filaments = 0, tone = 0;
         let colour = e.colour, second = e.peakColour;
+        // v10: the shell's clock starts at the DETONATION, not at the end of
+        // the flash. The shock leaves when the star explodes -- that is the
+        // same instant spawnBurst puts the debris on the field, and
+        // supernovaParticles drives the shock front from this same `u` -- so
+        // the rim and its own material cannot be two seconds apart. They were:
+        // measured 26 px of rim against 78 px of debris at t+16 s, and the
+        // shell also stepped 0.27 in one frame when it appeared mid-flight at
+        // the end of the flash instead of growing out of the star.
+        const shockU = clamp((age - e.precursor) / Math.max(0.001, e.shellSpan), 0, 1);
         if (age < e.precursor) {
             // 1. PRECURSOR (10-20 s). The star that is about to die brightens,
             // reddens and pulses FASTER. The pulse phase is the integral of
@@ -1700,6 +1721,19 @@ Item {
             coreAbs = env * 0.69;
             haloAbs = env * 0.31;
             colour = mixColour(e.colour, e.precursorColour, ease(t));
+            // v10. When the precursor is a real particle the PARTICLE is the
+            // star: Appearance.render swells it, brightens it and walks it red
+            // then blue-white, on its own pulse, moving with the regime. The
+            // sprite keeps only the halo it casts, because two cores drawn on
+            // the same pixel is one star too many -- and the sprite's is the
+            // one that "fades in", which is exactly what he objected to
+            // (ledger 2285: "it should first be a star and then explode").
+            if (e.hasStar) {
+                coreAbs = 0;
+                core = e.core * 0.25;
+                haloAbs = env * 0.34;
+                halo = e.core * (1.8 + 3.4 * t);
+            }
         } else if (age < flashEnd) {
             // 2. CORE COLLAPSE (0.5-1.5 s). A hard white-blue flash. The rise is
             // >= 0.8 s and eased, the core/halo split and both sigmas ease with
@@ -1728,20 +1762,8 @@ Item {
             coreAbs = e.gain * fade * 0.34;
             haloAbs = e.gain * fade * 0.66;
             colour = e.peakColour;
-            const u = clamp(d / Math.max(0.001, e.shellSpan), 0, 1);
+            const u = shockU;
             if (u > 0) {
-                // 3. SHELL (30-90 s). Sedov-Taylor: a blast wave into a uniform
-                // medium decelerates as r ~ t^0.4, which is the whole reason it
-                // reads as an explosion slowing down rather than a ring being
-                // scaled up. It broadens and breaks into filaments as it ages,
-                // cools white -> yellow -> orange-red, and carries a hotter,
-                // narrower inner rim that dies sooner than the front does.
-                shellR = e.shell * Math.pow(u, 0.4);
-                shellW = Math.max(2, e.shell * 0.030 * (1 + 3.4 * u));
-                shellAbs = e.shellGain * ease(u / 0.05) * Math.pow(1 - u, 1.1);
-                innerR = shellR * 0.66;
-                innerAbs = e.shellGain * 0.50 * ease(u / 0.05) * Math.pow(1 - u, 2.4);
-                filaments = e.filaments * ease(u / 0.35);
                 colour = mixColour(mixColour(e.peakColour, e.shellWarm, ease(u / 0.40)), e.shellCool, ease((u - 0.35) / 0.65));
                 second = mixColour(e.peakColour, e.remnantTone, ease((u - 0.55) / 0.40));
             }
@@ -1751,7 +1773,7 @@ Item {
             // collapse left behind blinking at the centre. The blink obeys the
             // pulsar family's own floors - period >= 0.8 s, trough >= 0.55 of
             // peak - so it modulates instead of flashing.
-            const remnantAt = flashEnd + 0.6 * e.shellSpan;
+            const remnantAt = e.precursor + 0.6 * e.shellSpan;
             const remnantSpan = 0.4 * e.shellSpan + e.remnant;
             const rv = clamp((age - remnantAt) / Math.max(0.001, remnantSpan), 0, 1);
             nebulaR = e.shell * (0.92 + 0.42 * rv);
@@ -1765,6 +1787,21 @@ Item {
                 colour = mixColour(colour, e.remnantHot, ease((rv - 0.05) / 0.35));
                 second = mixColour(second, e.remnantTone, ease(rv / 0.30));
             }
+        }
+        // 3. SHELL (30-90 s). Sedov-Taylor: a blast wave into a uniform medium
+        // decelerates as r ~ t^0.4, which is the whole reason it reads as an
+        // explosion slowing down rather than a ring being scaled up. It
+        // broadens and breaks into filaments as it ages, cools white -> yellow
+        // -> orange-red, and carries a hotter, narrower inner rim that dies
+        // sooner than the front does. Outside the phase chain because it starts
+        // UNDER the flash and has to grow continuously out of nothing.
+        if (shockU > 0) {
+            shellR = e.shell * Math.pow(shockU, 0.4);
+            shellW = Math.max(2, e.shell * 0.030 * (1 + 3.4 * shockU));
+            shellAbs = e.shellGain * ease(shockU / 0.05) * Math.pow(1 - shockU, 1.1);
+            innerR = shellR * 0.66;
+            innerAbs = e.shellGain * 0.50 * ease(shockU / 0.05) * Math.pow(1 - shockU, 2.4);
+            filaments = Math.max(filaments, e.filaments * ease(shockU / 0.35));
         }
         // The spikes and the sky lift belong to the collapse alone. The lift is
         // ABSOLUTE (main() multiplies the sky it already has by 1 + 2.5*lift and
@@ -1814,6 +1851,206 @@ Item {
                 extra: [spikeAbs / peak, spikeLen, pulsarAbs / peak, e.spin]
             }
         };
+    }
+
+    // ---- v10: the supernova is a star that explodes -------------------------
+    // His question (ledger 2285): "isn't a supernova an exploded star? So it
+    // should first be a star and then explode, not just fade in and then out."
+    // It should, and now it does. This is the whole state machine, and it is
+    // the ONLY part of the episode with side effects: supernovaState() stays a
+    // pure function of (episode, age) so the offscreen sheets can still sweep
+    // it, and everything here writes into the episode (`site`, `hasStar`) which
+    // that function reads back.
+    //
+    //   1. arrival     pick a real, visible, near particle and mark it. The
+    //                  precursor is shortened against the MEASURED field speed:
+    //                  how long a star can be held on the screen is a property
+    //                  of the regime, not a wish, and with the hole on the
+    //                  field crosses the screen in a few seconds.
+    //   2. precursor   `e.site` follows that particle every frame. It swells,
+    //                  brightens, reddens then whitens and pulses faster --
+    //                  all of it in Appearance.render, on the particle itself.
+    //   3. detonation  the star is REMOVED and replaced, on one frame, by:
+    //                  150-400 debris particles (spawnBurst), an expanding
+    //                  shock that shoves the neighbours outward as it reaches
+    //                  them (applyImpulse 'front'), a luminosity lift on the
+    //                  neighbourhood (brightenNear), and the flash and sky lift
+    //                  the sprite already had.
+    //   4. after       an invisible anchor particle carries the site, so the
+    //                  shell rim and the remnant ride exactly the same camera
+    //                  projection their own debris does.
+    function supernovaShellReach(e: var): real {
+        return e.shell;
+    }
+    // The median ejecta speed that puts the debris cloud on the shell's own
+    // radius at the end of the shell's own span. r(t) = (v0*t0/0.4)*((t/t0)^0.4
+    // - 1) is the exact integral of the Sedov decay Physics applies, so solving
+    // it for v0 is what makes "the rim and the debris agree" a fact rather than
+    // a hope. spawnBurst's median is the midpoint of the range times the 0.707
+    // of the sphere-on-a-plane projection, so the range is centred on v0/0.707.
+    function supernovaEjecta(e: var): real {
+        const t0 = 0.02;
+        const span = Math.max(1, e.shellSpan);
+        const grow = Math.pow(span / t0, 0.4) - 1;
+        return grow > 0 ? 0.4 * supernovaShellReach(e) / (t0 * grow) : 0;
+    }
+    function supernovaParticles(): void {
+        const s = _state;
+        const e = s.events[8];
+        // A pool with no live list is a stub (the offscreen sheets, the node
+        // host): the episode then plays exactly as v9's sprite did.
+        if (!_particles || !_particles.live || !particlesEnabled) {
+            s.novaEpisode = null;
+            return;
+        }
+        const P = _particles;
+        if (!e || s.clock < e.start || s.clock > e.start + e.duration) {
+            if (s.novaEpisode) {
+                if (ParticlePhysics.novaStar(P) >= 0)
+                    ParticlePhysics.clearNova(P);
+                s.novaEpisode = null;
+            }
+            return;
+        }
+        const age = s.clock - e.start;
+        const w = P.width, h = P.height, shortSide = Math.min(w, h);
+        if (s.novaEpisode !== e) {
+            s.novaEpisode = e;
+            e.star = -1;
+            e.starGeneration = -1;
+            e.detonated = false;
+            e.shockAt = 0;
+            e.hasStar = false;
+            // A seek lands mid-episode. There is no star to swell any more, so
+            // the episode plays as the v9 sprite did rather than detonating a
+            // burst nobody watched arrive.
+            if (age > 0.5) {
+                e.detonated = age >= e.precursor;
+                return;
+            }
+            const flow = ParticlePhysics.flowSpeed(P);
+            const hold = Math.max(4, Math.min(e.precursor, 0.5 * shortSide / Math.max(1, flow)));
+            const i = ParticlePhysics.pickStar(P, {
+                holdSec: hold,
+                marginPx: 0.12 * shortSide,
+                keepOutPx: 1.25 * holeReach() + 0.5 * supernovaShellReach(e)
+            });
+            if (i < 0)
+                return;
+            e.precursor = hold;
+            e.duration = e.precursor + e.rise + e.hold + e.shellSpan + e.remnant;
+            e.star = i;
+            e.starGeneration = P.generation[i];
+            e.hasStar = true;
+            e.site = [P.x[i], P.y[i]];
+            ParticlePhysics.markNova(P, i, {
+                precursorSec: hold,
+                // x4.2 on a 2.4-4.8 px near core is 10-20 px, which the packed
+                // core byte clamps at 12; `bounds()` reserves three instances
+                // at exactly that ceiling so the atlas never resizes for it.
+                sizeGain: 4.2,
+                lumGain: 5.5,
+                warm: e.precursorColour,
+                hot: e.peakColour
+            });
+        }
+        const star = e.star >= 0 && P.alive[e.star] && P.generation[e.star] === e.starGeneration ? e.star : -1;
+        if (!e.detonated) {
+            if (star >= 0)
+                e.site = [P.x[star], P.y[star]];
+            else if (e.hasStar) {
+                // The star died before its own supernova -- swallowed, or it
+                // ran out of life. The site LATCHES where it was, so nothing
+                // jumps, and the sprite takes its core back.
+                e.hasStar = false;
+                ParticlePhysics.clearNova(P);
+            }
+            if (age < e.precursor)
+                return;
+            e.detonated = true;
+            const at = e.site ? e.site.slice() : supernovaSite(e);
+            if (star >= 0)
+                ParticlePhysics.remove(P, star, "supernova");
+            ParticlePhysics.clearNova(P);
+            e.hasStar = false;
+            // From the detonation on, the site travels on the FAR LAYER's own
+            // streamline -- a supernova is the most distant thing on the sky,
+            // and that is where v9 put it. The debris expands about the site by
+            // its own velocity and the whole cloud is translated by the same
+            // drift each frame (driftGroup), so the rim and the material it is
+            // made of can only move together. `x`/`y`/`camFlow` are what
+            // supernovaSite integrates from, so they are re-anchored here to
+            // where the star actually died.
+            e.x = at[0];
+            e.y = at[1];
+            e.camFlow = s.camFlow;
+            e.site = at.slice();
+            const cfg = eventConfig(8);
+            const index = e.index;
+            const optics = Math.max(1, Math.sqrt(w * h / (1024 * 576)));
+            const count = Math.round(clamp(Number(cfg.debris) || (180 + 190 * random(index, screenSeed + 9311)), 0, 480));
+            const median = supernovaEjecta(e);
+            const mid = median / 0.7071;
+            // The ejecta is not one speed: the slow half stays inside the rim
+            // and the fast half runs ahead of it, which is what a shock into a
+            // real medium looks like and what makes the cloud read as depth
+            // rather than as a ring.
+            ParticlePhysics.spawnBurst(P, at[0], at[1], count, [0.35 * mid, 1.65 * mid], {
+                lifeSec: [clamp(0.45 * e.shellSpan, 14, 60), clamp(1.05 * e.shellSpan, 20, 70)],
+                sizePx: [0.9 * optics, 3.1 * optics],
+                lum: [2.2, 4.4],
+                colour: [1, 0.97, 0.92],
+                endColour: [0.92, 0.20, 0.10],
+                fastShare: 0.08,
+                fastGain: 2.8,
+                streakPx: Math.min(48, P.config.streak.bendMaxPx),
+                exposureSec: 0.055,
+                drag: 0.6,
+                t0: 0.02,
+                group: 1
+            });
+            // The flash lights the neighbourhood it is standing in.
+            ParticlePhysics.brightenNear(P, at[0], at[1], 0.55 * Math.max(w, h), 1.7, Math.max(2.5, e.rise + e.hold + 2));
+            e.shockAt = 0;
+            return;
+        }
+        // The site drifts with the far layer; the cloud goes with it, as one
+        // body, so nothing inside the explosion can slide against anything else
+        // in it. One pass over the transients per frame, only while a supernova
+        // is running.
+        const site = supernovaSite(Object.assign({}, e, {site: null}));
+        if (e.site) {
+            ParticlePhysics.driftGroup(P, 1, site[0] - e.site[0], site[1] - e.site[1]);
+            e.site = site;
+        }
+        // The shock front, one kick per particle as it reaches it: the same
+        // Sedov law and the same clock the rim is drawn with, so what pushes
+        // the neighbours outward is the ring he can see doing it. It reaches
+        // `shockReach` times further than the luminous rim, because the
+        // pressure wave runs ahead of the material that is lit up -- and
+        // because at 600 particles over a 2880x1800 buffer the drawn rim
+        // encloses about ten stars, which is not an explosion the field feels.
+        const d = age - e.precursor;
+        const u = clamp(d / Math.max(0.001, e.shellSpan), 0, 1);
+        if (u < 1 && e.site) {
+            const reach = 2.4 * supernovaShellReach(e);
+            const front = reach * Math.pow(u, 0.4);
+            if (front > e.shockAt) {
+                ParticlePhysics.applyImpulse(P, e.site[0], e.site[1],
+                    cfgShockSpeed(), front,
+                    {kind: "front", fromPx: e.shockAt, maxPx: reach});
+                e.shockAt = front;
+            }
+        }
+    }
+    // One dial, in short sides per second, on how hard a supernova shoves the
+    // stars beside it. Default 0.32 of the short side, which displaces the
+    // closest neighbours by about 60 px and leaves the rim untouched.
+    function cfgShockSpeed(): real {
+        const cfg = eventConfig(8);
+        const share = Number(cfg.shockShortSide);
+        const shortSide = Math.min(width, height) * devicePixelRatio;
+        return (Number.isFinite(share) ? clamp(share, 0, 2) : 0.32) * shortSide;
     }
 
     // Head, colour, tail01, shape and bounds for shader style 3. `exempt` is
@@ -2223,6 +2460,10 @@ Item {
                 s.events[kind] = radial ? scheduleRadial(kind) : schedule(kind);
         }
         drainPending();
+        // v10: the supernova's state machine, once per publication. It is the
+        // only place an event touches the particle field, and the only place
+        // any of these descriptors are mutated.
+        supernovaParticles();
         const shower = s.events[3];
         // A fireball's train outlives the rate hump by design, so the episode
         // stays "active" for the overhang `captureStorm` reserved in `offset`.

@@ -44,7 +44,7 @@ function extract(name) {
     return "host[\"" + name + "\"] = function " + args + " " + qml.slice(open, i + 1) + ";";
 }
 
-const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "warmStart", "scheduleRadial", "mixColour", "supernovaSite", "supernovaState", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena", "stormValue", "stormTrailAngle", "captureStorm", "stormRate", "stormPhase", "stormRadiant", "stormState", "stormOff", "stormFireballState", "farBoost", "nebulaConfig", "nebulaEnabled", "nebulaFlowRate", "nebulaDrift", "nebulaBoundary", "nebulaDriftPerSec", "nebulaReach", "nebulaSink", "captureNebula", "scheduleNebula", "nebulaState", "pushNebula", "publishNebula"];
+const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "warmStart", "scheduleRadial", "mixColour", "supernovaShellReach", "supernovaEjecta", "cfgShockSpeed", "supernovaParticles", "supernovaSite", "supernovaState", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena", "stormValue", "stormTrailAngle", "captureStorm", "stormRate", "stormPhase", "stormRadiant", "stormState", "stormOff", "stormFireballState", "farBoost", "nebulaConfig", "nebulaEnabled", "nebulaFlowRate", "nebulaDrift", "nebulaBoundary", "nebulaDriftPerSec", "nebulaReach", "nebulaSink", "captureNebula", "scheduleNebula", "nebulaState", "pushNebula", "publishNebula"];
 
 // Readonly root constants the scheduler reads by bare name, taken from the
 // same source rather than restated here.
@@ -623,9 +623,11 @@ function tests() {
             "peak " + liftPeak.toFixed(3) + ", zero from 4 s after the flash");
         // Sedov: r ~ t^0.4 within the shell phase, measured off the published
         // radius rather than asserted from the source.
-        const flashEnd = e.precursor + e.rise + e.hold;
+        // v10: the shell's clock starts at the DETONATION, which is where the
+        // debris starts too. supernovaParticles drives the shock front off the
+        // same number.
         const at = (u) => {
-            h2._state.clock = e.start + flashEnd + u * e.shellSpan;
+            h2._state.clock = e.start + e.precursor + u * e.shellSpan;
             return h2.radialState(e).shape[0];
         };
         const r1 = at(0.2), r2 = at(0.8);

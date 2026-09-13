@@ -269,7 +269,7 @@ function render(previous, s, style) {
     var RCAP = s.radiusAtCapture, CTIME = s.captureTime, ENTRY = s.entryTime, STAMP = s.entryStamp;
     var STRETCH = s.stretch, TONSET = s.tideOnset, TGAIN = s.tideGain, TRATE = s.tideRate;
     var EXPOSURE = s.exposure, MAXSTREAK = s.maxStreak, GEN = s.generation, SHIMMER = s.shimmerRate;
-    var KX = s.kickX, KY = s.kickY;
+    var KX = s.kickX, KY = s.kickY, TRANSIENT = s.transient || new Uint8Array(s.capacity);
     if (!KX) { KX = new Float64Array(s.capacity); KY = new Float64Array(s.capacity); }
     var R = s.r, G = s.g, B = s.b, ALTR = s.altR, ALTG = s.altG, ALTB = s.altB;
     var live = s.live, n = s.liveCount, cx = s.centreX, cy = s.centreY;
@@ -420,7 +420,10 @@ function render(previous, s, style) {
         if (ember >= 0) core *= 0.55 + 0.45 * (1 - ember);
         else if (i === novaIndex) core *= novaSize;
         var camScale = 1, camFade = 1;
-        if (camBlend > 0) {
+        // Event material is exempt from the camera regime in Physics.step, so
+        // it is exempt from the depth cues here too: it is drawn at its own
+        // size and its own light, wherever the explosion happened to be.
+        if (camBlend > 0 && !TRANSIENT[i]) {
             var z = DZ[i];
             if (!(z >= 1)) z = camFar;
             else if (z > camFar) z = camFar;

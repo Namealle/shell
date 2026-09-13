@@ -591,6 +591,12 @@ function deliver(s, i, vx, vy, drag) {
 //
 //   profile 'blast'  (default) strongest at the centre, zero at radiusPx
 //   profile 'shell'  a band at radiusPx: the shock front passing through
+//   profile 'front'  the ANNULUS [o.fromPx, radiusPx] only, weighted by how
+//                    far out it is against o.maxPx. Called once a frame with
+//                    the front's own advancing radius this kicks each particle
+//                    exactly once, as the shock reaches it, which is the
+//                    difference between a shell that passes through the field
+//                    and one drawn over the top of it.
 //   profile 'flat'   uniform inside radiusPx
 //
 // `profile` may also be an object {kind, widthPx, skip, drag, includeTransient}.
@@ -612,8 +618,11 @@ function applyImpulse(s, x, y, strength, radiusPx, profile) {
     var relax = s.config.debris.relaxSec;
     var drag = number(o.drag, Math.max(0.2, Math.min(4, Math.log(100) / Math.log(Math.max(1.5, relax / 0.02)))), 0, 4);
     var all = o.includeTransient === true;
-    var inner = kind === 'shell' ? Math.max(0, reach - 2.5 * band) : 0;
+    var from = number(o.fromPx, 0, 0, 8 * Math.max(s.width, s.height));
+    var maxReach = Math.max(reach, number(o.maxPx, reach, 0, 8 * Math.max(s.width, s.height)));
+    var inner = kind === 'shell' ? Math.max(0, reach - 2.5 * band) : (kind === 'front' ? from : 0);
     var outer2 = kind === 'shell' ? (reach + 2.5 * band) * (reach + 2.5 * band) : reach * reach;
+    if (kind === 'front' && !(reach > from)) return out;
     for (var k = 0; k < s.liveCount; ++k) {
         var i = s.live[k];
         if (!s.alive[i] || i === skip) continue;
@@ -624,7 +633,14 @@ function applyImpulse(s, x, y, strength, radiusPx, profile) {
         if (r < 1e-4) { dx = 1; dy = 0; r = 1; }
         var w;
         if (kind === 'flat') w = 1;
-        else if (kind === 'shell') {
+        else if (kind === 'front') {
+            if (r < inner) continue;
+            var f = r / maxReach;
+            if (f >= 1) continue;
+            // A blast of fixed energy drives less and less material the further
+            // out it gets: full shove beside the star, nothing at the rim.
+            w = (1 - f) * (1 - f) * (1 + f);
+        } else if (kind === 'shell') {
             if (r < inner) continue;
             var t = (r - reach) / band;
             w = Math.exp(-t * t);
@@ -680,7 +696,7 @@ function spawnAt(s, x, y, vx, vy, kx, ky, traits) {
     s.luminosity[i] = number(t.lum, 2.6, 0, 8);
     s.archetype[i] = t.archetype === undefined ? 7 : t.archetype;
     s.p0[i] = s.safetyLife[i]; s.p1[i] = number(t.fast, 0, 0, 1);
-    s.p2[i] = 0; s.p3[i] = 0;
+    s.p2[i] = number(t.group, 0, 0, 255); s.p3[i] = 0;
     s.kickX[i] = 0; s.kickY[i] = 0; s.kickAge[i] = 0; s.kickDrag[i] = 0;
     if (kx || ky) {
         s.kickX[i] = kx; s.kickY[i] = ky;
@@ -744,7 +760,13 @@ function spawnBurst(s, x, y, count, speedRange, traits) {
             depthZ: t.depthZ,
             fast: fast ? 1 : 0,
             drag: number(t.drag, 0.6, 0, 4),
-            t0: number(t.t0, 0.02, 0.002, 4)
+            t0: number(t.t0, 0.02, 0.002, 4),
+            // A fast fragment leaves a longer trail than a slow one twice
+            // over: it is faster, and its shutter is open longer.
+            group: t.group,
+            streakPx: t.streakPx,
+            exposureSec: t.exposureSec === undefined ? undefined : t.exposureSec * (fast ? 1.6 : 1),
+            endColour: t.endColour
         };
         if (spawnAt(s, x, y, 0, 0, Math.cos(angle) * speed, Math.sin(angle) * speed, trait) >= 0) ++made;
     }
@@ -763,8 +785,25 @@ function spawnBody(s, x, y, vx, vy, traits) {
         {lifeSec: t.lifeSec, sizePx: t.sizePx, lum: t.lum, colour: t.colour,
          depth: t.depth === undefined ? 1 : t.depth, depthZ: t.depthZ,
          archetype: t.archetype === undefined ? 0 : t.archetype,
-         drag: 0, t0: 0.02, streakPx: t.streakPx, exposureSec: t.exposureSec});
+         group: t.group, drag: 0, t0: 0.02, streakPx: t.streakPx, exposureSec: t.exposureSec});
     return i;
+}
+// Translate one event's material as a body. The debris of a supernova expands
+// about its own site by its own velocity; the site itself travels on the far
+// layer's streamline, which is what a distant thing does in the camera regime,
+// and this is how the two are composed without giving every ember a second
+// integration. `group` is the event's id, stored in p2 because a transient has
+// no archetype parameters to keep there.
+function driftGroup(s, group, dx, dy) {
+    if (!(dx || dy)) return 0;
+    var moved = 0;
+    for (var k = 0; k < s.liveCount; ++k) {
+        var i = s.live[k];
+        if (!s.alive[i] || !s.transient[i] || s.p2[i] !== group) continue;
+        s.x[i] += dx; s.y[i] += dy;
+        ++moved;
+    }
+    return moved;
 }
 // A transient luminosity lift on the stars that are already there: the flash
 // lighting its neighbourhood. Rendered by Appearance.render(), so it costs one
@@ -1033,6 +1072,19 @@ function step(s, dt, options) {
     // its physics off, not for an invisible mass to go on pulling.
     var blend=cameraOn(s), gravity=(1-blend)*(1-blend), DZ=s.depthZ;
     var KX=s.kickX, KY=s.kickY, KA=s.kickAge, KD=s.kickDrag, anyKick=s.kickAlive>0;
+    // EVENT MATERIAL IS EXEMPT FROM THE CAMERA REGIME. The camera crosses the
+    // whole depth range in sixty active seconds at the shipped speed, so
+    // anything anchored in 3-D leaves the screen before its own shell has
+    // finished -- the v9 note on supernovaSite established that for the site
+    // and it is just as true for the material. Worse, a cloud whose particles
+    // each drew their own depth magnifies by a different factor per particle,
+    // which pulls the debris away from the rim that is supposed to be running
+    // through it: measured 650 px of debris against a 279 px rim. Debris
+    // therefore expands by its OWN velocity only and the whole cloud is
+    // translated together (driftGroup) along the far layer's streamline, which
+    // is where a supernova is. It is also why a transient never dies by
+    // reaching the camera's near plane.
+    var TRANSIENT=s.transient;
     var camRate=0, camDir=1, camFar=cameraFar(s), camRoll=0;
     if (blend>0) {
         mu*=gravity; drag*=gravity;
@@ -1080,7 +1132,8 @@ function step(s, dt, options) {
             var f=-mu/(softened*Math.sqrt(softened));
             vx+=half*f*x; vy+=half*f*y;
             var nx=x+h*vx, ny=y+h*vy;
-            if (blend>0) {
+            var cam=blend>0 && !TRANSIENT[i];
+            if (cam) {
                 // The camera advances rate*h in depth and every screen position
                 // scales about the centre by z/z'. Exact, exactly invertible --
                 // which is what makes reverse playback an exact reverse -- and
@@ -1167,7 +1220,7 @@ function step(s, dt, options) {
                 // The camera's own boundary: forward a star passes the near
                 // plane, in reverse it dissolves back through the far one. Both
                 // happen at the far end of the depth fade, so nothing pops.
-                if (blend>0.5 && (camDir>0 ? zn<=CAMERA_NEAR : zn>=camFar)) {
+                if (cam && blend>0.5 && (camDir>0 ? zn<=CAMERA_NEAR : zn>=camFar)) {
                     VX[i]=vx; VY[i]=vy; kill(s,i,'passed'); dead=true; break;
                 }
                 if (AGE[i]>=LIFE[i]) { VX[i]=vx; VY[i]=vy; kill(s,i,'safety'); dead=true; break; }
@@ -1319,5 +1372,6 @@ if (typeof module !== 'undefined' && module.exports) module.exports = {
     applyImpulse: applyImpulse, spawnBurst: spawnBurst, spawnBody: spawnBody,
     brightenNear: brightenNear, pickStar: pickStar, markNova: markNova,
     novaStar: novaStar, clearNova: clearNova, flowSpeed: flowSpeed,
-    remove: remove, debrisRoom: debrisRoom, setCloud: setCloud, cloudWeight: cloudWeight
+    remove: remove, debrisRoom: debrisRoom, setCloud: setCloud, cloudWeight: cloudWeight,
+    driftGroup: driftGroup
 };
