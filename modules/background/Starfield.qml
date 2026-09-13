@@ -2085,6 +2085,12 @@ Item {
         if (s.nebula && s.nebula.geo === null && s.clock >= s.nebula.start)
             s.nebula.geo = s.geo[0];
         const n = nebulaState(s.nebula);
+        // A passage runs for four minutes in every thirty. The rest of the
+        // time the block is already off, and rewriting seven vector4ds at
+        // 30 Hz on three screens to say so is 630 allocations a second for
+        // nothing.
+        if (n.head[3] <= 0 && shader.nebulaHead.w <= 0)
+            return;
         shader.nebulaHead = Qt.vector4d(n.head[0], n.head[1], n.head[2], n.head[3]);
         shader.nebulaShape = Qt.vector4d(n.shape[0], n.shape[1], n.shape[2], n.shape[3]);
         shader.nebulaTone0 = Qt.vector4d(n.tone0[0], n.tone0[1], n.tone0[2], n.tone0[3]);

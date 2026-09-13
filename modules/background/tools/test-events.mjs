@@ -87,7 +87,17 @@ export function makeHost(document, options) {
         centreOffset: { x: 0, y: 0 },
         dustParallax: { x: 0, y: 0 },
         flowZoom: { x: 1, y: 1, z: 1 },
-        mood: Qt.vector4d(0, 0, 0, 0)
+        mood: Qt.vector4d(0, 0, 0, 0),
+        // The nebula block's QML defaults. publishNebula reads the published
+        // gain back to skip a redundant write, so the host has to start where
+        // the ShaderEffect's properties start.
+        nebulaHead: Qt.vector4d(0, 0, 0, 0),
+        nebulaShape: Qt.vector4d(1, 0, 1, 0),
+        nebulaTone0: Qt.vector4d(0, 0, 0, 0),
+        nebulaTone1: Qt.vector4d(0, 0, 0, 0),
+        nebulaStars: Qt.vector4d(-1000000, -1000000, -1000000, -1000000),
+        nebulaStars2: Qt.vector4d(-1000000, -1000000, 1, 1),
+        nebulaBounds: Qt.vector4d(0, 0, 0, 0)
     };
     const host = {
         Qt, Math, Number, Array, Object, JSON, console, ParticlePhysics,
