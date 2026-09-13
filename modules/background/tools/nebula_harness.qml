@@ -16,8 +16,10 @@ import ".."
 Item {
     id: root
 
-    width: 1440
-    height: 2560
+    // The tablet's real device buffer: the crossing time is the flow's
+    // business, so a passage on a small buffer is honestly a short one.
+    width: 2880
+    height: 1800
 
     property int failures: 0
     property int step: 0
@@ -46,7 +48,15 @@ Item {
                     phase: shader().nebulaShape.w,
                     opacity: shader().nebulaTone0.w,
                     starGain: shader().nebulaTone1.w,
-                    bounds: shader().nebulaBounds
+                    // PLAIN NUMBERS. Reading a vector4d property hands back a
+                    // wrapper that aliases the live property, so storing the
+                    // wrapper made every captured frame report whatever the
+                    // block held at the END of the run - zeros, once the
+                    // passage was over.
+                    x0: shader().nebulaBounds.x,
+                    y0: shader().nebulaBounds.y,
+                    x1: shader().nebulaBounds.z,
+                    y1: shader().nebulaBounds.w
                 });
         }
     }
@@ -98,7 +108,8 @@ Item {
                 expect("fire nebula is accepted", field.pushEvent("nebula", 0, null) === true);
                 root.track = [];
                 advanceBy(400);
-                expect("the passage was drawn", track.length > 90, track.length + " published seconds");
+                expect("the passage was drawn", track.length > 90,
+                    track.length + " of " + field._state.nebula.duration.toFixed(0) + " published seconds");
             } else if (step === 1) {
                 if (track.length < 3) { expect("the passage was published", false, track.length + " seconds"); ++step; return; }
                 const first = track[0], peak = track.reduce((a, b) => a.gain > b.gain ? a : b);
@@ -152,10 +163,18 @@ Item {
                 expect("and grows with its depth",
                     last.semi > first.semi * 1.4,
                     first.semi.toFixed(0) + " -> " + last.semi.toFixed(0) + " px");
-                expect("its bounds always contain its own ellipse",
-                    track.every(f => (f.bounds.z - f.bounds.x) >= 2 * f.semi * f.aspect - 1
-                        && (f.bounds.z - f.bounds.x) <= 2 * f.semi + 1),
-                    "checked " + track.length + " frames");
+                let worstBound = 0, worstAt = "";
+                for (const f of track) {
+                    const width = f.x1 - f.x0;
+                    const low = 2 * f.semi * f.aspect, high = 2 * f.semi;
+                    const off = Math.max(low - width, width - high, 0);
+                    if (off > worstBound) {
+                        worstBound = off;
+                        worstAt = "t=" + f.t + " width " + width.toFixed(1) + " for " + low.toFixed(1) + ".." + high.toFixed(1);
+                    }
+                }
+                expect("its bounds always contain its own ellipse", worstBound <= 1,
+                    track.length + " frames, worst " + worstBound.toFixed(2) + " px" + (worstAt ? " (" + worstAt + ")" : ""));
                 // Reverse, mid-passage, and watch the same cloud turn around.
                 field.pushEvent("nebula", 0, null);
                 advanceBy(120);
