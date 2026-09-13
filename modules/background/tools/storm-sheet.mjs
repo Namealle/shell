@@ -120,7 +120,6 @@ function main() {
     const span = e.duration + (e.offset || 0);
     // Across the hump, with five closely-spaced samples inside the plateau so
     // the on-screen count is a measurement and not one lucky frame.
-    const plateau = (e.ramp + 0.5) / e.duration;
     const ages = [0.04, 0.16, 0.28].map(x => x * e.duration)
         .concat([0, 1, 2, 3, 4].map(i => (e.ramp + 1 + i * 3.5)))
         .concat([0.78, 0.90, 0.98].map(x => x * e.duration))
