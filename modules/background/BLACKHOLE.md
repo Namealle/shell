@@ -53,7 +53,7 @@ which the service may send instead if it prefers not to know preset names:
 ```json
 {"blackHole": {"size": 0.11, "tilt": 15, "intensity": 1, "haloUpper": 1,
  "haloLower": 0.9, "diskOuterRs": 10.5, "lensReach": 8, "lensStretch": 1.6,
- "footprintCap": 0.2, "diskCap": 0.6, "photonCap": 0.7,
+ "footprintCap": 0.2, "diskCap": 1, "photonCap": 1,
  "disk": {"exposure": 1.7, "detail": 0.8, "falloff": 2.4,
    "streaks": {"octaves": 3, "radialScale": 1.4, "innerPeriodSec": 12, "warp": 0.25, "grain": 0.08, "smear": 0.85},
    "hue": {"innerTemperature": 7000, "outerTemperature": 1700, "warmth": 0.35, "whiteness": 0.85},
@@ -78,6 +78,18 @@ Measured 2880x1800: peak .6092 (on the thread; .5999 off it), disk mean .0460,
 q99 .5046, footprint 17.49% (3440x1440: 11.72%). The v5 default preset is NOT
 bit-identical to v4: lensReach 8, innerPeriodSec 12 and the ragged rim are
 deliberate look changes, and its footprint rises from 2.42% to 3.44%.
+v6 raises the preset's diskCap .6 -> 1 and photonCap .7 -> 1. At .6 a live
+3440x1440 render sat EXACTLY on the cap (q99.9 .5974 linear) while
+owner-target-wallpaper.png reaches .9727, so the cap was a binding constraint on
+the white level; lifting it gives q99.9 .6635 for +.32 points of footprint
+(7.13% -> 7.45%, against the .2 declared). It is NOT the only constraint:
+`disk.exposure` 2 (from 1.7) measured q99.9 .7331 at 7.55% footprint, and is
+left at 1.7 because that value is the owner's. The rest of the gap to the
+reference is not the ceiling at all — the reference's disk is a thin wide
+ellipse, smooth, and white through its inner band, where this one is thicker,
+filamentary (detail .8, octaves 3, warp .25, grain .08) and warmer. Its q99 is
+.7997 against this render's .1883: that is disk thickness, structure and hue,
+which is a calibration pass, not a cap.
 
 Outer arcs are an ART-DIRECTED approximation. A true order>=2 image lands at
 b_c*(1+3.4823*exp(-2pi)), i.e. .65% outside Rh, INSIDE the photon thread, so
@@ -151,7 +163,7 @@ end/turn psi/32, 258 capture, 259 b/12, 260 sentinels, 261 signed sky projection
 Decode (floor(R*255+.5)*256+floor(G*255+.5))/65535, then range; interpolate decoded words.
 Bake: qsb --glsl "100 es,120,150" --hlsl 50 --msl 12 -o OUTPUT INPUT.
 Disk <=diskCap linear (default .25), photon composite <=photonCap on thread support
-(default .30); the target preset raises them to .60/.70 on the owner's decision.
+(default .30); the target preset raises both to 1 (v5 had .60/.70; see the white-level measurement above).
 Footprint <=3% (4% hard) at defaults; blackHole.footprintCap declares a larger budget
 for a preset (target .11, measured .0982 at 2880x1800, .1066 worst at tilt 35).
 Overrides require a footprint check. No Kerr/DNGR beam tracing, spectral physics,

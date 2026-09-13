@@ -18,8 +18,17 @@ QtObject {
                 lensReach: 8,
                 lensStretch: 1.6,
                 footprintCap: 0.2,
-                diskCap: 0.6,
-                photonCap: 0.7,
+                // White level. Measured against owner-target-wallpaper.png: a
+                // render at diskCap 0.6 sat EXACTLY on its cap (q99.9 0.5974
+                // linear) while the reference reaches 0.9727, so the cap was a
+                // binding constraint. Lifting it takes q99.9 to 0.6635 for
+                // +0.32 points of footprint. It is not the ONLY constraint:
+                // disk.exposure 2 reaches 0.7331, and the rest of the gap is
+                // the disk's thickness, filament structure and hue rather than
+                // its ceiling. The film shoulder follows diskCap (knee .72*cap,
+                // span .24*cap), so a raised cap is actually reached.
+                diskCap: 1,
+                photonCap: 1,
                 disk: {
                     exposure: 1.7,
                     detail: 0.8,
