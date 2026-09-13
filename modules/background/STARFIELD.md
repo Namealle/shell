@@ -6,7 +6,8 @@ One validated snapshot owns configuration; the shell never writes it. Full schem
 {
   "screens": [], "density": 1, "driftSpeed": 3.5, "driftDirection": 165,
   "twinkle": 0.22, "flareFraction": 0.003, "brightness": 1, "backgroundColor": "#000000", "edgeLift": 0, "fps": 30,
-  "motion": {"mode": "radial", "radialSpeed": 6, "centreWander": 0.012, "zoom": 0.003, "reversals": false, "wander": 0.8, "rotation": 0.5},
+  "motion": {"mode": "radial", "radialSpeed": 6, "centreWander": 0.012, "zoom": 0.003, "reversals": false, "wander": 0.8, "rotation": 0.5,
+    "camera": {"enabled": "auto", "direction": "out", "speed": 6, "depth": 16, "dustFlow": 3, "roll": 0.15, "wander": 0.35, "sizeGain": 0.55}},
   "variety": {"enabled": true, "seed": 1}, "variables": {"fraction": 0.006},
   "palette": {"colors": ["#A8E6BD","#FFF0AD","#F2B1B1","#ADCFFF","#F4B9DA","#FFD0A8","#CFB8F4","#A8E4DE"],
     "ids": ["green","yellow","red","blue","pink","orange","purple","teal"], "weights": [1,1,1,1,1,1,1,1],
@@ -130,6 +131,23 @@ never spill into each other — transient heads reserve only against transients,
 `phenomena.tde` is DRAWN, by the particles alone — no slot, no uniform, no shader change; PARTICLES.md owns it. One doomed particle's packed streak is ramped to `streakPx` over `stretchSec` while its core dims and reddens, it splits into `fragments` siblings
 along its own orbit, and its head's trail then eases back over six seconds. `streakPx` is clamped to 120 px by the renderer whatever the service validates up to 160: 120 is what the packed streak byte carries. `diskFlash` rides the hole's brightness channel for 20 s.
 `kilonova` and `gammaBurst` are validated and forwarded but NOT yet drawn (they need the pending-event queue and a beam style).
+v8, THE CAMERA REGIME: `blackHole.enabled:false` used to fade the hole's PICTURE and nothing else. mu was untouched, so stars went on falling into an invisible mass and
+circularising into a ring nobody could see (289 captures in 180 s), and because the swallow radius follows the same envelope they stopped dying at the centre and piled up
+there — 76 instances inside 1 Rh against 0 with the hole on — held until their 180–240 s safety life expired, and the population sagged with them (540 against 598). The
+toggle now switches the whole regime: gravity and the capture drag scale to zero, the substep ladder relaxes to one kick-drift-kick, the tide and the swallow were already
+on the envelope, and a camera takes their place. A star at 3-D depth z and screen radius r projects at r = f·ρ/z, so a camera step scales every screen position about the
+centre by z/z′ and nothing else — one multiply, exact, exactly invertible (which is what makes reverse a true reverse), and perspective for free: dr/dt = r·w/z grows with
+radius, and two stars at the same radius separate by depth, which IS the parallax. Size and light follow 1/z, so a star grows and brightens as the camera closes on it;
+both factors are ≤1, so the atlas ceiling `bounds()` allocated from the configured sizes is still the ceiling. Births are the time-reverse of deaths, which is what keeps
+the field uniform in both directions (measured bin density spread 1.16× out, 1.21× in): forward a star is born at the far plane anywhere on the padded rectangle — a
+uniform 3-D field crossing a plane is uniform on the screen — and leaves at an edge; reverse takes the same far-plane draw as the point where the star will DISSOLVE and
+runs it back out along its own ray to the edge it came in through, at the depth it crossed. Arc-length and flux weightings of the perimeter were both tried and both
+measured a thinner field than forward. The crossfade is the hole's own 30 s enable envelope read backwards — ease(1−x) = 1−ease(x) for this smoothstep, so the two regimes
+always sum to one — and the stored velocity is the blend of both, so nothing is a cut: measured worst one-frame move 21 px across the change. THE FAR FIELD reverses with
+the same toggle: `radialMode` carries the blend in its FRACTION (1 = the inward stream, 2 = fully reversed), so the shader needs no new uniform and no UBO change, and a
+separate signed per-layer accumulator (`_state.geo`) carries the geometry so the descriptor history is never run backwards — it is the same accumulation as `flow`, bit for
+bit, while the camera is off. The far layer keeps its equal-area grid, so its density stays uniform and its speed law stays 1/r rather than the particles' r/z; `dustFlow`
+3 is what keeps that difference under the threshold of notice. With `particlesEnabled:false` the middle and near layers fall back to the same reversed procedural grid.
 Black hole: `modules/background/BLACKHOLE.md` owns every default, the taste caps and the shader's own limiters; missing blackHole is disabled.
 Flat bounds: size 0.01–0.2 short sides, tilt 1–35° (the renderer accepts 80, only 35 is silhouette-verified), intensity/warmth/halos 0–1,
 spin 0–2 (pattern speed), inner 3–6 rs, outer max(inner+0.5, 3.5)–12 rs, beam 0–0.2, photonWidth 0.001–0.02 shadow radii,
@@ -165,6 +183,15 @@ Malformed particle values are REJECTED, not repaired: a bad type, an out-of-rang
 over-budget population is dropped with an index-only warning and the renderer's documented default applies instead.
 V2 bounds: density/brightness 0–3, driftSpeed 0–30, direction ±360°, twinkle/edgeLift 0–1, flare ≤0.025, fps 1–60 rounded; opaque #RRGGBB background, default pure black.
 Motion: radial/drift, radialSpeed 0–26 (device px/s at shortSide/2 on 2160 short side), centreWander ≤0.05 short sides; zoom ≤0.15 (drift default 0.025), wander 0–2, rotation 0–3°.
+`motion.camera` is the OTHER regime, v8: `enabled` "auto" (default) ties it to the black hole — a hole that is off has no mass to fall into, so the field stops being an
+infall and becomes a camera moving forward through a nearly static sky — while `true`/`false` force it on or off whatever the hole is doing. `direction` "out" (default)
+flies the camera toward the centre, so stars stream out past the edges; "in" is the same playback reversed and they come in from the sides. `speed` 0–30 (6 crosses the
+whole depth in 60 active seconds, 0 freezes with the rest of the motion), `depth` 2–64 (the far plane over the near one: how far apart the parallax layers are, and the
+largest magnification a star can undergo), `dustFlow` 0–64 (the far layer's flow multiplier in this regime, replacing `particles.dust.farFlow`; the default 3 against 24
+is what makes the dust the slow distant layer), `roll` 0–2 °/s peak (a bounded sinusoid in RATE, so the ±4° sway can never wind up), `wander` 0–1 (how much of
+`centreWander`'s amplitude moves to a livelier pair of periods — it is a SPLIT, never an addition, so the excursion stays inside the 0.012 short sides the birth padding
+is sized for), `sizeGain` 0–1 (how strongly size and light follow depth). Every camera value clamps or falls back; nothing about them throws. Toggle either regime with
+`~/namealle/scripts/starfield-hole on|off|toggle` and `~/namealle/scripts/starfield-camera on|off|auto|out|in|flip|speed N|depth N|status`.
 Variety seed is integer 0–2147483647, variable fraction 0–0.05; numeric wrong types use defaults, finite values clamp. Screen names exact, nonempty ≤128 characters, deduplicated.
 Matchers/rules: first 32 entries, matcher IDs unique and built-in signals reserved except agentWindow. Required class/optional title regex ≤256 chars; flags i/m, no duplicates.
 Backreferences/lookarounds/repeated groups are rejected; invalid matchers or unknown-signal rules disable only that entry. Compile only on config reload.

@@ -150,6 +150,70 @@ together; `particles.mass` overrides it. The hole's own visibility envelope
 the hole leaves the particles streaming through a soft centre instead of
 vanishing into an invisible point.
 
+## Camera fly-through (v8)
+
+The other regime, and the only one with no hole in it. It is NOT a particle
+config key: `Starfield.qml` writes it onto the pool every frame the way it
+already writes `absorb`, because it is runtime state, not configuration —
+`cameraBlend` 0..1, `cameraDir` +1 out / −1 in, `cameraDepth` (the far plane,
+2..64, near plane fixed at 1), `cameraRate` (depth units per active second),
+`cameraRoll` (rad/s, a bounded sinusoid), `cameraSizeGain`. The JSON that feeds
+them is `motion.camera` and STARFIELD.md owns its bounds.
+
+`blend > 0` scales `mu` and `capture.gamma` by `1 - blend` in `step()` and
+scales the substep ladder by the same number in `advance()`, so at blend 1 there
+is no gravity, no drag, no torque, no circularisation (the `e < 0` test cannot
+pass with mu 0), no swallow (already on `absorb`) and no tide (already on
+`absorb`), and every particle integrates the whole publish interval in ONE
+kick-drift-kick. `phenomena.tde` is scheduled only while the hole is enabled, so
+it stops on its own.
+
+What replaces it is one line in the drift. A star at 3-D depth `z` and screen
+radius `r` projects at `r = f*rho/z`, so advancing the camera by `rate*h` scales
+every screen position about the centre by `z/z'`:
+
+```js
+zn = z - dir*rate*h;  mag = z/zn;
+nx = mix(x + h*vx, mag*x, blend);   // + a small roll in the same 2x2
+vx += blend*((nx - x)/h - vx);      // the stored velocity IS the blend
+```
+
+Exact, exactly invertible — which is what makes reverse playback a true reverse,
+pinned in the tests to 1e-11 px over 200 steps out and 200 back — and
+perspective for free: `dr/dt = r*w/z` grows with radius, and two stars at the
+same radius separate by depth, which is the parallax. `depthZ` is one more
+Float64Array; a particle alive when the camera engages is given one from a hash
+of its slot and generation rather than from the simulation's RNG, so the orbital
+stream stays byte-identical to v7 (pinned: 600 live stars compared bit for bit
+after 90 s with the camera present at blend 0).
+
+**Births are the time-reverse of deaths**, which is the whole reason the field
+stays uniform in both directions (measured bin density spread 1.16x out, 1.21x
+in, against a 3.4x hole in the middle for the first attempt):
+
+- forward, a star is born at the FAR plane, uniform over the padded rectangle
+  around the camera axis — a uniform 3-D field crossing a plane is uniform on
+  the screen — and dies where its magnified radius leaves that rectangle (the
+  ordinary escape test, which mu 0 makes unconditional) or, for the ~1 % born
+  inside `corner/depth`, at the near plane;
+- reverse takes the SAME far-plane draw as the point where the star will
+  dissolve, runs it back out along its own ray to the edge it came in through,
+  and starts it there at the depth it crossed at. Arc-length weighting of the
+  perimeter and flux weighting were both tried; both measured a thinner field
+  than forward, because neither reproduces the joint distribution of position
+  and depth. This construction is the forward one read backwards, so it cannot.
+
+`Appearance.render` scales core and light by `1/z` through `sizeGain` and fades
+both over the last 10 % of the depth range at the far plane and the last 6 % at
+the near one, so an arrival and a departure are never a switch. Both factors are
+at most 1: depth can only dim and shrink a star, so the atlas ceiling `bounds()`
+allocated from `sizes.*Px` is still the ceiling and no camera value can overflow
+it. Pinned in the tests.
+
+The crossfade is the hole's own 30 s enable envelope read backwards, and the
+regimes always sum to one. Measured worst one-frame move across the change:
+21 px, which is what the orbital regime's own fastest star does anyway.
+
 ## Tidal deformation (v6)
 
 Every particle carries one continuous scalar, `stretch` in 0..1, and nothing
@@ -272,6 +336,10 @@ barycentre; wanderer offsets affect rendering only. Decayer lifetime starts at
 swept first viewport entry and never resets. DPR-only edits convert units once;
 ordinary resize retains physical x/v. Pericentre hue styling is omitted.
 
+Simulation fields gained `depthZ` in v8 (the camera's per-star depth, 1 at the
+near plane and `motion.camera.depth` at the far one); it is dimensionless, so
+`rescale()` leaves it alone, and `counters` gained `passed` for a star that
+reaches the end of the camera's depth range.
 Render instances are one flat Float64Array, stride 21: x y vx vy core support
 streak r g b lum flags phase p0 age captured id generation halfMajor halfMinor
 stretch; flags is the archetype in the low three bits, bit 3 flare, bit 4 near
