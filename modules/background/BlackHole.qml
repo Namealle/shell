@@ -7,7 +7,7 @@ QtObject {
     property bool enabled: false
     property real size: 0.075
     property real tilt: 14
-    property real intensity: 0.65
+    property real intensity: 0.85
     property real warmth: 0.5
     property real spin: 1
     property real diskInnerRs: 3
@@ -38,7 +38,7 @@ QtObject {
     readonly property vector4d bhGeometry: Qt.vector4d(_rh, 4 * _rh, Math.sin(_tilt), Math.cos(_tilt))
     readonly property vector4d bhDisk: Qt.vector4d(clamp(diskInnerRs, 3, 7), Math.max(clamp(diskInnerRs, 3, 7) + 0.5, clamp(diskOuterRs, 3.5, 9)), 0, Math.max(1, clamp(photonWidth, 0.001, 0.02) * _rh))
     readonly property vector4d bhLook: Qt.vector4d(clamp(intensity * (0.8 + 0.4 * _ambient.z), 0, 1), clamp(warmth + 0.3 * (_ambient.y - 0.5), 0, 1), clamp(beamStrength, 0, 0.2), clamp(structure * (0.8 + 0.4 * _ambient.w), 0, 0.08))
-    readonly property vector4d bhHalo: Qt.vector4d(clamp(haloUpper, 0, 1), clamp(haloLower, 0, 1), 0.45, ease(_enablePosition))
+    readonly property vector4d bhHalo: Qt.vector4d(clamp(haloUpper, 0, 1), clamp(haloLower, 0, 1), 0.6, ease(_enablePosition))
     readonly property vector4d bhPhase: Qt.vector4d(_phase, modulo(4 * _phase, 2 * Math.PI), _wanderPhase, _ambient.x)
     readonly property vector4d bhCaps: Qt.vector4d(0.25, 0.30, 0.03, 0.08)
     // Qt's supportsAtlasTextures belongs to the CONSUMING ShaderEffect, where
@@ -77,6 +77,14 @@ QtObject {
         _phase = modulo(_phase + dt * clamp(spin, -4, 4) * activity * 2 * Math.PI / 4096, 2 * Math.PI);
         _wanderPhase = modulo(_wanderPhase + dt * 2 * Math.PI / 2048, 2 * Math.PI);
         _enablePosition = clamp(_enablePosition + (enabled ? 1 : -1) * dt / Math.max(0.001, transitionSec), 0, 1);
+    }
+
+    function reset(): void {
+        _lastTime = time;
+        _phase = 0;
+        _wanderPhase = 0;
+        _enablePosition = 0;
+        _ambient = Qt.vector4d(0.5, 0.5, 0.5, 0.5);
     }
 
     onTimeChanged: {

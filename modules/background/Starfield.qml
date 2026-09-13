@@ -50,8 +50,32 @@ Item {
     property var archetypeParams: ({})
     property real calmTarget: 0.5
     property vector4d ambientHole: Qt.vector4d(0.5, 0.5, 0.5, 0.5)
+    property var blackHole: ({})
     property var eventFamilies: ({})
     property int eventHeadCap: 3
+
+    // advance() is the only active-clock driver, including explicit seeks.
+    // Targets are filtered once, inside BlackHole (120 s, .002/s).
+    property BlackHole _hole: BlackHole {
+        enabled: root.blackHole && root.blackHole.enabled !== undefined ? root.blackHole.enabled : false
+        size: root.blackHole && root.blackHole.size !== undefined ? root.blackHole.size : 0.075
+        tilt: root.blackHole && root.blackHole.tilt !== undefined ? root.blackHole.tilt : 14
+        intensity: root.blackHole && root.blackHole.intensity !== undefined ? root.blackHole.intensity : 0.85
+        warmth: root.blackHole && root.blackHole.warmth !== undefined ? root.blackHole.warmth : 0.5
+        spin: root.blackHole && root.blackHole.spin !== undefined ? root.blackHole.spin : 1
+        diskInnerRs: root.blackHole && root.blackHole.diskInnerRs !== undefined ? root.blackHole.diskInnerRs : 3
+        diskOuterRs: root.blackHole && root.blackHole.diskOuterRs !== undefined ? root.blackHole.diskOuterRs : 8
+        beamStrength: root.blackHole && root.blackHole.beamStrength !== undefined ? root.blackHole.beamStrength : 0.15
+        haloUpper: root.blackHole && root.blackHole.haloUpper !== undefined ? root.blackHole.haloUpper : 0.55
+        haloLower: root.blackHole && root.blackHole.haloLower !== undefined ? root.blackHole.haloLower : 0.35
+        photonWidth: root.blackHole && root.blackHole.photonWidth !== undefined ? root.blackHole.photonWidth : 0.006
+        structure: root.blackHole && root.blackHole.structure !== undefined ? root.blackHole.structure : 0.05
+        tiltWander: root.blackHole && root.blackHole.tiltWander !== undefined ? root.blackHole.tiltWander : 0
+        transitionSec: root.blackHole && root.blackHole.transitionSec !== undefined ? root.blackHole.transitionSec : 30
+        resolution: Qt.vector2d(root.width * root.devicePixelRatio, root.height * root.devicePixelRatio)
+        centre: Qt.vector2d(resolution.x / 2 + shader.centreOffset.x, resolution.y / 2 + shader.centreOffset.y)
+        ambientHole: root.ambientHole
+    }
 
     // Mutable JS numbers stay doubles; only publish() converts bounded values
     // to GPU floats. No target has a direct binding to the ShaderEffect.
@@ -91,6 +115,7 @@ Item {
     }
 
     function resetState(): void {
+        _hole.reset();
         const history = [];
         const colors = paletteSnapshot();
         const palette = normalized(paletteWeightsTarget, colors.length, null);
@@ -116,7 +141,17 @@ Item {
             archetypes: archetypes,
             mix: initialMix,
             calm: initialCalm,
-            hole: [0.5, 0.5, 0.5, 0.5],
+            entries: {},
+            entryOverflow: 0,
+            entrySignature: "",
+            entryPixels: new Array(64 * 1280 * 3).fill(0),
+            nearHashes: {},
+            entryGeometry: "",
+            entrySeed: screenSeed,
+            entryDirty: true,
+            lastLegacyFlow: 0,
+            captureHistory: false,
+            paddingEpoch: -1,
             bucket: 0,
             travel: [0, 0],
             events: [null, null, null, null, null],
@@ -163,8 +198,7 @@ Item {
         s.archetypes = archetypeWeights(s.archetypes.map((x, i) => filtered(x, archetypes[i], dt, 60)));
         s.mix = filtered(s.mix, clamp(paletteMixTarget, 0, 0.45), dt, 60);
         s.calm = filtered(s.calm, colors.length ? calmTarget : ambientBirth.w, dt, 60);
-        const hole = [ambientHole.x, ambientHole.y, ambientHole.z, ambientHole.w];
-        s.hole = s.hole.map((x, i) => filtered(x, hole[i], dt, 90));
+        _hole.advance(dt);
         // Flow seconds include the user speed. Changing it never changes an
         // inferred birth phase. Zero speed freezes the ring as well as motion.
         const flowRate = (oldRate + 0.8 + 0.4 * s.live[2]) * 0.5;
@@ -174,6 +208,10 @@ Item {
             const f = clamp((n * 30 - oldFlow) / Math.max(1e-12, s.flow - oldFlow), 0, 1);
             const lerp = (a, b) => a + (b - a) * f;
             s.history[modulo(n, 256)] = sealDescriptor(s.clock + dt * f, before.map((x, i) => lerp(x, s.birth[i])), s.palette.map((x, i) => lerp(oldPalette[i] || 0, x)), oldArchetypes.map((x, i) => lerp(x, s.archetypes[i])), lerp(oldMix, s.mix), lerp(oldCalm, s.calm));
+            if (s.history[modulo(n, 256)].pixels[190] > 0)
+                s.captureHistory = true;
+            else
+                s.lastLegacyFlow = n * 30;
             ++s.historyWrites;
             ++s.atlasRevision;
         }
@@ -207,8 +245,14 @@ Item {
         }
         // Explicit seeks are a verification/configuration operation, not a
         // suspend catch-up path. Runtime frame gaps never enter this loop.
-        while (_state.clock < target - 1e-9)
+        if (_hole.enabled && _state.paddingEpoch < 0)
+            _state.paddingEpoch = _state.flow;
+        while (_state.clock < target - 1e-9) {
             advance(Math.min(30, target - _state.clock));
+            // Rebuild entry history during explicit replay, not at its final
+            // destination. A seek must not rejuvenate an already-dead ID.
+            publishEntries();
+        }
         _state.runtimeAtlas = false;
         publish();
     }
@@ -374,7 +418,9 @@ Item {
             const byte = 60 * 3 + Math.floor(index / 2);
             pixels[byte] += next * Math.pow(16, index % 2);
         }
-        rgb(63, 3, 0, 0);
+        // Only future sealed cohorts adopt capture lifetime. Startup prehistory
+        // keeps v3 lifetime; disabling/re-enabling never upgrades those IDs.
+        rgb(63, 3, stamp > 0 && _hole.enabled ? 255 : 0, 0);
         return {
             packed: packed,
             pixels: pixels
@@ -383,7 +429,9 @@ Item {
 
     function atlasUrl(): string {
         // 24-bit BI_RGB BMP has no colour profile or gamma chunk, no alpha to
-        // premultiply, and a fixed 64x256 decoder size independent of scene DPR.
+        // premultiply. The first 64x256 tile is the unchanged immutable cohort
+        // atlas; a 64x1280 entry ledger follows it. A single 64x1536 upload
+        // publishes both tiles and their uniforms atomically, at any DPR.
         // QImage uploads this opaque image as RGBA8. Bottom-up rows are explicit.
         const bytes = [];
         function le(n, count) {
@@ -391,24 +439,25 @@ Item {
                 bytes.push(Math.floor(n / Math.pow(256, i)) % 256);
         }
         le(0x4d42, 2);
-        le(54 + 64 * 256 * 3, 4);
+        le(54 + 64 * 1536 * 3, 4);
         le(0, 4);
         le(54, 4);
         le(40, 4);
         le(64, 4);
-        le(256, 4);
+        le(1536, 4);
         le(1, 2);
         le(24, 2);
         le(0, 4);
-        le(64 * 256 * 3, 4);
+        le(64 * 1536 * 3, 4);
         le(0, 4);
         le(0, 4);
         le(0, 4);
         le(0, 4);
-        for (let row = 255; row >= 0; --row) {
-            const p = _state.history[row].pixels;
+        for (let row = 1535; row >= 0; --row) {
+            const p = row < 256 ? _state.history[row].pixels : _state.entryPixels;
+            const offset = row < 256 ? 0 : (row - 256) * 64 * 3;
             for (let x = 0; x < 64; ++x)
-                bytes.push(p[x * 3 + 2], p[x * 3 + 1], p[x * 3]);
+                bytes.push(p[offset + x * 3 + 2], p[offset + x * 3 + 1], p[offset + x * 3]);
         }
         return "data:image/bmp;base64," + Qt.btoa(bytes);
     }
@@ -423,6 +472,7 @@ Item {
             colour: [1, 1, 1, 0],
             tail01: [0, 0, 0, 0],
             tail23: [0, 0, 0, 0],
+            tail4: [0, 0],
             shape: [0, 0, 0, 0],
             bounds: [0, 0, 0, 0]
         };
@@ -522,7 +572,7 @@ Item {
         const pair = kind === 0 && random(index, salt + 1) < clamp(companionChance, 0, 1);
         const fireball = kind === 0 && random(index, salt + 9) < clamp(fireballChance, 0, 1);
         const duration = sample("durationSec", [d[1], d[2]], kind < 2 ? 0.5 : 10, kind === 4 ? 3600 : 300, 3);
-        return {
+        const event = {
             kind: kind,
             index: index,
             family: family,
@@ -552,6 +602,8 @@ Item {
             omega: (random(index, salt + 15) < 0.5 ? -1 : 1) * Math.PI / 3,
             radius: shortSide * (0.22 + 0.12 * random(index, salt + 16))
         };
+        classifyCapture(event);
+        return event;
     }
 
     // Active-second scheduling, up to seven days; hourly streams do not get
@@ -621,6 +673,8 @@ Item {
                 child.bend = 0;
                 child.pair = false;
                 child.offset = 0;
+                child.capture = false;
+                classifyCapture(child);
                 child.gain = Math.min(0.60, child.gain);
                 e.children.push(child);
             }
@@ -633,7 +687,11 @@ Item {
     function eventPath(e: var, u: real, branch: int): var {
         const t = clamp(u, 0, 1);
         let x, y;
-        if (e.family === "spiral") {
+        if (e.capture) {
+            const v = 1 - t;
+            x = v * v * v * e.p0[0] + 3 * v * v * t * e.p1[0] + 3 * v * t * t * e.p2[0] + t * t * t * e.p3[0];
+            y = v * v * v * e.p0[1] + 3 * v * v * t * e.p1[1] + 3 * v * t * t * e.p2[1] + t * t * t * e.p3[1];
+        } else if (e.family === "spiral") {
             const a = e.angle + e.omega * t;
             const r = e.radius * (1 - 0.55 * t);
             x = e.centre[0] + r * Math.cos(a);
@@ -671,10 +729,10 @@ Item {
             const heads = Math.max(1, e.headCap);
             gain *= branch === 0 ? 1 - (heads - 1) * split / heads : split / heads;
         }
-        const count = e.tail > 0 ? segments : 0;
+        const count = e.tail > 0 ? (e.capture ? 4 : segments) : 0;
         const span = e.tail / Math.max(1, e.family === "spiral" ? e.radius * Math.abs(e.omega) : e.distance);
         const points = [];
-        for (let i = 0; i < 4; ++i) {
+        for (let i = 0; i < 5; ++i) {
             const p = eventPath(e, Math.max(0, progress - span * Math.min(i, count) / Math.max(1, count)), branch);
             if (companion) {
                 p[0] += e.shortSide * 0.012;
@@ -685,6 +743,10 @@ Item {
         let length = 0;
         for (let i = 0; i < count; ++i)
             length += Math.hypot(points[i + 1][0] - points[i][0], points[i + 1][1] - points[i][1]);
+        if (e.capture) {
+            const r = Math.hypot(points[0][0] - e.hole[0], points[0][1] - e.hole[1]);
+            gain *= ease((r - e.hole[2]) / (0.18 * e.hole[2]));
+        }
         const width = e.pointWidth;
         const extent = width * (e.kind === 1 ? 14 : 6);
         const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
@@ -693,6 +755,7 @@ Item {
             colour: e.colour.concat(e.kind === 1 ? 1 : e.kind >= 2 ? 2 : 0),
             tail01: points[0].concat(points[1]),
             tail23: points[2].concat(points[3]),
+            tail4: points[4],
             shape: [length, e.kind === 1 ? 0.23 : 0.62, count, 0],
             bounds: [Math.min(...xs) - extent, Math.min(...ys) - extent, Math.max(...xs) + extent, Math.max(...ys) + extent]
         };
@@ -734,6 +797,7 @@ Item {
             append(s.events[kind]);
         for (let i = 0; i < 3; ++i) {
             const slot = slots[i] || eventOff();
+            shader["event" + i + "Tail4"] = Qt.vector2d(slot.tail4[0], slot.tail4[1]);
             for (const name of ["head", "colour", "tail01", "tail23", "shape", "bounds"]) {
                 const v = slot[name];
                 shader["event" + i + name[0].toUpperCase() + name.slice(1)] = Qt.vector4d(v[0], v[1], v[2], v[3]);
@@ -741,10 +805,204 @@ Item {
         }
     }
 
+    // Capture is a scheduling decision. These points and the rim are immutable
+    // even if the hole or event rules change before the event finishes.
+    function classifyCapture(e: var): void {
+        e.capture = false;
+        if (!_hole.enabled || (e.kind !== 0 && !(e.kind === 1 && e.family === "bent")))
+            return;
+        const c = [_hole.bhCentre.x, _hole.bhCentre.y], rh = _hole.bhGeometry.x;
+        const vx = e.p2[0] - e.p0[0], vy = e.p2[1] - e.p0[1];
+        const t = clamp(((c[0] - e.p0[0]) * vx + (c[1] - e.p0[1]) * vy) / Math.max(1, vx * vx + vy * vy), 0, 1);
+        const distance = Math.hypot(e.p0[0] + vx * t - c[0], e.p0[1] + vy * t - c[1]);
+        if (e.kind === 1) {
+            e.p1 = [e.p1[0] + 0.35 * (c[0] - e.p1[0]), e.p1[1] + 0.35 * (c[1] - e.p1[1])];
+        }
+        if ((e.kind === 0 && distance >= 3 * rh) || random(e.index, screenSeed + 9173 + e.kind * 701) >= (e.kind === 0 ? 0.30 : 0.20))
+            return;
+        const r = Math.max(1, Math.hypot(e.p0[0] - c[0], e.p0[1] - c[1]));
+        const dx = (e.p0[0] - c[0]) / r, dy = (e.p0[1] - c[1]) / r;
+        e.capture = true;
+        e.pair = false;
+        e.offset = 0;
+        e.hole = c.concat(rh);
+        e.p3 = [c[0] + 0.70 * rh * dx, c[1] + 0.70 * rh * dy];
+        e.p1 = [e.p0[0] + vx * 0.32, e.p0[1] + vy * 0.32];
+        e.p2 = [c[0] + 1.35 * rh * dx - 0.28 * rh * dy, c[1] + 1.35 * rh * dy + 0.28 * rh * dx];
+        e.distance = Math.hypot(e.p1[0] - e.p0[0], e.p1[1] - e.p0[1]) + Math.hypot(e.p2[0] - e.p1[0], e.p2[1] - e.p1[1]) + Math.hypot(e.p3[0] - e.p2[0], e.p3[1] - e.p2[1]);
+    }
+
+    // Bound the shader's float32 identity without assuming a driver sum tree.
+    function identityHash(x: real, y: real, variant: int): var {
+        const f = Math.fround, fract = x => f(x - Math.floor(x));
+        const a = [x, y, x, y].map((v, i) => fract(f(f(v) * f([0.1031, 0.1030, 0.0973, 0.1099][i]))));
+        const b = [a[3], a[2], a[0], a[1]];
+        // A GLSL dot may use fused multiply-add or a different sum tree.
+        // Its four positive products are bounded by +/-2 float32 ULPs of
+        // the correctly rounded exact sum. Keep every such result, so entry
+        // time follows the GPU's unchanged v3 identity on either driver.
+        let exact = 0;
+        for (let i = 0; i < 4; ++i)
+            exact += a[i] * f(b[i] + f(33.33));
+        const rounded = f(exact);
+        const ulp = Math.pow(2, Math.floor(Math.log2(Math.max(rounded, 1e-30))) - 23);
+        const dot = f(rounded + (variant - 2) * ulp);
+        const p = a.map(x => f(x + dot));
+        return [fract(f(f(p[0] + p[1]) * p[2])), fract(f(f(p[0] + p[2]) * p[1])), fract(f(f(p[1] + p[2]) * p[3])), fract(f(f(p[2] + p[3]) * p[0]))];
+    }
+
+    // Entry ledger is deliberately separate from the immutable descriptor atlas.
+    // A decayer starts once its nucleus enters the screen. Its halo is held
+    // dark before that entry, so slow/paused edge approaches cannot spend life
+    // off-screen. The initial fade defines its first visible appearance,
+    // in ACTIVE seconds, including at radialSpeed=0. It never re-arms. Palette,
+    // kind and parameters still come from its original sealed birth cohort.
+    // Near candidate variants are enumerated; dead IDs remain until their row
+    // is consumed. Hash words plus day/seconds identify the exact GPU variant.
+    // The ledger shares the descriptor upload transaction, not its sealed bytes.
+    function publishEntries(): void {
+        const s = _state, records = [];
+        let dirty = s.entryDirty;
+        if (s.entrySeed !== screenSeed) {
+            s.entrySeed = screenSeed;
+            s.entries = {};
+            s.nearHashes = {};
+            dirty = true;
+        }
+        if (motionMode !== "drift" && density > 0) {
+            const f = Math.fround;
+            const w = width * devicePixelRatio, h = height * devicePixelRatio, R = Math.min(w, h) / 2;
+            const optics = Math.max(1, Math.sqrt(w * h / (1024 * 576)));
+            const cellSize = 110 * optics / Math.sqrt(Math.max(0.0001, clamp(density, 0, 3)));
+            const sectors = Math.max(4, Math.round(2 * Math.PI * R / cellSize));
+            const invAngle = sectors / (2 * Math.PI), invU = R * R / (cellSize * cellSize * invAngle);
+            const geometry = [w, h, invAngle].join(":");
+            if (geometry !== s.entryGeometry) {
+                s.entryGeometry = geometry;
+                s.nearHashes = {};
+                dirty = true;
+            }
+            const cells = s.flow * (6 / 1080) * invU, advanceRows = Math.floor(cells), block = Math.floor(advanceRows / 256);
+            const grid = Qt.vector4d(invU, invAngle, modulo(cells, 1), modulo(advanceRows, 256));
+            const seeds = Qt.vector4d(blockSalt(block, 2, 0), blockSalt(block, 2, 1), blockSalt(block + 1, 2, 0), blockSalt(block + 1, 2, 1));
+            const phase = random(screenSeed, 8761) * Math.PI * 2;
+            const offset = [2 * R * clamp(centreWander, 0, 0.012) * wave(s.clock, 2, phase), 2 * R * clamp(centreWander, 0, 0.012) * wave(s.clock, 2, phase + 1.7)];
+            const zoom = f(Math.exp(clamp(zoomBreath, 0, 0.003) * (0.65 * wave(s.clock, 10, 0.4) + 0.35 * wave(s.clock, 14, 2.1))));
+            const maxRadius = Math.hypot(w / 2 + 42 * optics + Math.abs(offset[0]), h / 2 + 42 * optics + Math.abs(offset[1])) / (R * zoom);
+            const maxRow = Math.ceil(0.5 * maxRadius * maxRadius * grid.x + 1);
+            for (const key of Object.keys(s.entries))
+                if (s.entries[key].row < advanceRows) {
+                    delete s.entries[key];
+                    dirty = true;
+                }
+            for (const key of Object.keys(s.nearHashes))
+                if (Number(key.split(":")[0]) < advanceRows)
+                    delete s.nearHashes[key];
+            // The largest supported buffer uses <32 near rows and <40 sectors;
+            // a 64-row/64-sector window has no simultaneous live-ID collisions.
+            s.entryOverflow = Math.max(s.entryOverflow, maxRow - 64, sectors - 64);
+            for (let row = 0; row < maxRow; ++row) {
+                for (let sector = 0; sector < sectors; ++sector) {
+                    const rowId = row + grid.w;
+                    const hx = f(f(sector + (rowId < 256 ? seeds.x : seeds.z)) + f(2 * f(173.17)));
+                    const hy = f(f(modulo(rowId, 256) + (rowId < 256 ? seeds.y : seeds.w)) + f(2 * f(319.43)));
+                    const cellKey = (advanceRows + row) + ":" + sector;
+                    if (!s.nearHashes[cellKey]) {
+                        // Drivers may also reassociate the two input additions.
+                        const hx2 = f(sector + f((rowId < 256 ? seeds.x : seeds.z) + f(2 * f(173.17))));
+                        const hy2 = f(modulo(rowId, 256) + f((rowId < 256 ? seeds.y : seeds.w) + f(2 * f(319.43))));
+                        const variants = [], seen = {};
+                        for (const input of [[hx, hy], [hx2, hy2], [hx, hy2], [hx2, hy]]) {
+                            for (let j = 0; j < 5; ++j) {
+                                const v = identityHash(input[0], input[1], j), key = v[0] + ":" + v[1];
+                                if (!seen[key]) {
+                                    seen[key] = true;
+                                    const jx = f(f(0.18) + f(f(0.64) * v[0]));
+                                    const jy = f(f(0.18) + f(f(0.64) * v[1]));
+                                    const angle = 2.83 + (sector + jx) / grid.y;
+                                    variants.push(v.concat([jx, jy, Math.cos(angle), Math.sin(angle)]));
+                                }
+                            }
+                        }
+                        s.nearHashes[cellKey] = variants;
+                        dirty = true;
+                    }
+                    for (let variant = 0; variant < s.nearHashes[cellKey].length; ++variant) {
+                        const v = s.nearHashes[cellKey][variant];
+                        const jitter = [v[4], v[5]];
+                        const u = (row + jitter[1] - grid.z) / grid.x;
+                        if (u <= 0)
+                            continue;
+                        const r = Math.sqrt(2 * u), dx = v[6], dy = v[7];
+                        const x = w / 2 + offset[0] + R * zoom * r * dx;
+                        const y = h / 2 + offset[1] + R * zoom * r * dy;
+                        const distance = Math.max(-x, x - w, -y, y - h);
+                        const key = cellKey + ":" + variant;
+                        let entry = s.entries[key];
+                        if (!entry) {
+                            entry = {
+                                row: advanceRows + row,
+                                sector: sector,
+                                variant: variant,
+                                hash: [v[0], v[1]],
+                                stamp: -1,
+                                distance: distance,
+                                clock: s.clock
+                            };
+                            s.entries[key] = entry;
+                            dirty = true;
+                        }
+                        if (entry.stamp < 0 && distance <= 0) {
+                            const t = entry.distance > 0 ? entry.distance / Math.max(1e-9, entry.distance - distance) : 1;
+                            entry.stamp = entry.clock + (s.clock - entry.clock) * t;
+                            dirty = true;
+                        }
+                        entry.distance = distance;
+                        entry.clock = s.clock;
+                    }
+                }
+            }
+        }
+        if (dirty) {
+            for (const key of Object.keys(s.entries)) {
+                const e = s.entries[key];
+                records.push([e.sector, modulo(e.row, 64), e.variant, e.hash[0], e.hash[1], e.stamp]);
+            }
+            records.sort((a, b) => a[1] - b[1] || a[0] - b[0] || a[2] - b[2]);
+            s.entrySignature = JSON.stringify(records);
+            s.entryDirty = false;
+            s.entryPixels.fill(0);
+            let previous = -1, count = 0, header = 0;
+            for (let index = 0; index < records.length; ++index) {
+                const r = records[index], cell = r[1] * 64 + r[0];
+                if (cell !== previous) {
+                    header = cell * 3;
+                    s.entryPixels[header] = index % 256;
+                    s.entryPixels[header + 1] = Math.floor(index / 256);
+                    previous = cell;
+                    count = 0;
+                }
+                s.entryPixels[header + 2] = ++count;
+                const values = [Math.floor(r[3] * 16777216), Math.floor(r[4] * 16777216), r[5] < 0 ? 0 : Math.floor(r[5] / 86400) + 32768, r[5] < 0 ? 0 : Math.floor(modulo(r[5], 86400) * 128)];
+                for (let j = 0; j < 4; ++j) {
+                    const i = (4096 + index * 4 + j) * 3, n = values[j];
+                    s.entryPixels[i] = n % 256;
+                    s.entryPixels[i + 1] = Math.floor(n / 256) % 256;
+                    s.entryPixels[i + 2] = Math.floor(n / 65536) % 256;
+                }
+            }
+            s.entryOverflow = Math.max(s.entryOverflow, records.length - 19456);
+            ++s.atlasRevision;
+        }
+    }
+
     function publish(): void {
         const s = _state;
         if (!s || width <= 0 || height <= 0)
             return;
+        if (_hole.enabled && s.paddingEpoch < 0)
+            s.paddingEpoch = s.flow;
+        publishEntries();
         // Data URLs can still complete asynchronously despite asynchronous:false.
         // Decode into the inactive image. Until it is Ready retain BOTH the old
         // texture and its uniforms; an unsealed row can never reach a live frame.
@@ -785,7 +1043,7 @@ Item {
         shader.centreOffset = Qt.vector2d(shortSide * clamp(centreWander, 0, 0.012) * wave(s.clock, 2, tauPhase), shortSide * clamp(centreWander, 0, 0.012) * wave(s.clock, 2, tauPhase + 1.7));
         const breath = clamp(zoomBreath, 0, 0.003) * (0.65 * wave(s.clock, 10, 0.4) + 0.35 * wave(s.clock, 14, 2.1));
         shader.flowZoom = Qt.vector3d(Math.exp(0.10 * breath), Math.exp(0.42 * breath), Math.exp(breath));
-        const padding = [];
+        const padding = [], capturePadding = [];
         for (let layer = 0; layer < 3; ++layer) {
             const depth = [0.10, 0.42, 1][layer];
             const cellSize = [12, 30, 110][layer] * scale;
@@ -797,11 +1055,16 @@ Item {
             const block = Math.floor(row / 256);
             shader["flowGrid" + layer] = Qt.vector4d(invU, invAngle, modulo(advanceCells, 1), modulo(row, 256));
             shader["flowSeeds" + layer] = Qt.vector4d(blockSalt(block, layer, 0), blockSalt(block, layer, 1), blockSalt(block + 1, layer, 0), blockSalt(block + 1, layer, 1));
-            // Near births need a further 32 flow-second annular guard so
-            // their next boundary timestamp is sealed before first support entry.
+            // Retain the v3 descriptor plane, including its 32-flow-second
+            // near guard. Entry-based decayers no longer use that guard as age.
             const opticalPadding = [3.5, 6, 42 * displayScale][layer] + 2 + shortSide * 0.012 * depth + Math.hypot(w, h) * 0.003 * depth;
             const extra = layer === 2 ? radius * (Math.sqrt(Math.pow(1 + opticalPadding / radius, 2) + 2 * (6 / 1080) * 32) - (1 + opticalPadding / radius)) : 0;
             padding.push(opticalPadding + extra);
+            // Full shared-centre excursion plus the largest allowed material
+            // displacement at a screen edge (Rh <= .4 R). Only post-epoch
+            // births adopt this plane; existing IDs never change their cohort.
+            const materialGuard = layer > 0 ? radius * (1 - Math.sqrt(1 - 0.4 * 0.4)) : 0;
+            capturePadding.push(Math.max(opticalPadding + extra, opticalPadding + shortSide * 0.012 * (1 - depth) + materialGuard));
             const angle = 0.37 + layer * 1.23;
             // Centre the sampled rectangle in the 256-cell salt window. This
             // guarantees two blocks per axis even on the dense portrait grid.
@@ -822,11 +1085,19 @@ Item {
             }
             shader["driftSeeds" + layer] = Qt.matrix4x4(salts[0][0], salts[1][0], salts[2][0], salts[3][0], salts[0][1], salts[1][1], salts[2][1], salts[3][1], 0, 0, 0, 0, 0, 0, 0, 0);
         }
-        shader.birthPadding = Qt.vector3d(padding[0], padding[1], padding[2]);
+        shader.legacyPadding = Qt.vector3d(padding[0], padding[1], padding[2]);
+        shader.birthPadding = Qt.vector3d(capturePadding[0], capturePadding[1], capturePadding[2]);
+        shader.paddingAge = s.paddingEpoch < 0 ? -1 : Math.min(8000, s.flow - s.paddingEpoch);
+        shader.captureHistory = s.captureHistory ? 1 : 0;
+        // Cohort dither can select a policy up to two seals back. After 660
+        // flow seconds every older 480..600 s material ID is permanently dead.
+        shader.legacyMaterialAlive = s.flow <= s.lastLegacyFlow + 660 ? 1 : 0;
         s.mood = moodState();
         shader.mood = Qt.vector4d(s.mood[0], s.mood[1], 0, 0);
         const moodTwinkle = [0.18, 0.16, 0.24, 0.22][s.mood[0]];
         shader.twinkle *= 1 + (moodTwinkle / 0.22 - 1) * s.mood[1];
+        for (const name of ["bhCentre", "bhGeometry", "bhDisk", "bhLook", "bhHalo", "bhPhase", "bhCaps"])
+            shader[name] = _hole[name];
         publishEvents();
         ++s.publications;
     }
@@ -878,27 +1149,42 @@ Item {
         property vector4d event0Head: Qt.vector4d(0, 0, 0, 0)
         property vector4d event0Colour: Qt.vector4d(0, 0, 0, 0)
         property vector4d event0Tail01: Qt.vector4d(0, 0, 0, 0)
+        property vector2d event0Tail4: Qt.vector2d(0, 0)
         property vector4d event0Tail23: Qt.vector4d(0, 0, 0, 0)
         property vector4d event0Shape: Qt.vector4d(0, 0, 0, 0)
         property vector4d event0Bounds: Qt.vector4d(0, 0, 0, 0)
         property vector4d event1Head: Qt.vector4d(0, 0, 0, 0)
         property vector4d event1Colour: Qt.vector4d(0, 0, 0, 0)
         property vector4d event1Tail01: Qt.vector4d(0, 0, 0, 0)
+        property vector2d event1Tail4: Qt.vector2d(0, 0)
         property vector4d event1Tail23: Qt.vector4d(0, 0, 0, 0)
         property vector4d event1Shape: Qt.vector4d(0, 0, 0, 0)
         property vector4d event1Bounds: Qt.vector4d(0, 0, 0, 0)
         property vector4d event2Head: Qt.vector4d(0, 0, 0, 0)
         property vector4d event2Colour: Qt.vector4d(0, 0, 0, 0)
         property vector4d event2Tail01: Qt.vector4d(0, 0, 0, 0)
+        property vector2d event2Tail4: Qt.vector2d(0, 0)
         property vector4d event2Tail23: Qt.vector4d(0, 0, 0, 0)
         property vector4d event2Shape: Qt.vector4d(0, 0, 0, 0)
         property vector4d event2Bounds: Qt.vector4d(0, 0, 0, 0)
         property vector2d activeStamp: Qt.vector2d(0, 0)
+        property var bhTransfer: root._hole.bhTransfer
+        property real captureHistory: 0
+        property real legacyMaterialAlive: 1
+        property vector2d bhCentre: Qt.vector2d(0, 0)
+        property vector4d bhGeometry: Qt.vector4d(0, 0, 0, 0)
+        property vector4d bhDisk: Qt.vector4d(0, 0, 0, 0)
+        property vector4d bhLook: Qt.vector4d(0, 0, 0, 0)
+        property vector4d bhHalo: Qt.vector4d(0, 0, 0, 0)
+        property vector4d bhPhase: Qt.vector4d(0, 0, 0, 0)
+        property vector4d bhCaps: Qt.vector4d(0, 0, 0, 0)
         property var descriptorAtlas: descriptorImage
         property real radialMode: 1
         property vector2d centreOffset: Qt.vector2d(0, 0)
         property vector3d flowZoom: Qt.vector3d(1, 1, 1)
         property vector3d birthPadding: Qt.vector3d(0, 0, 0)
+        property vector3d legacyPadding: Qt.vector3d(0, 0, 0)
+        property real paddingAge: -1
         property vector4d flowGrid0: Qt.vector4d(1, 1, 0, 0)
         property vector4d flowGrid1: Qt.vector4d(1, 1, 0, 0)
         property vector4d flowGrid2: Qt.vector4d(1, 1, 0, 0)
@@ -923,8 +1209,8 @@ Item {
         objectName: "starfieldDescriptorAtlas"
         visible: false
         width: 64
-        height: 256
-        sourceSize: Qt.size(64, 256)
+        height: 1536
+        sourceSize: Qt.size(64, 1536)
         smooth: false
         mipmap: false
         cache: false
@@ -937,8 +1223,8 @@ Item {
         objectName: "starfieldDescriptorAtlasBack"
         visible: false
         width: 64
-        height: 256
-        sourceSize: Qt.size(64, 256)
+        height: 1536
+        sourceSize: Qt.size(64, 1536)
         smooth: false
         mipmap: false
         cache: false

@@ -1,4 +1,5 @@
 #version 440
+#extension GL_GOOGLE_include_directive : require
 
 layout(location = 0) in vec2 qt_TexCoord0;
 layout(location = 0) out vec4 fragColor;
@@ -19,18 +20,21 @@ layout(std140, binding = 0) uniform buf {
     vec4 event0Colour;
     vec4 event0Tail01;
     vec4 event0Tail23;
+    vec2 event0Tail4;
     vec4 event0Shape;
     vec4 event0Bounds;
     vec4 event1Head;
     vec4 event1Colour;
     vec4 event1Tail01;
     vec4 event1Tail23;
+    vec2 event1Tail4;
     vec4 event1Shape;
     vec4 event1Bounds;
     vec4 event2Head;
     vec4 event2Colour;
     vec4 event2Tail01;
     vec4 event2Tail23;
+    vec2 event2Tail4;
     vec4 event2Shape;
     vec4 event2Bounds;
     vec2 activeStamp;
@@ -38,6 +42,8 @@ layout(std140, binding = 0) uniform buf {
     vec2 centreOffset;
     vec3 flowZoom;
     vec3 birthPadding;
+    vec3 legacyPadding;
+    float paddingAge;
     vec4 flowGrid0;
     vec4 flowGrid1;
     vec4 flowGrid2;
@@ -53,7 +59,14 @@ layout(std140, binding = 0) uniform buf {
     float flowPhaseLocal;
     float variableFraction;
     vec4 mood;
+    float captureHistory;
+    float legacyMaterialAlive;
+#define BH_UNIFORMS
+#include "blackhole.glsl"
+#undef BH_UNIFORMS
 } ubuf;
+
+#include "blackhole.glsl"
 
 // Procedural identity, without a finite star catalogue. One cell per layer.
 vec4 hash4(vec2 p) {
@@ -74,12 +87,12 @@ vec4 columnAt(mat4 m, float column) {
     if (column < 2.5) return m[2];
     return m[3];
 }
-layout(binding = 1) uniform sampler2D descriptorAtlas;
+layout(binding = 2) uniform sampler2D descriptorAtlas;
 
 // All channels are opaque, nearest-sampled RGB bytes. Palette RGB and all
 // metadata for a cohort share one row and one scene-graph publication.
 vec3 descriptor(float row, float column) {
-    return texture(descriptorAtlas, vec2((column + 0.5) / 64.0, (mod(row, 256.0) + 0.5) / 256.0)).rgb;
+    return texture(descriptorAtlas, vec2((column + 0.5) / 64.0, (mod(row, 256.0) + 0.5) / 1536.0)).rgb;
 }
 vec3 descriptorBytes(float row, float column) {
     return floor(descriptor(row, column) * 255.0 + 0.5);
@@ -130,13 +143,38 @@ float activeAge(float row) {
     return (ubuf.activeStamp.x - days) * 86400.0 + ubuf.activeStamp.y - seconds;
 }
 
+// Separate tile, one atomic texture publication. The immutable palette tile
+// retains its original contiguous 64x256 layout and texture-cache locality.
+float entryWord(float offset) {
+    vec2 texel = vec2(mod(offset,64.0),256.0+floor(offset/64.0));
+    vec3 bytes = floor(texture(descriptorAtlas,(texel+0.5)/vec2(64.0,1536.0)).rgb*255.0+0.5);
+    return dot(bytes,vec3(1.0,256.0,65536.0));
+}
+float entryAge(float row, float sector, vec2 jitterHash) {
+    vec2 headerPixel=vec2(sector,256.0+mod(row,64.0));
+    vec3 header=floor(texture(descriptorAtlas,(headerPixel+0.5)/vec2(64.0,1536.0)).rgb*255.0+0.5);
+    float base=4096.0+dot(header.rg,vec2(1.0,256.0))*4.0;
+    for (int i=0;i<20;++i) {
+        if (float(i)>=header.b) break;
+        float offset = base+float(i)*4.0;
+        vec2 capturedHash = vec2(entryWord(offset),entryWord(offset+1.0))/16777216.0;
+        if (all(lessThan(abs(capturedHash-jitterHash),vec2(0.00000006)))) {
+            float day = entryWord(offset+2.0);
+            if (day < 0.5) return 1e7;
+            float seconds = entryWord(offset+3.0)/128.0;
+            return (ubuf.activeStamp.x-(day-32768.0))*86400.0+ubuf.activeStamp.y-seconds;
+        }
+    }
+    return 1e8;
+}
+
 // INTEGRATION: all far-layer pixel -> (u, theta) mapping lives here. Pass
 // bhWarpBackground(pixel, weight) here for FAR; bhWarpMaterial for other layers.
-vec4 radialCoordinates(vec2 pixel, vec2 centre, float radius, float zoom, float baseAngle) {
+vec4 radialCoordinates(vec2 pixel, vec2 centre, float radius, float zoom, float baseAngle, vec2 screenPixel) {
     vec2 relative = pixel - centre;
     vec2 q = relative / (radius * zoom);
     float u = 0.5 * dot(q, q);
-    vec2 base = pixel - ubuf.resolution * 0.5;
+    vec2 base = screenPixel - ubuf.resolution * 0.5;
     float t = (base.x * relative.y - base.y * relative.x) / max(dot(base, relative), 0.0001);
     float t2 = t * t;
     float angle = baseAngle + t * (1.0 + t2 * (-1.0 / 3.0 + t2 * (1.0 / 5.0 + t2 * (-1.0 / 7.0 + t2 / 9.0))));
@@ -144,8 +182,9 @@ vec4 radialCoordinates(vec2 pixel, vec2 centre, float radius, float zoom, float 
     return vec4(q, u, angle);
 }
 
-// BEGIN CENTRAL FADE / LIFETIME — replace the radial rim factors here with
-// bhWarpMaterial's rimLife during integration. Do not add a second centre fade.
+// BEGIN CENTRAL FADE / LIFETIME — legacy cohorts retain their v3 policy.
+// New capture cohorts replace it with material rim life and the history guard.
+// Do not apply a second centre fade outside this block.
 float centralMinimumU(float radius, float zoom, float padding, float requestedSupport, float layer) {
     float middle = step(0.5, layer), nearLayer = step(1.5, layer);
     float inner = mix(mix(0.008, 0.025, middle), 0.070, nearLayer);
@@ -163,9 +202,36 @@ float centralLifetime(float r, float age, float layer, vec4 h) {
     return smoothstep(inner, outer, r * 0.5) * smoothstep(0.0, 4.0, age)
         * (1.0 - smoothstep(lifetime - 90.0, lifetime, age));
 }
+float captureLifetime(float sourceR, float age, float pixelRim) {
+    float rh = ubuf.bhGeometry.x;
+    float candidateRim = smoothstep(rh, 1.08*rh, sqrt(sourceR*sourceR+rh*rh));
+    return mix(1.0,candidateRim,ubuf.bhHalo.w) * pixelRim * smoothstep(0.0,4.0,age)
+        * (1.0-smoothstep(7440.0,7560.0,age));
+}
 // END CENTRAL FADE / LIFETIME
 
-vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
+// Material mapping has its own radial derivative; bhJacobian is FAR-only.
+mat2 materialJacobian(vec2 pixel) {
+    vec2 p = pixel-ubuf.bhCentre;
+    float r = length(p), rh = ubuf.bhGeometry.x;
+    if (r <= rh || r >= ubuf.bhGeometry.y) return mat2(1.0);
+    float t = clamp((r/rh-3.2)/0.8,0.0,1.0);
+    float w = ubuf.bhHalo.w*bhTaper(r);
+    float dw = -ubuf.bhHalo.w*30.0*t*t*(t-1.0)*(t-1.0)/(0.8*rh);
+    float source = sqrt(max(1e-8,r*r-rh*rh));
+    float tangential = mix(r,source,w)/r;
+    float radial = 1.0-w+w*r/source+dw*(source-r);
+    vec2 e = p/r;
+    return mat2(tangential)+(radial-tangential)*mat2(e.x*e.x,e.x*e.y,e.x*e.y,e.y*e.y);
+}
+float filteredCore(vec2 p, float sigma, vec3 footprint) {
+    float a = sigma*sigma+footprint.x, b = footprint.y, d = sigma*sigma+footprint.z;
+    float determinant = max(1e-8,a*d-b*b);
+    float mahalanobis = (d*p.x*p.x-2.0*b*p.x*p.y+a*p.y*p.y)/determinant;
+    return exp2(-0.7213475*mahalanobis)*sigma*sigma/sqrt(determinant);
+}
+
+vec3 stars(vec2 pixel, float baseAngle, float scale, float layer, float capturePass, vec2 screenPixel, float pixelRim) {
     float nearLayer = step(1.5, layer);
     float middleLayer = step(0.5, layer);
     float displayScale = max(1.0, sqrt(ubuf.resolution.x * ubuf.resolution.y / (1024.0 * 576.0)));
@@ -179,20 +245,22 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
     float cellMargin;
     float life = 1.0;
     float age = 0.0;
+    float candidateR = 0.0;
+    vec2 entryCell = vec2(0.0);
     if (ubuf.radialMode > 0.5) {
         vec4 grid = layer < 0.5 ? ubuf.flowGrid0 : layer < 1.5 ? ubuf.flowGrid1 : ubuf.flowGrid2;
         vec4 seeds = layer < 0.5 ? ubuf.flowSeeds0 : layer < 1.5 ? ubuf.flowSeeds1 : ubuf.flowSeeds2;
         float zoom = layer < 0.5 ? ubuf.flowZoom.x : layer < 1.5 ? ubuf.flowZoom.y : ubuf.flowZoom.z;
         float shortSide = min(ubuf.resolution.x, ubuf.resolution.y);
         float radius = shortSide * 0.5;
-        vec2 centre = ubuf.resolution * 0.5 + ubuf.centreOffset * depth;
-        float padding = layer < 0.5 ? ubuf.birthPadding.x : layer < 1.5 ? ubuf.birthPadding.y : ubuf.birthPadding.z;
+        vec2 centre = ubuf.resolution * 0.5 + ubuf.centreOffset * (capturePass < -1.5 ? depth : mix(depth, 1.0, ubuf.bhHalo.w));
+        float padding = layer < 0.5 ? ubuf.legacyPadding.x : layer < 1.5 ? ubuf.legacyPadding.y : ubuf.legacyPadding.z;
         float minimumU = centralMinimumU(radius, zoom, padding, requestedSupport, layer);
-        vec4 coordinates = radialCoordinates(pixel, centre, radius, zoom, baseAngle);
+        vec4 coordinates = radialCoordinates(pixel, centre, radius, zoom, baseAngle, screenPixel);
         vec2 q = coordinates.xy;
         float u = coordinates.z;
         float angle = coordinates.w;
-        if (u < minimumU || u < 1e-12) return vec3(0.0);
+        if ((u < minimumU && (capturePass < -1.5 || layer < 0.5 || capturePass == 0.0 || ubuf.captureHistory < 0.5)) || u < 1e-12) return vec3(0.0);
         // Integer sector count makes both sides of atan's branch cut identical.
         float sectors = floor(grid.y * 6.28318530718 + 0.5);
         float angleOffset = 0.37 + layer * 1.23;
@@ -201,6 +269,7 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
         float radialCell = u * grid.x + grid.z;
         float row = floor(radialCell);
         float rowId = row + grid.w;
+        entryCell = vec2(mod(rowId,256.0),sector);
         vec2 salt = rowId < 256.0 ? seeds.xy : seeds.zw;
         h = hash4(vec2(sector, mod(rowId, 256.0)) + salt + layer * vec2(173.17, 319.43));
         if (h.w > mix(0.90, 0.68, nearLayer)) return vec3(0.0);
@@ -213,6 +282,7 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
         float starU = (row + jitter.y - grid.z) / grid.x;
         if (starU <= 0.0) return vec3(0.0);
         float r = sqrt(2.0 * starU);
+        candidateR = r * radius * zoom;
         float pixelR = sqrt(2.0 * u);
         if (abs(pixelR - r) * radius * zoom > requestedSupport) return vec3(0.0);
         float deltaAngle = (angularCell - sector - jitter.x) / grid.y;
@@ -235,14 +305,24 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
         cellMargin = max(0.0, radius * zoom * min(angularMargin, radialMargin) - mix(0.125, 1.0, middleLayer));
         support = min(requestedSupport, mix(0.98, 0.9, middleLayer) * cellMargin);
         if (support <= 0.0 || dot(p,p) >= support * support) return vec3(0.0);
-        // Entry is measured against an immutable expanded rectangle, including
+        // Cohort birth is measured against an immutable expanded rectangle, including
         // maximum camera excursion and optical support. Thus the palette was
         // sealed before even an off-screen star's halo could become visible.
         vec2 boundary = (ubuf.resolution * 0.5 + padding) / max(abs(direction), vec2(0.00001));
         float edgeR = min(boundary.x, boundary.y) / radius;
         age = (0.5 * edgeR * edgeR - starU) / ((6.0 / 1080.0) * depth);
+        if (capturePass > -1.5 && ubuf.paddingAge >= 0.0) {
+            float newPadding = layer < 0.5 ? ubuf.birthPadding.x : layer < 1.5 ? ubuf.birthPadding.y : ubuf.birthPadding.z;
+            vec2 newBoundary = (ubuf.resolution*0.5+newPadding)/max(abs(direction),vec2(0.00001));
+            float newEdge = min(newBoundary.x,newBoundary.y)/radius;
+            float newAge = (0.5*newEdge*newEdge-starU)/((6.0/1080.0)*depth);
+            // Both ages advance by exactly one per flow second. This choice
+            // is a birth-time predicate, never a live palette reassignment.
+            if (newAge <= ubuf.paddingAge) age = newAge;
+        }
         life = centralLifetime(r, age, layer, h);
-        if (life <= 0.0) return vec3(0.0);
+        // Defer material rejection until its immutable cohort policy is known.
+        if ((capturePass < -1.5 || layer < 0.5 || capturePass == 0.0 || ubuf.captureHistory < 0.5) && life <= 0.0) return vec3(0.0);
     } else {
         float angle = 0.37 + layer * 1.23;
         float c = cos(angle), s = sin(angle);
@@ -283,6 +363,10 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
         float n = floor(birthBucket);
         cohort = n - 1.0 + (draws.x < fract(birthBucket) ? 1.0 : 0.0);
         if (middleLayer > 0.5) {
+            float captured = capturePass < -1.5 ? 0.0 : step(0.5, descriptor(cohort,63.0).g);
+            if (capturePass >= 0.0 && abs(captured-capturePass)>0.5) return vec3(0.0);
+            if (captured > 0.5) life = captureLifetime(candidateR, age, pixelRim);
+            if (life <= 0.0) return vec3(0.0);
             birth = descriptorBytes(cohort, 53.0) / vec3(255.0, 255.0, 1.0);
             birth.y = min(0.45, birth.y);
             archetype = chooseArchetype(cohort, draws.y);
@@ -321,11 +405,9 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
             float amplitude = mix(parameters.z, parameters.w, traits.y);
             behaviour = 1.0 + min(amplitude, middleLayer > 0.5 ? 0.22 : 0.08) * sin(oscillation);
         } else if (archetype < 2.5) {
-            // The next boundary's actual sealed ACTIVE timestamp, not flow age.
-            float anchor = floor(birthBucket) + 1.0;
-            float anchorDistance = age - (anchor - birthBucket) * 30.0;
-            if (anchorDistance < 0.0) return vec3(0.0);
-            float a = activeAge(anchor);
+            // First nucleus entry is captured once on the CPU, in active
+            // seconds. Pre-entry halos stay dark; the birth cohort is unchanged.
+            float a = entryAge(entryCell.x,entryCell.y,h.xy);
             float L = mix(parameters.x, parameters.y, traits.x);
             float entrance = mix(parameters.z, parameters.w, traits.y);
             behaviour = smoothstep(0.0, entrance, a) * (1.0 - smoothstep(0.55 * L, L, a))
@@ -382,6 +464,16 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
     // Pixel footprint convolved with the point spread: stable subpixel movement.
     float variance = sigma * sigma + 0.0833333;
     float core = exp2(-0.7213475 * r2 / variance) * sigma * sigma / variance;
+    vec3 footprint = vec3(0.0833333,0.0,0.0833333);
+    bool filtered = capturePass > -1.5 && (layer < 0.5 || capturePass > 0.5) && ubuf.bhHalo.w > 0.0 && length(screenPixel-ubuf.bhCentre) < ubuf.bhGeometry.y;
+    if (filtered) {
+        // Source-space pixel covariance, after candidate/support rejection.
+        // No determinant lens-flux multiplier: only normalized pixel filtering.
+        mat2 j = layer < 0.5 ? bhJacobian(screenPixel) : materialJacobian(screenPixel);
+        vec2 j0 = vec2(j[0].x,j[1].x), j1 = vec2(j[0].y,j[1].y);
+        footprint = vec3(dot(j0,j0),dot(j0,j1),dot(j1,j1))/12.0;
+        core = filteredCore(p,sigma,footprint);
+    }
     float halo = middleLayer * 0.024 * exp2(-r2 / (mix(3.5, 14.0, nearLayer) * optics * optics));
     float light = (core + halo) * energy * shimmer;
 
@@ -392,6 +484,7 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
         float hotSigma = min(2.5, optics * mix(0.55, 0.68, h.z) * mix(0.92, 1.08, calm));
         float hotVariance = hotSigma * hotSigma + 0.0833333;
         float hot = exp2(-0.7213475 * r2 / hotVariance) * hotSigma * hotSigma / hotVariance;
+        if (filtered) hot = filteredCore(p,hotSigma,footprint);
         float soft = exp2(-r2 / (26.0 * optics * optics));
         light = 1.0 - exp(-(3.2 * hot + 0.085 * soft) * shimmer);
     }
@@ -415,11 +508,13 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer) {
         float cutA = 1.0 - smoothstep(support * support * 0.64, support * support, a2);
         float cutB = 1.0 - smoothstep(support * support * 0.64, support * support, b2);
         float pairCore = 0.5 * (exp2(-0.7213475 * a2 / variance) * cutA + exp2(-0.7213475 * b2 / variance) * cutB) * sigma * sigma / variance;
+        if (filtered) pairCore = 0.5*(filteredCore(a,sigma,footprint)*cutA+filteredCore(b,sigma,footprint)*cutB);
         light = (pairCore + halo) * energy * shimmer;
         if (nearLayer > 0.5) {
             float hotSigma = min(2.5, optics * mix(0.55, 0.68, h.z) * mix(0.92, 1.08, calm));
             float hotVariance = hotSigma * hotSigma + 0.0833333;
             float pairHot = 0.5 * (exp2(-0.7213475 * a2 / hotVariance) * cutA + exp2(-0.7213475 * b2 / hotVariance) * cutB) * hotSigma * hotSigma / hotVariance;
+            if (filtered) pairHot = 0.5*(filteredCore(a,hotSigma,footprint)*cutA+filteredCore(b,hotSigma,footprint)*cutB);
             float sharedSoft = exp2(-r2 / (26.0 * optics * optics));
             light = 1.0 - exp(-(3.2 * pairHot + 0.085 * sharedSoft) * shimmer);
         }
@@ -480,7 +575,7 @@ float tailSegment(vec2 pixel, vec2 a, vec2 b, float travelled, vec4 head, vec4 s
     light *= pow(1.0 - u, style > 0.5 ? 1.6 : 2.0);
     return light * (1.0 - smoothstep(0.64 * support * support, support * support, r2));
 }
-vec3 eventSlot(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec4 shape, vec4 bounds) {
+vec3 eventSlot(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec2 tail4, vec4 shape, vec4 bounds) {
     if (head.w <= 0.0 || pixel.x < bounds.x || pixel.y < bounds.y || pixel.x > bounds.z || pixel.y > bounds.w) return vec3(0.0);
     vec2 p = pixel - head.xy;
     float r2 = dot(p, p);
@@ -497,33 +592,103 @@ vec3 eventSlot(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec
     if (shape.z > 1.5) tail = max(tail, tailSegment(pixel, tail01.zw, tail23.xy, distance, head, shape, colour.w));
     distance += length(tail23.xy - tail01.zw);
     if (shape.z > 2.5) tail = max(tail, tailSegment(pixel, tail23.xy, tail23.zw, distance, head, shape, colour.w));
+    distance += length(tail23.zw-tail23.xy);
+    if (shape.z > 3.5) tail = max(tail, tailSegment(pixel,tail23.zw,tail4,distance,head,shape,colour.w));
     return head.w * (nucleus + shape.y * tail * colour.rgb);
 }
 
+vec3 decodeDisplay(vec3 c) {
+    c = max(c,vec3(0.0));
+    if (max(c.r,max(c.g,c.b)) <= 0.04045) return c/12.92;
+    return mix(c/12.92,pow((c+0.055)/1.055,vec3(2.4)),step(vec3(0.04045),c));
+}
+vec3 encodeDisplay(vec3 c) {
+    c = max(c,vec3(0.0));
+    if (max(c.r,max(c.g,c.b)) <= 0.0031308) return c*12.92;
+    return mix(c*12.92,1.055*pow(c,vec3(1.0/2.4))-0.055,step(vec3(0.0031308),c));
+}
 void main() {
     vec2 pixel = qt_TexCoord0 * ubuf.resolution;
     vec3 colour = ubuf.skyColor.rgb;
     vec2 edgePosition = qt_TexCoord0 * 2.0 - 1.0;
     float edge = pow(clamp(dot(edgePosition, edgePosition) * 0.6, 0.0, 1.0), 1.5);
     colour += ubuf.edgeLift * edge * vec3(0.10, 0.19, 0.30);
+    bool hole = ubuf.bhHalo.w > 0.0 && length(pixel-ubuf.bhCentre) < ubuf.bhGeometry.y;
+    vec3 material = vec3(0.0), farField = vec3(0.0), linearColour = vec3(0.0);
+    vec3 legacyColour = colour;
+    float localEnvelope = 0.0;
     if (ubuf.density > 0.0) {
-        // Keep the composition's star count similar across aspect ratios, while
-        // all distances are evaluated in physical pixels, independent of QML DPR.
         float scale = max(1.0, sqrt(ubuf.resolution.x * ubuf.resolution.y / (1024.0 * 576.0)));
         scale /= sqrt(max(0.0001, ubuf.density));
         vec2 relative = pixel - ubuf.resolution * 0.5;
         float baseAngle = ubuf.radialMode > 0.5 ? atan(relative.y, relative.x) : 0.0;
-        vec3 field = stars(pixel, baseAngle, scale, 0.0);
-        field += stars(pixel, baseAngle, scale, 1.0);
-        field += stars(pixel, baseAngle, scale, 2.0);
-        colour += field * ubuf.brightness;
+        if (ubuf.bhHalo.w <= 0.0 && ubuf.paddingAge < 0.0) {
+            // A compile-time legacy specialization: no lens or migration
+            // branches in the common, never-enabled sky kernel.
+            vec3 field = stars(pixel,baseAngle,scale,0.0,-2.0,pixel,1.0);
+            field += stars(pixel,baseAngle,scale,1.0,-2.0,pixel,1.0);
+            field += stars(pixel,baseAngle,scale,2.0,-2.0,pixel,1.0);
+            colour += field*ubuf.brightness;
+        } else {
+        vec2 farSource = pixel, materialSource = pixel;
+        float farAngle = baseAngle, materialAngle = baseAngle;
+        float pass = -1.0, rimLife = 1.0;
+        bool domain = true;
+        if (hole && ubuf.radialMode > 0.5) {
+            float weight;
+            farSource = bhWarpBackground(pixel,weight);
+            domain = all(greaterThanEqual(farSource,vec2(0.0))) && all(lessThan(farSource,ubuf.resolution));
+            materialSource = bhWarpMaterial(pixel,rimLife);
+            pass = 1.0;
+        }
+        // One common evaluation per layer keeps the disabled render arithmetic
+        // intact and avoids duplicating the entire star kernel in each branch.
+        if (domain) farField = stars(farSource,farAngle,scale,0.0,-1.0,pixel,1.0);
+        vec3 middleField = stars(materialSource,materialAngle,scale,1.0,pass,pixel,rimLife);
+        vec3 nearField = stars(materialSource,materialAngle,scale,2.0,pass,pixel,rimLife);
+        if (pass > 0.5 && ubuf.legacyMaterialAlive > 0.5) {
+            middleField += stars(pixel,baseAngle,scale,1.0,0.0,pixel,1.0);
+            nearField += stars(pixel,baseAngle,scale,2.0,0.0,pixel,1.0);
+        }
+        vec3 field = farField;
+        field += middleField;
+        field += nearField;
+        legacyColour = colour+field*ubuf.brightness;
+        if (hole) material = middleField+nearField;
+        else colour = legacyColour;
+        }
     }
-    colour += eventSlot(pixel, ubuf.event0Head, ubuf.event0Colour, ubuf.event0Tail01, ubuf.event0Tail23, ubuf.event0Shape, ubuf.event0Bounds);
-    colour += eventSlot(pixel, ubuf.event1Head, ubuf.event1Colour, ubuf.event1Tail01, ubuf.event1Tail23, ubuf.event1Shape, ubuf.event1Bounds);
-    colour += eventSlot(pixel, ubuf.event2Head, ubuf.event2Colour, ubuf.event2Tail01, ubuf.event2Tail23, ubuf.event2Shape, ubuf.event2Bounds);
-    // Stationary sub-code-value dither; no animated noise in the black sky.
+
+    if (hole) {
+        localEnvelope = ubuf.bhHalo.w*bhTaper(length(pixel-ubuf.bhCentre));
+        vec3 base = decodeDisplay(colour+farField*ubuf.brightness);
+        vec3 foreground = decodeDisplay(material*ubuf.brightness);
+        vec3 background = base+foreground;
+        // V3 added display-encoded layers. Fade that overlap correction with
+        // the SAME spatial/enable envelope, so changing to linear composition
+        // cannot pop at enable=0 or create a radiance seam at 4 Rh.
+        if (max(base.r,max(base.g,base.b))>0.0 && max(foreground.r,max(foreground.g,foreground.b))>0.0)
+            background += (decodeDisplay(legacyColour)-background)*(1.0-localEnvelope);
+        background -= base*bhShadowMask(pixel);
+        vec4 disk = bhDisk(pixel);
+        linearColour = disk.rgb+(1.0-disk.a)*background;
+    }
+    // Captures have their own immutable rim fade; foreground passes stay in
+    // front of the shadow and disk. Both are composed in linear light locally.
+    vec3 e0 = eventSlot(pixel,ubuf.event0Head,ubuf.event0Colour,ubuf.event0Tail01,ubuf.event0Tail23,ubuf.event0Tail4,ubuf.event0Shape,ubuf.event0Bounds);
+    vec3 e1 = eventSlot(pixel,ubuf.event1Head,ubuf.event1Colour,ubuf.event1Tail01,ubuf.event1Tail23,ubuf.event1Tail4,ubuf.event1Shape,ubuf.event1Bounds);
+    vec3 e2 = eventSlot(pixel,ubuf.event2Head,ubuf.event2Colour,ubuf.event2Tail01,ubuf.event2Tail23,ubuf.event2Tail4,ubuf.event2Shape,ubuf.event2Bounds);
+    if (hole) {
+        vec3 events = decodeDisplay(e0+e1+e2);
+        if (max(events.r,max(events.g,events.b))>0.0 && localEnvelope<1.0) {
+            vec3 legacyEvents = legacyColour;
+            legacyEvents += e0; legacyEvents += e1; legacyEvents += e2;
+            events += (decodeDisplay(legacyEvents)-decodeDisplay(legacyColour)-events)*(1.0-localEnvelope);
+        }
+        colour = encodeDisplay(linearColour+events);
+    }
+    else { colour += e0; colour += e1; colour += e2; }
     float dither = fract(52.9829189 * fract(dot(floor(pixel), vec2(0.06711056, 0.00583715)))) - 0.5;
-    // Never lift empty black pixels with dither: the default sky is exactly zero.
     float lit = step(1.0 / 255.0, max(colour.r, max(colour.g, colour.b)));
     colour += lit * dither / 255.0;
     fragColor = vec4(clamp(colour, 0.0, 1.0), 1.0) * ubuf.qt_Opacity;

@@ -149,10 +149,11 @@ vec4 bhEmission(vec4 hit, vec2 e, float order) {
     float pattern = 1.0+min(ubuf.bhLook.w,0.08)*(0.6*phase0+0.4*phase1);
     float beam = clamp(1.0+ubuf.bhLook.z*cos(hit.y)*sqrt(3.0/radius),0.8,1.2);
     float hot = clamp(profile+0.16*(0.5-ubuf.bhLook.y)+0.05*(beam-1.0),0.0,1.0);
-    // Spec's four sRGB swatches, converted offline to linear RGB.
-    vec3 cold = mix(vec3(0.417885,0.171441,0.093059),vec3(0.791298,0.428691,0.191202),clamp(hot*3.0,0.0,1.0));
-    vec3 warm = mix(cold,vec3(1.0,0.745404,0.462077),clamp(hot*3.0-1.0,0.0,1.0));
-    vec3 tint = mix(warm,vec3(1.0,0.921582,0.791298),clamp(hot*3.0-2.0,0.0,1.0));
+    // Linear-light swatches for #FFF6E6 -> #FFE0B5. Amber is confined
+    // to the faint thermal edge; warmth adjusts that edge, not a brown core.
+    vec3 innerGold = mix(vec3(1.0,0.745404,0.462077),vec3(1.0,0.921582,0.791298),bhEase(hot));
+    float outerWarm = bhEase((band-0.38)/0.28) * (0.65+0.35*ubuf.bhLook.y);
+    vec3 tint = mix(innerGold,vec3(1.0,0.428691,0.191202),outerWarm);
     tint /= dot(tint,vec3(0.2126,0.7152,0.0722));
     float haloGain = e.y < 0.0 ? ubuf.bhHalo.x : ubuf.bhHalo.y;
     float gain = order < 0.5 ? mix(haloGain,1.0,bhEase((cos(hit.w)+0.2)/0.4)) : haloGain;

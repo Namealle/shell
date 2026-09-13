@@ -71,6 +71,7 @@ Variants {
                     archetypeParams: Services.Starfield.archetypeParams
                     calmTarget: Services.Ambient.forScreen(win.modelData.name).calm
                     ambientHole: Services.Ambient.forScreen(win.modelData.name).hole
+                    blackHole: Services.Starfield.blackHole
                     eventFamilies: Services.Starfield.eventFamilies
                     eventHeadCap: Services.Starfield.eventHeadCap
                     devicePixelRatio: behindClock.Screen.devicePixelRatio
