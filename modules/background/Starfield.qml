@@ -300,13 +300,34 @@ Item {
         publish();
     }
 
+    // `phenomena` travels inside eventFamilies; an absent block is the default.
+    function phenomenon(name: string): var {
+        return ((eventFamilies || {}).phenomena || {})[name] || {};
+    }
+
     function moodState(): var {
         if (!varietyEnabled)
             return [0, 0, 0, 0];
         const slot = Math.floor(_state.moodClock / 900);
         const salt = varietySeed ^ screenSeed;
         const choice = random(slot, salt + 2201);
-        const kind = choice < 0.50 ? 0 : choice < 0.75 ? 1 : choice < 0.95 ? 2 : 3;
+        // Kinds 4 (clearing) and 5 (nebular) take their share off the top; the
+        // four original kinds keep their relative proportions in what is left,
+        // so a zero share reproduces the v5 distribution exactly.
+        const moods = phenomenon("moods");
+        const clearing = clamp(moods.clearing === undefined ? 0.15 : moods.clearing, 0, 1);
+        const nebular = clamp(moods.nebular === undefined ? 0.15 : moods.nebular, 0, 1);
+        const share = Math.min(0.9, clearing + nebular);
+        const scale = clearing + nebular > 0 ? share / (clearing + nebular) : 0;
+        let kind;
+        if (choice < clearing * scale)
+            kind = 4;
+        else if (choice < share)
+            kind = 5;
+        else {
+            const t = (choice - share) / Math.max(1e-6, 1 - share);
+            kind = t < 0.50 ? 0 : t < 0.75 ? 1 : t < 0.95 ? 2 : 3;
+        }
         const duration = 240 + 300 * random(slot, salt + 2202);
         const centre = 450 + 60 * (random(slot, salt + 2203) - 0.5);
         const age = modulo(_state.moodClock, 900) - centre + duration / 2;
@@ -621,6 +642,19 @@ Item {
             omega: (random(index, salt + 15) < 0.5 ? -1 : 1) * Math.PI / 3,
             radius: shortSide * (0.22 + 0.12 * random(index, salt + 16))
         };
+        // Satellite glint: one hash-placed smooth brightening somewhere along
+        // the pass. Birth-frozen like everything else here, so it never moves,
+        // and it modulates the gain the slot already publishes at 30 Hz - no
+        // new slot, no new uniform, no shader change.
+        if (kind === 2) {
+            const glint = (eventFamilies || {}).satelliteGlint || {};
+            const span = parameterRange(glint, "widthSec", [1.5, 3], 0.5, 10);
+            event.glintGain = glint.enabled === false ? 1 : clamp(glint.gain === undefined ? 2.2 : glint.gain, 1, 4);
+            event.glintWidth = span[0] + (span[1] - span[0]) * random(index, salt + 17);
+            // Kept clear of both ends so the brightening never lands on the
+            // entrance or exit fade and read as a pop.
+            event.glintAt = duration * (0.25 + 0.5 * random(index, salt + 18));
+        }
         classifyCapture(event);
         return event;
     }
@@ -743,6 +777,12 @@ Item {
             gain *= (1 + e.pulseAmplitude * Math.sin(age * 2 * Math.PI / e.pulsePeriod)) / (1 + e.pulseAmplitude);
         if (e.family === "skipping")
             gain *= 0.10 + 0.90 * Math.pow(Math.sin(Math.PI * e.lobes * u), 2);
+        if (e.kind === 2 && e.glintGain > 1) {
+            // A Gaussian in time: smooth at both edges by construction, so the
+            // brightening has no slope a blink could hide in.
+            const t = (age - e.glintAt) / Math.max(0.5, e.glintWidth);
+            gain *= 1 + (e.glintGain - 1) * Math.exp(-2.8 * t * t);
+        }
         if (e.family === "fragmenting") {
             const split = ease((u - e.splitU) * e.duration / e.splitSec);
             const heads = Math.max(1, e.headCap);
@@ -1130,7 +1170,12 @@ Item {
         shader.legacyMaterialAlive = s.flow <= s.lastLegacyFlow + 660 ? 1 : 0;
         s.mood = moodState();
         shader.mood = Qt.vector4d(s.mood[0], s.mood[1], 0, 0);
-        const moodTwinkle = [0.18, 0.16, 0.24, 0.22][s.mood[0]];
+        // Microlensing needs no scheduler and no slot: the shader already has
+        // the lens Jacobian in hand wherever it filters a far star, and this is
+        // only the flux ceiling. 1 disables the term entirely.
+        const lensing = phenomenon("microlensing");
+        shader.lensFlux = lensing.enabled === false ? 1 : clamp(lensing.gainCap === undefined ? 2.5 : lensing.gainCap, 1, 3);
+        const moodTwinkle = [0.18, 0.16, 0.24, 0.22, 0.20, 0.19][s.mood[0]];
         shader.twinkle *= 1 + (moodTwinkle / 0.22 - 1) * s.mood[1];
         for (const name of ["bhCentre", "bhGeometry", "bhDisk", "bhLook", "bhHalo", "bhPhase", "bhCaps"])
             shader[name] = _hole[name];
@@ -1449,6 +1494,8 @@ Item {
         property real flowPhaseLocal: 0
         property real variableFraction: 0.006
         property vector4d mood: Qt.vector4d(0, 0, 0, 0)
+        // Microlensing flux ceiling; 1 leaves the far field exactly as v5 drew it.
+        property real lensFlux: 1
 
         fragmentShader: "shaders/starfield.frag.qsb"
     }

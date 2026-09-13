@@ -70,6 +70,8 @@ layout(std140, binding = 0) uniform buf {
     vec4 dustCluster;
     vec2 dustParallax;
     float particleMu;
+    // Microlensing flux ceiling (phenomena.microlensing). 1 disables it.
+    float lensFlux;
 #define BH_UNIFORMS
 #include "blackhole.glsl"
 #undef BH_UNIFORMS
@@ -409,9 +411,18 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer, float captureP
     }
     float calm = birth.x;
     float acceptance = middleLayer > 0.5 ? mix(0.76, 0.68, nearLayer) : mix(0.90, 0.62, calm);
+    // Mood kinds 4 (clearing) and 5 (nebular). Both are weighted by mood.y,
+    // which eases over sixty seconds, and both are applied the way kinds 0-3
+    // are: the two binary outcomes are interpolated, never the threshold, so a
+    // star fades across the change instead of switching on one frame.
+    float clearing = step(3.5, ubuf.mood.x) * (1.0 - step(4.5, ubuf.mood.x));
+    float nebular = ubuf.mood.y * step(4.5, ubuf.mood.x) * (1.0 - step(5.5, ubuf.mood.x));
     float moodTarget = acceptance;
     if (ubuf.mood.x < 0.5) moodTarget -= mix(0.08, 0.06, middleLayer) * (1.0 - nearLayer);
     else if (ubuf.mood.x < 1.5) moodTarget += mix(0.14, 0.02, middleLayer) * (1.0 - nearLayer);
+    // Clearing thins the far dust a little; the middle and near layers keep
+    // their population and take a warm cast further down instead.
+    else moodTarget -= 0.07 * clearing * (1.0 - middleLayer);
     float population = mix(1.0 - step(acceptance, h.w), 1.0 - step(moodTarget, h.w), ubuf.mood.y);
     if (population <= 0.0) return vec3(0.0);
     life *= population;
@@ -492,17 +503,27 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer, float captureP
     float variance = sigma * sigma + 0.0833333;
     float core = exp2(-0.7213475 * r2 / variance) * sigma * sigma / variance;
     vec3 footprint = vec3(0.0833333,0.0,0.0833333);
+    float lens = 1.0;
     bool filtered = capturePass > -1.5 && (layer < 0.5 || capturePass > 0.5) && ubuf.bhHalo.w > 0.0 && length(screenPixel-ubuf.bhCentre) < ubuf.bhGeometry.y;
     if (filtered) {
         // Source-space pixel covariance, after candidate/support rejection.
-        // No determinant lens-flux multiplier: only normalized pixel filtering.
         mat2 j = layer < 0.5 ? bhJacobian(screenPixel) : materialJacobian(screenPixel);
         vec2 j0 = vec2(j[0].x,j[1].x), j1 = vec2(j[0].y,j[1].y);
         footprint = vec3(dot(j0,j0),dot(j0,j1),dot(j1,j1))/12.0;
         core = filteredCore(p,sigma,footprint);
+        // Microlensing. The same Jacobian's determinant is the area
+        // magnification of the lens map, so 1/|det J| is the flux it
+        // concentrates into this pixel. Surface brightness is conserved by the
+        // filtering above; this is the flux term that filtering alone drops.
+        // Far layer only and hard-capped, so a background star crossing the
+        // hole brightens over the tens of seconds it takes to drift past and
+        // still never outshines a near star. Four ALU where the Jacobian is
+        // already in hand, nothing at all anywhere else.
+        if (layer < 0.5 && ubuf.lensFlux > 1.0)
+            lens = clamp(1.0/max(abs(determinant(j)),0.0001),1.0,ubuf.lensFlux);
     }
     float halo = middleLayer * 0.024 * exp2(-r2 / (mix(3.5, 14.0, nearLayer) * optics * optics));
-    float light = (core + halo) * energy * shimmer;
+    float light = (core + halo) * energy * shimmer * lens;
 
     if (nearLayer > 0.0 && flare == 0.0) {
         // A capped hot point plus redistributed light in a broad Gaussian halo.
@@ -553,7 +574,12 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer, float captureP
         light *= 1.0 - smoothstep(originalSupport * originalSupport * 0.64, originalSupport * originalSupport, dot(originalP, originalP));
     vec3 tint = mix(vec3(0.73, 0.84, 1.0), vec3(1.0, 0.98, 0.94), h.z);
     float tintDraw = fract(h.x * 31.17 + h.y * 17.13 + h.z * 7.97);
-    if (birth.z > 0.5 && middleLayer > 0.5 && draws.z < birth.y) {
+    // A nebular mood doubles the tinted share. The extra band [mix, 2*mix) is
+    // only fetched while the mood is running, and those stars take their colour
+    // weighted by the same eased weight, so they saturate in and out.
+    vec3 plain = mix(tint, vec3(1.0), nearLayer * 0.35);
+    float tintBand = birth.y * (1.0 + nebular);
+    if (birth.z > 0.5 && middleLayer > 0.5 && draws.z < tintBand) {
         float index = choosePalette(cohort, draws.w);
         tint = descriptor(cohort, index);
         if (archetype > 5.5) {
@@ -567,6 +593,7 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer, float captureP
         vec3 whitening = descriptor(cohort, 59.0);
         tint = mix(tint, vec3(1.0), min(0.10, mix(whitening.x, whitening.y, traits.w)));
         tint = mix(tint, vec3(1.0), nearLayer * whitening.z);
+        if (draws.z >= birth.y) tint = mix(plain, tint, nebular);
     } else if (birth.z < 0.5) {
         vec3 probability = ubuf.radialMode > 0.5 ? descriptor(cohort, 56.0) : vec3(0.0);
         probability *= min(1.0, 0.45 / max(0.00001, probability.x + probability.y + probability.z));
@@ -577,8 +604,11 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer, float captureP
         tint = mix(tint, target, 0.45);
         tint = mix(tint, vec3(1.0), nearLayer * 0.65);
     } else {
-        tint = mix(tint, vec3(1.0), nearLayer * 0.35);
+        tint = plain;
     }
+    // Clearing warms the material the far dust stopped hiding.
+    if (clearing > 0.0 && middleLayer > 0.5)
+        tint = mix(tint, tint * vec3(1.06, 1.0, 0.92), ubuf.mood.y);
     return light * tint * visibility * behaviour;
 }
 
