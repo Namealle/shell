@@ -44,7 +44,7 @@ function extract(name) {
     return "host[\"" + name + "\"] = function " + args + " " + qml.slice(open, i + 1) + ";";
 }
 
-const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "scheduleRadial", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena"];
+const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "warmStart", "scheduleRadial", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena"];
 
 // Readonly root constants the scheduler reads by bare name, taken from the
 // same source rather than restated here.
@@ -144,6 +144,7 @@ export function makeHost(document, options) {
         moodClock: 0,
         mood: [0, 0, 0, 0],
         phenomenonSlots: [null, null, null],
+        firstEpisode: new Array(12).fill(false),
         pendingEvents: []
     };
     return scheduler(host);
@@ -386,6 +387,69 @@ function tests() {
             if (p && Math.hypot(p[0] - out.width / 2, p[1] - out.height / 2) < reach) inside++;
         }
         check("no placement lands on the drawn hole on " + out.name, inside === 0, inside + " inside " + reach.toFixed(0) + " px");
+    }
+    // v9 WARM START. v8 scheduled every family's FIRST episode a full random
+    // interval after the shell started, so a restart put the supernova 21-48
+    // minutes away and the first minutes of every session were guaranteed to
+    // have nothing dramatic in them. These bounds are the fix, pinned.
+    {
+        // Minimum interval per family at rateScale 1, in active seconds, from
+        // the shipped defaults: the warm window is [0.3, 1] x this.
+        const MIN = [45, 300, 150, 2700, 2700, 480, 360, 1080, 1800, 1800, 2160, 2520];
+        const firsts = [];
+        for (let seed = 1; seed <= 24; ++seed) {
+            const h2 = makeHost(validateDocument(null), { screenSeed: seed * 977, width: 2880, height: 1800, hole: false });
+            // A few frames, so a family whose placement was rejected once still
+            // gets its first episode inside the window.
+            for (let f = 0; f < 4; ++f) { h2._state.clock = f / 30; h2.publishEvents(); }
+            firsts.push(h2._state.events.map(e => (e ? e.start : Infinity)));
+        }
+        let radialBad = 0, transientBad = 0, dramaLate = 0, dramaClose = 0;
+        for (const row of firsts) {
+            for (let k = 5; k < 12; ++k) {
+                const cap = (k === 8 || k === 10 || k === 11) ? 240 : Infinity;
+                // The dramatic cap overrides the window's own lower bound: a
+                // 30-60 minute family capped at four minutes lands AT the cap.
+                const lo = Math.min(0.3 * MIN[k], cap), hi = Math.min(MIN[k], cap);
+                // Kilonova and burst queue a dramatic cooldown behind the
+                // supernova, which is exactly the rule being kept.
+                const queued = (k === 10 || k === 11) && row[k] >= row[8] + 900 - 1;
+                if (!queued && !(row[k] >= lo - 1e-6 && row[k] <= hi + 1e-6)) radialBad++;
+            }
+            for (let k = 0; k < 5; ++k)
+                if (!(row[k] >= 0.3 * MIN[k] - 1e-6 && row[k] <= MIN[k] + 400)) transientBad++;
+            const drama = Math.min(row[8], row[10], row[11]);
+            if (!(drama <= 240 + 1e-6)) dramaLate++;
+            const sorted = [row[8], row[10], row[11]].sort((a, b) => a - b);
+            if (sorted[1] - sorted[0] < 900 - 1 || sorted[2] - sorted[1] < 900 - 1) dramaClose++;
+        }
+        check("every phenomenon's first episode lands in its warm-start window", radialBad === 0, radialBad + " outside over 24 seeds");
+        check("every transient's first episode lands in its warm-start window", transientBad === 0, transientBad + " outside over 24 seeds");
+        check("something dramatic is scheduled inside the first four minutes", dramaLate === 0, dramaLate + " seeds without one");
+        check("the dramatic cooldown still spaces the warm-started families", dramaClose === 0, dramaClose + " seeds too close");
+        // rateScale moves the first occurrence with everything else.
+        const fast = makeHost(validateDocument({ events: { rateScale: 2 } }), { screenSeed: 4242, width: 2880, height: 1800, hole: false });
+        for (let f = 0; f < 4; ++f) { fast._state.clock = f / 30; fast.publishEvents(); }
+        const slow = makeHost(validateDocument({ events: { rateScale: 0.5 } }), { screenSeed: 4242, width: 2880, height: 1800, hole: false });
+        for (let f = 0; f < 4; ++f) { slow._state.clock = f / 30; slow.publishEvents(); }
+        check("rateScale applies to the first occurrence too",
+            fast._state.events[5].start <= 480 / 2 + 1e-6 && slow._state.events[5].start <= 480 * 2 + 1e-6
+            && fast._state.events[5].start < slow._state.events[5].start,
+            "starBirth first at " + fast._state.events[5].start.toFixed(1) + " s (2x) vs " + slow._state.events[5].start.toFixed(1) + " s (0.5x)");
+        check("rateScale moves the dramatic cap as well", fast._state.events[8].start <= 120 + 1e-6,
+            "supernova first at " + fast._state.events[8].start.toFixed(1) + " s at rateScale 2");
+        // A retired phenomenon reschedules on the ORDINARY interval, not on the
+        // warm window: the warm start is a per-process first, never a loop.
+        {
+            const h2 = makeHost(validateDocument(null), { screenSeed: 31337, width: 2880, height: 1800, hole: false });
+            h2._state.clock = 0;
+            h2.publishEvents();
+            const first = h2._state.events[8].start;
+            h2._state.events[8] = null;
+            h2.publishEvents();
+            check("a retired family does not warm-start twice", h2._state.events[8].start >= 1800 - 1e-6,
+                "first " + first.toFixed(1) + " s, reschedule " + h2._state.events[8].start.toFixed(1) + " s");
+        }
     }
     console.log("\n" + (failures ? failures + " failures" : "all " + checks + " checks passed"));
     return failures;

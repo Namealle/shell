@@ -221,6 +221,11 @@ Item {
             // slot in either direction.
             events: [null, null, null, null, null, null, null, null, null, null, null, null],
             eventIds: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            // Whether this family has ever had an episode scheduled in this
+            // process. Only the first one gets the warm start; a phenomenon
+            // that loses a slot and is retired reschedules on the ordinary
+            // interval, so retirement can never turn into a fast loop.
+            firstEpisode: [false, false, false, false, false, false, false, false, false, false, false, false],
             // R6: episodes handed to the scheduler from outside its intervals
             // (a physics detection, or a family whose arrival is conditional).
             // Drained by publishEvents into the family's own entry, in order.
@@ -615,6 +620,9 @@ Item {
     // v6 held this at 0.55, which was below a single near star's 0.95: two
     // phenomena together could not reach the brightness of one ordinary star.
     readonly property real phenomenonGainCeiling: 1.6
+    // v9 WARM START. The first dramatic episode of a process lands inside this
+    // many active seconds, divided by rateScale like every other interval.
+    readonly property real warmStartCapSec: 240
 
     function eventConfig(kind: int): var {
         const config = eventFamilies || {};
@@ -804,6 +812,34 @@ Item {
         return event;
     }
 
+    // v9 WARM START. v8 based every schedule on `previous ? previous.start :
+    // s.clock`, so a family with no previous episode waited a FULL random
+    // interval from the moment the shell started: after every restart the
+    // supernova was 21-48 minutes away, the kilonova 36-84 and the burst 42-108.
+    // The sky he actually watched -- the first few minutes after a restart --
+    // could not contain a dramatic event at all, which is most of why he could
+    // not spot one (his report, ledger 2284).
+    //
+    // The FIRST episode of each family now lands uniformly in [0.3, 1] x that
+    // family's own interval MINIMUM, and the first dramatic one is additionally
+    // capped at `warmStartCapSec` so something big happens inside the first four
+    // minutes. `minimum` and `interval` both arrive already divided by
+    // rateScale, and the cap is divided by it here, so the one dial moves the
+    // first occurrence exactly as it moves every later one. The shared dramatic
+    // cooldown is applied by the caller AFTER this, so it is still respected:
+    // the supernova takes the early slot (it is scheduled first) and the
+    // kilonova and the burst queue behind it a cooldown apart.
+    function warmStart(kind: int, index: int, minimum: real, interval: real): real {
+        const s = _state;
+        const previous = s.events[kind];
+        if (previous || s.firstEpisode[kind])
+            return (previous ? previous.start : s.clock) + interval;
+        let start = s.clock + minimum * (0.3 + 0.7 * random(index, screenSeed + 6607 + kind * 131));
+        if (dramatic(kind))
+            start = Math.min(start, s.clock + warmStartCapSec / Math.max(1e-6, rateScale()));
+        return start;
+    }
+
     // Active-second scheduling, up to seven days; hourly streams do not get
     // silently clamped to the v2 one-hour interval ceiling. Descriptors include
     // their schedule and geometry; edits only affect the next captured event.
@@ -831,9 +867,8 @@ Item {
         const rate = kind === 0 ? 0.5 + s.live[3] : 1;
         if (kind === 0)
             range = [range[0] + (18 - range[0]) * activeMood, range[1] + (36 - range[1]) * activeMood];
-        const previous = s.events[kind];
-        const base = previous ? previous.start : s.clock;
-        let start = Math.max(s.clock, base + (range[0] + (range[1] - range[0]) * random(index, screenSeed + 113 + kind * 701)) / rate);
+        const interval = (range[0] + (range[1] - range[0]) * random(index, screenSeed + 113 + kind * 701)) / rate;
+        let start = Math.max(s.clock, warmStart(kind, index, range[0] / rate, interval));
         const family = kind < 2 ? chooseFamily(kind, index, start) : kind === 3 ? "shower" : kind === 4 ? "slowWanderer" : "satellite";
         const e = captureEvent(kind, index, start, kind === 3 ? "straight" : family);
         if (kind === 3) {
@@ -853,6 +888,7 @@ Item {
                     start = other.start + other.duration + other.offset + 1;
             }
         e.start = start;
+        s.firstEpisode[kind] = true;
         if (family === "fragmenting" || family === "spiral")
             s.familyLast[family] = start;
         if (kind === 3) {
@@ -1108,14 +1144,14 @@ Item {
         if (rate <= 0)
             return null;
         const index = s.eventIds[kind]++;
+        const warm = !s.events[kind] && !s.firstEpisode[kind];
         const cfg = eventConfig(kind);
         const salt = screenSeed + 5501 + kind * 907;
         const fallback = radialSchedule(kind);
         let range = parameterRange(cfg, fallback.key, fallback.range, fallback.low, fallback.high).map(x => x * fallback.unit);
         range = [range[0] / rate, range[1] / rate];
-        const previous = s.events[kind];
-        const base = previous ? previous.start : s.clock;
-        let start = Math.max(s.clock, base + range[0] + (range[1] - range[0]) * random(index, salt));
+        const interval = range[0] + (range[1] - range[0]) * random(index, salt);
+        let start = Math.max(s.clock, warmStart(kind, index, range[0], interval));
         if (dramatic(kind)) {
             const cooldown = clamp(Number((eventFamilies || {}).dramaCooldownSec) || 1500, 300, 86400) / rate;
             const last = s.familyLast.drama === undefined ? -1e12 : s.familyLast.drama;
@@ -1124,6 +1160,7 @@ Item {
         const e = captureRadial(kind, index, start);
         if (!e)
             return null;
+        s.firstEpisode[kind] = true;
         // Phenomena reserve against each other only: the transient heads are a
         // separate class and must never be pushed around by a six-minute
         // remnant, which is the whole reason for the split. Reservation allows
@@ -1131,11 +1168,27 @@ Item {
         // is ever scheduled into a slot that cannot exist — a phenomenon that
         // lost a slot mid-life would pop.
         const cap = Math.round(clamp(Number((eventFamilies || {}).phenomenonCap) || phenomenonSlotCount, 1, phenomenonSlotCount));
+        // v9: a WARM-STARTED DRAMATIC episode reserves on INSTANT occupancy
+        // instead. The rule above is conservative — it counts every episode that
+        // overlaps anywhere in the new one's life, not the ones alive at its
+        // moment — and star birth, nova and red giant are scheduled first
+        // (publishEvents walks the kinds in order) and are long, so at a cold
+        // start all three usually straddled the supernova's four-minute window
+        // and pushed it past the very cap the warm start exists to enforce.
+        // Slot ownership is sticky and claimed in the first second, so a free
+        // slot AT THE START is all a phenomenon actually needs; anything that
+        // collides later is retired and rescheduled by publishPhenomena, which
+        // is the mechanism that already exists for exactly that.
+        const instant = warm && dramatic(kind);
         for (let pass = 0; pass < 6; ++pass) {
             const ends = [];
             for (let k = 5; k < s.events.length; ++k) {
                 const other = s.events[k];
-                if (k !== kind && other && start < other.start + other.duration && start + e.duration > other.start)
+                if (k === kind || !other)
+                    continue;
+                const overlaps = instant ? other.start <= start && start < other.start + other.duration
+                    : start < other.start + other.duration && start + e.duration > other.start;
+                if (overlaps)
                     ends.push(other.start + other.duration);
             }
             if (ends.length < cap)
