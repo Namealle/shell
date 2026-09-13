@@ -328,6 +328,12 @@ var EVENT_FAMILY_SPEC = {
         shellSec: [[30, 90], "pair", 5, 600],
         shellShortSide: [[0.25, 0.40], "pair", 0, 0.6],
         shellGain: [0.55, "num", 0, 0.80],
+        // v10. The explosion's footprint on the PARTICLE FIELD: how many debris
+        // particles the star is replaced by, and how hard the shock shoves the
+        // stars it reaches (in short sides per second, falling to nothing at
+        // 2.4x the drawn rim). 0 for either leaves the sprite alone.
+        debrisCount: [[180, 370], "pair", 0, 480],
+        shockShortSide: [0.32, "num", 0, 2],
         filaments: [0.55, "num", 0, 1],
         remnantSec: [[120, 300], "pair", 1, 1800],
         remnantGain: [0.26, "num", 0, 0.40],
@@ -390,7 +396,14 @@ var EVENT_FAMILY_SPEC = {
         // A fraction of the far dust's own rate. 1 is exactly the dust's speed,
         // which crosses from the edge to the hole in 60-200 s: a fly-past
         // rather than a passage.
-        driftScale: [0.45, "num", 0.05, 2]
+        driftScale: [0.45, "num", 0.05, 2],
+        // v10. What the passage does to the material inside it rather than to
+        // the light in front of it: the camera's approach slows by `drag` while
+        // a particle is inside the cloud, and it takes `tint` of the cloud's
+        // own colour. Both are deliberately small -- it is a passage, not a
+        // wall.
+        drag: [0.55, "num", 0, 2],
+        tint: [0.30, "num", 0, 1]
     }
 };
 
@@ -546,6 +559,23 @@ var PARTICLE_SPEC = {
     },
     stressPreset: {
         boolean: true
+    },
+    // v10. The transient reserve: how many event particles (supernova debris, a
+    // comet's nucleus and the motes it sheds, a fireball's spray) may be alive
+    // at once, and how long a star shoved by a shock takes to relax back into
+    // the flow. The reserve is ATLAS-ALLOCATED whether or not an event ever
+    // fires, because a resize of the sampled texture cost 13 ms -> 6700 ms per
+    // frame on llvmpipe and never recovered; 0 turns the footprint off and
+    // gives the rows back.
+    debris: {
+        group: {
+            maxAlive: {
+                integer: [0, 480]
+            },
+            relaxSec: {
+                number: [0.05, 12]
+            }
+        }
     },
     vref: {
         number: [10, 600]

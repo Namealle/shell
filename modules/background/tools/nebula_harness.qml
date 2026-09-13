@@ -12,6 +12,7 @@
 // here is silently dropped and the run looks like it printed nothing.
 import QtQuick
 import ".."
+import "../particles/Physics.js" as ParticlePhysics
 
 Item {
     id: root
@@ -186,6 +187,17 @@ Item {
                 field.cameraDirection = "in";
                 advanceBy(60);
                 const after = shader().nebulaHead;
+                // v10: the passage reaches the PARTICLES, not only the light
+                // in front of them.
+                const pool = field._particles;
+                expect("the passage is handed to the particle field",
+                    pool.cloud !== null && pool.cloud.drag > 0 && pool.cloud.weight > 0,
+                    pool.cloud ? "drag " + pool.cloud.drag.toFixed(3) + ", tint " + pool.cloud.weight.toFixed(3) + ", radius " + pool.cloud.radius.toFixed(0) + " px" : "no cloud");
+                let inside = 0;
+                for (let k = 0; k < pool.liveCount; ++k)
+                    if (ParticlePhysics.cloudWeight(pool, pool.live[k]) > 0.1)
+                        ++inside;
+                expect("and there is material inside it", inside > 5, inside + " particles in the cloud");
                 expect("a reversal turns the cloud around, mid-passage",
                     after.w > 0 && radius({
                         x: after.x,

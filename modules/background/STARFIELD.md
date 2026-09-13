@@ -1,4 +1,4 @@
-# Starfield v9
+# Starfield v10
 `~/.config/caelestia/starfield.json` is watched with 150 ms debounce (XDG_CONFIG_HOME respected).
 Missing/invalid JSON, a non-object document or missing screens disables every output; deleted keys restore defaults.
 One validated snapshot owns configuration; the shell never writes it. Full schema and defaults:
@@ -293,6 +293,80 @@ which is the lift doing what it says, SCALING the sky already there rather than 
 shell idle: **22 W / 4 % -> 23-25 W / 5-6 %**, and `qs` 37.3 % -> 34.2 % of one core (no measurable change). Captures:
 `starfield-v2/evidence/v9-merged-live-tablet-{supernova,storm,nebula,all-three}.png`, and `v9-merged-sheet.png` is the whole catalogue -- all twenty families, the
 storm and the passage included -- rendered offscreen through the merged kernels in main()'s own composite order.
+
+## v10: EVENTS THAT HAPPEN TO THE FIELD
+
+His report on v9, ledger 2285, four sentences: *"I saw a large comet or whatever that was with a large tail and it feels really poor for me: it was moving slow, same as
+the other stars, and the tail was in the wrong direction."* / the supernova *"seems almost static with colour change, when in reality it should violently explode and
+particles of it should spread everywhere."* / *"Right now everything feels like separate pieces, not part of one system."* / *"Isn't a supernova an exploded star? So it
+should first be a star and then explode, not just fade in and then out."*
+
+The third sentence is the diagnosis and the other three are its symptoms. Through v9 an event was a shader sprite SCHEDULED BESIDE the sky: it had a position the CPU
+made up, a clock of its own and no relationship whatever to the 600 particles it was drawn among. v10 makes every event something that happens **to and through** the
+particle field. The interface is four calls in `particles/Physics.js` and PARTICLES.md owns their contract; this section is what the events do with them.
+
+**THE SUPERNOVA IS A STAR.** `supernovaParticles()` is the state machine; `supernovaState()` stays a pure function of (episode, age) so the offscreen sheets can still
+sweep it, and the two talk through `e.site` and `e.hasStar`.
+- **Arrival.** `Physics.pickStar` names a real, visible, near particle: alive at least 1.5 s (fully faded in), inside a 12 % margin, still on the screen and still clear
+  of the hole when its precursor runs out, not already captured and not the tidal-disruption victim. The precursor length is then shortened against the **measured**
+  field speed (`Physics.flowSpeed`), because how long a star can be held on the screen is a property of the regime and not a wish: measured on the tablet, **14 s with
+  the camera on and 4.7 s with the hole on**, where the field itself crosses the screen in seconds. No candidate → the episode plays as v9's sprite did.
+- **Precursor.** `Appearance.render` swells THAT particle by **x4.2** (measured 2.38 → 9.19 px core), brightens it **x5.5** (1.82 → 8.79), walks it red and then
+  blue-white (r−b peaks at +0.54 at 60 % of the precursor, ends at −0.03) and pulses it from a 3.2 s period to a 1.0 s one on an INTEGRATED phase, so the period can
+  shorten without the pulse ever jumping, with the amplitude eased to nothing over the last 1.2 s so the detonation cannot cut it mid-stroke. It keeps moving with the
+  regime the whole time: **136 px over 13 s**. The sprite keeps only the halo the star casts — its core is gone, because the sprite's core was the thing that "faded in".
+- **Detonation**, one frame: the star is REMOVED (`Physics.remove`, its own counter), **180–370 debris particles** are born at it with radial velocities, a shock front
+  starts sweeping, `brightenNear` lifts the neighbourhood by 1.7 over 2.5–4 s, and the flash, the diffraction spikes and the sky lift fire on the same frame.
+  - *Speeds.* The median ejecta speed is solved, not guessed: `r(t) = (v0*t0/0.4)*((t/t0)^0.4 − 1)` is the exact integral of the Sedov decay the kick channel applies,
+    so `v0 = 0.4*shell/(t0*((span/t0)^0.4 − 1))` is the speed that puts the debris cloud on the shell's own radius at the end of the shell's own span. On the tablet
+    with a 30 s span: **median 327 px/s at t0, fast fragments 916 px/s = 0.51 short sides per second**. The range is `[0.35, 1.65] x` the median, so the slow half stays
+    inside the rim and the fast half runs ahead of it, which is what a shock into a real medium does and what stops the burst reading as a ring with a hole in it.
+    Speeds are projected by `sqrt(uniform)` — a sphere seen flat — for the same reason.
+  - *The shock.* `applyImpulse` with the `front` profile, called once a frame with the front's own advancing radius, kicks each star **exactly once as the shock
+    reaches it** and then lets it relax back into the flow over `debris.relaxSec`. Strength `shockShortSide` (0.32 short sides/s by default) at the site, zero at
+    `2.4 x` the drawn rim — the pressure wave runs ahead of the material that is lit up, and at 600 particles over a 2880x1800 buffer the drawn rim encloses about ten
+    stars, which is not an explosion the field would feel. Measured displacement of the closest neighbours: **60-76 px in the first second**.
+  - *One law, two consumers.* The rim is drawn on the same `r ~ t^0.4` from the same clock the debris decelerates on. Measured live across a whole episode:
+    **worst disagreement 1.29x over 64 frames, 271 px of debris against a 249 px rim at the end.**
+- **The shell's clock starts at the detonation**, not at the end of the flash. Two seconds of daylight between the rim and its own material is what made them two
+  objects; it also made the shell appear mid-flight (a 0.27 step in one frame, which the anti-strobe test catches).
+- **Both regimes.** With the hole on the debris is under gravity, crosses the disk band depth-ordered and can be swallowed (measured: 427 swallowed while one burst was
+  out). With the camera on it is exempt from the depth advance and the whole cloud is translated along the far layer's streamline — see PARTICLES.md, "Transients".
+
+**THE COMET IS A BODY.** `cometParticles()` spawns the nucleus as a real particle (`spawnBody`) on a **long chord, 1.1–1.6 short sides**, at a measured multiple of the
+field's own speed. `cometRatio` is 3.2 (slow) to 7.5 (fast) and every family differs; six seconds is the floor on a pass, which is what binds with the hole on.
+Measured live on the tablet: a **"slow" comet at 85 px/s against a field at 23 px/s — 3.7x — crossing 1523 px of screen in 18 s** with the camera on, and 411 px/s
+against 184 px/s with the hole on. v9 drew it along a captured Bezier over a duration between 4 and 65 s that had no relation to how fast anything else was moving.
+- **The tails come off the velocity.** A dust tail is material left behind, so it trails the motion and curves off the path — in both regimes. An ion tail is gas driven
+  off by light, so it is anti-sunward with the hole on and **trails the motion with the hole off, because the camera regime has no light source in it**. The two
+  crossfade on the hole's own envelope. And a hard clamp: no tail is ever within 80° of the heading, whatever the light is doing. Measured over 64 headings and over a
+  live pass: **worst ion 0.0°, worst dust 14.9° from straight behind, nothing ever in front.** v9 pointed BOTH tails away from the screen centre, so a comet flying
+  inward wore its tail on its face.
+- The nucleus is a particle, so it lenses, occludes and is depth-ordered; it **sheds motes** along its path (11 alive at once, each on a few seconds of its own); and
+  the chord curves — by gravity with the hole on (velocity turned **29.5°** on the way past, a real hyperbolic pass) and by rotating the peculiar channel at the
+  family's own `cometTurn` rate with it off (**47 px of bow** over a 1523 px chord).
+- With no pool behind it — the offscreen sheets, `particlesEnabled` false — `cometState` is byte-for-byte v9, which the suite pins.
+
+**THE STORM AND THE PASSAGE, SMALL ON PURPOSE.** A fireball's terminal flash is the same mechanism one size down: `brightenNear` (0.26 short sides, gain 0.75, 1.4 s) plus
+a 14-fragment spray, fired once per fireball on the frame its own flash peaks. Nothing else about the storm changed. The nebula passage is handed to the field as a
+cloud (`Physics.setCloud`): material inside it is held back — with the camera on, its approach slows, so it moves slower AND stays smaller AND stays dimmer, all three
+depth cues together — and takes `tint` of the cloud's own colour. Measured: **89.7 %** of a control run's speed inside a `drag` 0.9 cloud over twelve seconds, **99.8 %**
+outside it, 77 particles in the cloud at once.
+
+**NEW CONFIG.** `events.supernova.debrisCount` (pair, 0–480, default [180, 370]) and `events.supernova.shockShortSide` (0–2, default 0.32); `events.nebula.drag` (0–2,
+default 0.55) and `events.nebula.tint` (0–1, default 0.30); `particles.debris.maxAlive` (integer 0–480, default 400) and `particles.debris.relaxSec` (0.05–12, default
+1.6). Every one of them is carried by the defaults, so `starfield.json` needs no edit; 0 on either `debris` key turns the footprint off and gives the atlas rows back.
+
+**COST.** The transient reserve is allocated whether or not an event fires, because a resize of the sampled texture cost 13 ms → 6700 ms per frame on llvmpipe and never
+recovered: on his 2880x1800 tablet at the shipped 600 stars the atlas goes **112 → 176 rows, 112 → 176 KiB per canvas**, and the live layout never exceeds it through a
+whole supernova. The hot loop pays one hoisted boolean while no kick is alive, two adds per particle per frame for the drawn velocity, and one distance test per
+particle per live glow only while a flash is lit.
+
+**HARNESSES.** `tools/supernova_harness.qml` (27 checks) and `tools/comet_harness.qml` (18) load the real `Starfield.qml` with its real pool, fire through `pushEvent`
+and measure the pool, in both regimes. Run them the way the others are run:
+```
+cd modules/background && QT_ASSUME_STDERR_HAS_CONSOLE=1 QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qml tools/supernova_harness.qml
+```
 
 v9, THE WARM START: v8 based every schedule on `previous ? previous.start : s.clock`, so a family with no previous episode waited a FULL random interval from the moment
 the shell started — after a restart the supernova was 21–48 minutes away, the kilonova 36–84 and the burst 42–108, and the first minutes of every session, the ones he

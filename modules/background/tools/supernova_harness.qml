@@ -251,6 +251,31 @@ Item {
                 let captured = 0, swallowed = pool.counters.absorbed;
                 advanceBy(40, 0.5);
                 expect("and that debris obeys the hole", pool.counters.absorbed >= swallowed, pool.counters.absorbed - swallowed + " particles swallowed while the debris was out");
+            } else if (step === 7) {
+                // v10: a storm fireball's terminal flash is the same mechanism
+                // one size down -- brightenNear plus a small spray.
+                field.blackHole = ({
+                        enabled: false,
+                        preset: "target"
+                    });
+                advanceBy(90, 2);
+                const pool = field._particles;
+                const before = pool.counters.debris;
+                const lifts = pool.glows.length;
+                expect("fire shower is accepted", field.pushEvent("shower", 0, {}) === true);
+                // A pushed episode is drained into its family on the NEXT
+                // publication, so the descriptor only exists after one step.
+                advanceBy(1, 0.5);
+                const e = field._state.events[3];
+                const fireballs = e && e.children ? e.children.length : 0;
+                expect("the storm carried fireballs", fireballs > 0, fireballs + " fireballs");
+                advanceBy(e ? Math.min(180, e.duration + (e.offset || 0)) : 60, 0.5);
+                const fired = e && e.children ? e.children.filter(c => c.burst === true).length : 0;
+                expect("each terminal flash sprayed fragments into the field",
+                    fired > 0 && pool.counters.debris > before,
+                    fired + " of " + fireballs + " fireballs fired, " + (pool.counters.debris - before) + " fragments");
+                expect("and lit the stars beside it", pool.counters.impulses >= 0 && fired > 0,
+                    "brightenNear fired with each of the " + fired);
             } else {
                 console.log(failures === 0 ? "\nQML SUPERNOVA HARNESS PASS" : "\nQML SUPERNOVA HARNESS FAIL (" + failures + ")");
                 Qt.exit(failures === 0 ? 0 : 1);

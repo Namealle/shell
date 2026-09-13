@@ -39,6 +39,8 @@ Service schema (closed object; reject unknown keys, booleans must be booleans):
 | flare.share | .085 | finite 0..0.5 of near births drawn as flared |
 | flare.maxAlive | 10 | integer 0..64; render() caps the live flared instances |
 | flare.capturedLight | .7 | finite 0..1; captured light = 1 - value*captured |
+| debris.maxAlive | 400 | integer 0..480; transient (event) particles alive at once. **Atlas-allocated whether or not an event ever fires** |
+| debris.relaxSec | 1.6 | finite 0.05..12 s; how long a star shoved by a shock takes to relax back into the flow |
 | publishHz | 30 | integer 10..30; effective rate is the largest 30/n not above it |
 | mass | 1 | finite 0.5..3; also read from `blackHole.mass`, which this overrides |
 | depth.frontShare | .12 | finite 0..0.5 of near births composited in FRONT of the disk |
@@ -54,7 +56,7 @@ Service schema (closed object; reject unknown keys, booleans must be booleans):
 | dust.voidCells | 44 | integer 4..192 far-dust cells per void/stream cell |
 | dust.cellScale | .77 | finite 0.4..2; far-dust cell size, <1 puts back the count clustering removes |
 
-Only those keys exist. Preserve missing population keys until stress defaults
+Only those keys exist (`debris` is v10). Preserve missing population keys until stress defaults
 are resolved. Renderer validation clamps, sorts pairs, rounds integer fields and
 proportionally reduces totals over3200; the service should reject malformed
 values instead. Normalization: `particles/Physics.js` defaults()/validate().
@@ -320,6 +322,142 @@ above the budget while the relaxations catch up.
 Flags bit 6 is only a hint that the deformation is nonzero; the shader and the
 packer both weight on the scalar. Node tests: `modules/background/tools/test-particles.mjs`.
 
+## The event -> particle interface (v10)
+
+His report, ledger 2285: *"right now everything feels like separate pieces, not
+part of one system."* Through v9 an event was a shader sprite scheduled BESIDE
+the sky — a supernova faded in where no star had ever been, a comet drifted at
+the field's own speed with its tail pointing the wrong way. These calls are the
+system. Every v10 event reaches the field through them, so a sprite and the
+material it is made of share one position, one velocity and one clock by
+construction instead of by two pieces of code being kept in step.
+
+| call | what it does |
+|---|---|
+| `applyImpulse(s, x, y, strength, radiusPx, profile)` | a radial shove on the particles already there |
+| `spawnBurst(s, x, y, count, speedRange, traits)` | debris born at a point, integrated like everything else |
+| `spawnBody(s, x, y, vx, vy, traits)` | one body under its own proper motion (a comet's nucleus) |
+| `brightenNear(s, x, y, radius, gain, decaySec)` | a transient luminosity lift on the stars around a flash |
+| `pickStar(s, opts)` / `markNova(s, i, opts)` | the existing particle an event happens TO, and its precursor |
+| `flowSpeed(s)` | the field's own mean screen speed, to measure a body against |
+| `setCloud(s, cloud)` / `cloudWeight(s, i)` | a cloud the field passes through (the nebula) |
+| `driftGroup(s, group, dx, dy)` | translate one event's material as a body |
+| `remove(s, i, cause)` | a public death, for an event that consumes a particle |
+
+**`applyImpulse` is bounded by construction.** No particle receives more than
+`strength` px/s, so the total momentum delivered is at most `strength x (particles
+in reach)`, and the return value is `{count, momentum, peak}` so the caller and
+the test can check it. `strength` is clamped to `BOUNDS.impulsePx[1]` = 6000 px/s
+and `radiusPx` to eight screen diagonals. Four profiles:
+
+- `blast` (default) — `(1-u)^2 (1+u)`, strongest at the centre, zero at `radiusPx`.
+- `shell` — a Gaussian band of `widthPx` at `radiusPx`.
+- `front` — the ANNULUS `[fromPx, radiusPx]` only, weighted `(1-r/maxPx)^2(1+r/maxPx)`.
+  Called once a frame with the front's own advancing radius, this kicks each
+  particle **exactly once**, as the shock reaches it. That is the difference
+  between a shell that passes through the field and one drawn over the top of it.
+- `flat` — uniform inside `radiusPx`.
+
+### The peculiar-velocity channel
+
+`kickX`/`kickY`/`kickAge`/`kickDrag` are new simulation fields, and they are the
+mechanism the whole interface rests on. At `cameraBlend` 1 `step()` rewrites the
+stored velocity from the magnification **every substep** (`vx += blend*((nx-x)*invH
+- vx)`), so a velocity impulse is discarded on the frame it lands and an event
+could not touch the field at all in the one regime he runs. The kick channel
+moves the POSITION, after the magnification, and decays as
+
+```
+v = v0 * (t0/t)^p          t0 = 0.02 s
+```
+
+- `p = 0.6` integrates to `r ~ t^0.4` — **the Sedov law `supernovaState` draws
+  the rim with**, which is why the shell and the debris it is made of cannot
+  drift apart. Measured live: worst disagreement 1.29x over a whole episode.
+- `p = 0` never slows: a body under its own proper motion, i.e. a comet.
+- `p` from `debris.relaxSec` (1.05 at the default) is a star shoved by a shock
+  and easing back into the flow.
+
+`applyImpulse` splits a kick by `cameraOn(s)`: the orbital share goes into
+`vx/vy`, where it is a genuine change of orbit and gravity answers it, and the
+camera share goes into the channel. A kick is truncated at 2 px/s (0.07 px in a
+30 Hz frame) so the power law's tail cannot run for half a minute at speeds
+nothing can see. `s.kickAlive` counts the particles carrying one; while it is
+zero the hot loop pays one hoisted boolean. `Appearance.render` adds the channel
+to the drawn velocity, so streaks point the right way.
+
+### Transients
+
+A particle spawned by `spawnBurst`/`spawnBody` sets `s.transient[i]`, and that
+flag changes four things:
+
+1. **It is not population.** `replenish()` compares `aliveCount - transientCount`
+   with the target, so a burst does not stop ordinary births for its own life.
+2. **It does not feed the lifetime estimator.** 400 forty-second lives against a
+   97 s orbital mean would have quadrupled the birth rate for minutes.
+3. **It is exempt from the camera regime** — no magnification, no depth fade, no
+   death at the near plane. The camera crosses the whole depth range in sixty
+   active seconds, so anything anchored in 3-D leaves the screen before its own
+   shell finishes (the v9 note on `supernovaSite` already said so for the site);
+   and debris that each drew its own depth magnified by a different factor and
+   pulled away from the rim — measured 650 px of debris against a 279 px rim.
+   Debris expands by its own velocity and the cloud is translated as one body
+   (`driftGroup`) along the far layer's streamline, which is where a supernova is.
+4. **It is never a `doom()` victim and never a `pickStar` candidate.**
+
+`p2` carries the event's group id (1 supernova, 2 comet, 3 storm fireball) so
+`driftGroup` can move one event's material and leave another's alone.
+
+`Appearance.transient(s, i, traits)` is the optical half, wired up once by the
+renderer (`pool.transientBirth`) exactly the way `birthCallback` is: Physics
+must not reach into Appearance's arrays. Event material takes its colour from
+the physics of the event, never from his palette, which is why this is a
+separate entry point and not a flag inside `birth()`.
+
+**Archetype 7, the EMBER.** Supernova debris: hot white on the frame it is born
+(a two-frame entrance — an explosion does not fade in over a third of a second),
+cooling through yellow (1, 0.90, 0.55) and orange (1, 0.55, 0.22) to a dim red
+over its own life while its core shrinks to 55 % and its light falls as
+`(1-u)^1.7`. The shader knows nothing about it: it reads flare, near and front
+out of the flags and the low three bits are the CPU's alone.
+
+### The atlas
+
+`BOUNDS.capacity` is **3680**, not 3200: the population ceiling is still 3200
+and the transient reserve sits on top of it, so an event's debris can never take
+a slot a star was going to be born into. `bounds()` adds `debris.maxAlive` to
+`maxItems` and returns `maxWide`/`wideSupport` for three instances at the packed
+core maximum (12 px) and the deformation streak ceiling — a supernova's
+precursor swells to x4.2 and a comet's nucleus is a body, both wider than any
+configured star. `Packing.capacity` takes the two new arguments and adds them as
+a bounded addition, exactly like the flare and tidal-disruption sets.
+
+All of it is UNCONDITIONAL, for the same reason the tidal-disruption ceiling is:
+the atlas is allocated once per configuration and a resize of the sampled
+texture cost 13 ms -> 6700 ms per frame on llvmpipe and never recovered.
+Measured on his 2880x1800 tablet at the shipped 600 stars: **112 -> 176 rows,
+112 -> 176 KiB per canvas**, and the live layout never exceeds it through a
+whole supernova (harness check). `debris.maxAlive` 0 gives the rows back.
+
+### The cloud
+
+`setCloud` hands the nebula passage to the field: an ellipse (`x, y, radius,
+aspect, angle`), a `drag` and a colour `tint`/`weight`. `cloudStep` runs once per
+OUTER step over the live list — it is a per-second effect, not a force, so it
+never enters the substep loop — and expresses the drag in each regime's own
+terms, because a multiply on the stored velocity only works in one of them:
+
+- hole on: `vx, vy *= exp(-drag*w*dt)`.
+- camera on: the cloud **holds the material back in depth**. The approach slows
+  by `drag*w` while the particle is inside, which slows it on the screen, keeps
+  it smaller and keeps it dimmer — all three depth cues together — and leaves it
+  honestly further away once the cloud has gone past. Measured: 89.7 % of a
+  control run's speed over twelve seconds inside a `drag` 0.9 cloud, 99.8 %
+  outside it.
+
+`Appearance.render` reads the same ellipse for the tint. Both are small on
+purpose: it is a passage, not a wall.
+
 ## Tidal disruption (v6, `phenomena.tde`)
 
 Particles only: no event slot, no uniform, no shader change. The renderer owns
@@ -397,9 +535,15 @@ Simulation fields gained `depthZ` in v8 (the camera's per-star depth, 1 at the
 near plane and `motion.camera.depth` at the far one); it is dimensionless, so
 `rescale()` leaves it alone, and `counters` gained `passed` for a star that
 reaches the end of the camera's depth range.
+Simulation fields gained `kickX`/`kickY`/`kickAge`/`kickDrag` in v10 (the
+peculiar-velocity channel) and `transient`/`glows`/`cloud`/`nova` alongside them;
+`counters` gained `debris`, `impulses`, `kicked` and `consumed`/`supernova`.
+`rescale()` scales the kick channel, the glow sources and the cloud with the
+other lengths.
 Render instances are one flat Float64Array, stride 21: x y vx vy core support
 streak r g b lum flags phase p0 age captured id generation halfMajor halfMinor
-stretch; flags is the archetype in the low three bits, bit 3 flare, bit 4 near
+stretch; flags is the archetype in the low three bits (v10 adds **kind 7, the
+ember**), bit 3 flare, bit 4 near
 layer, bit 5 in front of the disk, bit 6 a nonzero tidal deformation. The binner walks the streak's
 capsule (half-extents at 18/19) rather than its bounding box; the packer turns
 the same two numbers into the axis-aligned box the shader rejects against, which

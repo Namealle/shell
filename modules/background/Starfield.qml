@@ -1264,6 +1264,37 @@ Item {
         };
     }
 
+    // v10. A fireball's terminal flash is the storm's one moment of violence,
+    // so it reaches the field the same way a supernova does: it lights the
+    // stars around it and sprays a handful of fragments. Small, because a storm
+    // is many small things and the fireballs are the loud ones -- not because
+    // it is a lesser mechanism. Fires once per fireball, on the frame its own
+    // flash peaks.
+    function stormFireballParticles(e: var, c: var, at: var): void {
+        if (!_particles || !_particles.live || !particlesEnabled || c.burst)
+            return;
+        const age = _state.clock - e.start - c.at;
+        if (age < c.flight * 0.90)
+            return;
+        c.burst = true;
+        const P = _particles;
+        const shortSide = Math.min(P.width, P.height);
+        ParticlePhysics.brightenNear(P, at[0], at[1], 0.26 * shortSide, 0.75, 1.4);
+        ParticlePhysics.spawnBurst(P, at[0], at[1], 14, [0.06 * shortSide, 0.20 * shortSide], {
+            lifeSec: [0.9, 2.4],
+            sizePx: [0.8, 1.9],
+            lum: [2.0, 3.6],
+            colour: c.colour,
+            endColour: [0.95, 0.45, 0.18],
+            fastShare: 0.12,
+            fastGain: 1.9,
+            streakPx: Math.min(40, P.config.streak.bendMaxPx),
+            exposureSec: 0.05,
+            drag: 0.9,
+            group: 3
+        });
+    }
+
     // ---- Radial phenomena (kinds 5-9) -------------------------------------
     // All five draw through shader style 3 (core + halo + ring + echo ring) and
     // differ only in envelope, colour, size and schedule. Everything below is
@@ -1992,7 +2023,8 @@ Item {
             const cfg = eventConfig(8);
             const index = e.index;
             const optics = Math.max(1, Math.sqrt(w * h / (1024 * 576)));
-            const count = Math.round(clamp(Number(cfg.debris) || (180 + 190 * random(index, screenSeed + 9311)), 0, 480));
+            const span = parameterRange(cfg, "debrisCount", [180, 370], 0, 480);
+            const count = Math.round(span[0] + (span[1] - span[0]) * random(index, screenSeed + 9311));
             const median = supernovaEjecta(e);
             const mid = median / 0.7071;
             // The ejecta is not one speed: the slow half stays inside the rim
@@ -2697,6 +2729,8 @@ Item {
             const ceiling = Math.min(Math.round(clamp(eventHeadCap, 0, 3)), 3);
             for (const child of shower.children) {
                 const slot = stormFireballState(shower, child);
+                if (slot)
+                    stormFireballParticles(shower, child, slot.head);
                 if (slot && slots.length < ceiling)
                     slots.push(slot);
             }
@@ -3204,6 +3238,22 @@ Item {
         if (s.nebula && s.nebula.geo === null && s.clock >= s.nebula.start)
             s.nebula.geo = s.geo[0];
         const n = nebulaState(s.nebula);
+        // v10. The passage is something the field goes THROUGH, not a sheet of
+        // paint in front of it: material inside the cloud is held back (with
+        // the camera on, its approach slows, so it moves slower AND stays
+        // smaller AND stays dimmer -- all three depth cues together) and takes
+        // a little of the cloud's colour. Both are small on purpose.
+        if (_particles && _particles.live && particlesEnabled) {
+            const cfg = nebulaConfig();
+            const share = n.head[3] > 0 && s.nebula ? clamp(n.head[3] / Math.max(1e-6, s.nebula.gain), 0, 1) : 0;
+            ParticlePhysics.setCloud(_particles, share > 0.01 ? {
+                x: n.head[0], y: n.head[1], radius: n.head[2],
+                aspect: n.shape[2], angle: Math.atan2(n.shape[1], n.shape[0]),
+                drag: clamp(cfg.drag === undefined ? 0.55 : cfg.drag, 0, 2) * share,
+                tint: [n.tone0[0], n.tone0[1], n.tone0[2]],
+                weight: clamp(cfg.tint === undefined ? 0.30 : cfg.tint, 0, 1) * share
+            } : null);
+        }
         // A passage runs for four minutes in every thirty. The rest of the
         // time the block is already off, and rewriting seven vector4ds at
         // 30 Hz on three screens to say so is 630 allocations a second for
