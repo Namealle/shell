@@ -226,10 +226,11 @@ function render(previous, s, style) {
     var live = s.live, n = s.liveCount, cx = s.centreX, cy = s.centreY;
     // Central fade radius follows the same envelope as the swallow radius; with
     // the hole off it is a small soft centre, not a hole-sized hole. It is the
-    // VISIBLE rim, so a star dissolves at the edge of the drawn object rather
-    // than surviving across it and cutting out at the photon ring.
-    var rim = (s.rim === undefined ? s.rh : s.rim) * (s.absorb === undefined ? 1 : Math.max(0.12, s.absorb));
-    var rimFade = 0.10 * rim;
+    // SHADOW: a star dissolves into the black core, which is where it is eaten.
+    // It is NOT the drawn rim - crossing the disk band is an occlusion, which
+    // the shader composites, not a swallow (ledger 2282).
+    var shadow = (s.shadow === undefined ? s.rh : s.shadow) * (s.absorb === undefined ? 1 : Math.max(0.12, s.absorb));
+    var rimFade = 0.10 * shadow;
     var width = s.width, height = s.height, clock = s.clock, dim = s.config.flare.capturedLight;
     var flareCap = s.config.flare.maxAlive, flares = 0;
     var st = s.config.streak;
@@ -237,14 +238,15 @@ function render(previous, s, style) {
     var bendMaxPx = st.bendMaxPx, bendSag = 6;
     var binaryCap = s.config.depth.binaryMaxAlive, binaries = 0;
     // Tidal deformation. mu is proportional to rh^3 * mass, so normalising the
-    // field mu/r^3 at a radius proportional to Rv*cbrt(mass) leaves a drive that
+    // field mu/r^3 at a radius proportional to Rd*cbrt(mass) leaves a drive that
     // depends on mass/r^3 and on nothing else: one number moves both the reach
     // and the strength, and the hole's own enable envelope gates all of it, so a
     // disabled hole fades the deformation out over the same thirty seconds.
     var envelope = s.absorb === undefined ? 1 : clamp(s.absorb, 0, 1);
-    // The reach is anchored to the rim for the same reason the capture band is:
-    // an onset inside the drawn hole is an onset no surviving star ever reaches.
-    var reachBase = st.bendRadiusRv * (s.rim === undefined ? s.rh : s.rim)
+    // The reach is anchored to the DISK's rim: the tide should bite as a star
+    // enters the material and tear it apart on the way down to the shadow, so
+    // it scales with the disk rather than with the shadow or the arcs.
+    var reachBase = st.bendRadiusRd * (s.diskRim === undefined ? s.rh : s.diskRim)
         * Math.pow(clamp(s.config.mass, 0, 3), 1 / 3);
     // The relaxation is driven by ACTIVE time, so a paused output resumes where
     // it left off instead of jumping a frame's worth of stretch per real second.
@@ -366,14 +368,14 @@ function render(previous, s, style) {
             halfMinor = Math.min(support, supportFor(core, 0, flare) + bendSag * stretch);
         // Both fades are inlined smoothsteps and both are 1 almost everywhere:
         // a particle is only inside the rim fade or younger than 0.35 s rarely.
-        // The rim fade is a tenth of the rim rather than a couple of core radii:
+        // The fade is a tenth of the shadow rather than a couple of core radii:
         // over a few pixels the swallow reads as a star switching off, and a
         // captured star creeping in at a few px/s would switch off mid-orbit.
         var span = rimFade > core * 2 ? rimFade : core * 2;
         if (span < 6) span = 6;
         var fade = 1;
-        if (radius < rim + span) {
-            var u = radius <= rim ? 0 : (radius - rim) / span;
+        if (radius < shadow + span) {
+            var u = radius <= shadow ? 0 : (radius - shadow) / span;
             fade = u * u * (3 - 2 * u);
         }
         var age0 = AGE[i];

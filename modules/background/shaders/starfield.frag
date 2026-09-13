@@ -940,6 +940,13 @@ void main() {
     float edge = pow(clamp(dot(edgePosition,edgePosition)*0.6,0.0,1.0),1.5);
     vec3 far = ubuf.skyColor.rgb+ubuf.edgeLift*edge*vec3(0.10,0.19,0.30);
     vec3 material = vec3(0.0), ahead = vec3(0.0);
+    // How much of a particle BEHIND the disk the disk eats. disk.a is only the
+    // alpha the emissive shading happened to leave; bhDiskAbsorb is the disk's
+    // geometric coverage weighted by its own emissivity, which is what actually
+    // stands between a star and the camera. Taking the larger of the two is why
+    // a star can cross the disk band alive without ever being drawn ON TOP of
+    // the material (his report, ledger 2281).
+    float diskOcclusion = 0.0;
     if (ubuf.density>0.0) {
         float scale = max(1.0,sqrt(ubuf.resolution.x*ubuf.resolution.y/(1024.0*576.0)))/sqrt(ubuf.density);
         vec2 relative = pixel-ubuf.resolution*0.5;
@@ -948,7 +955,8 @@ void main() {
         if (hole && ubuf.radialMode>0.5) { float weight; source=bhWarpBackground(pixel,weight); }
         if (all(greaterThanEqual(source,vec2(0.0))) && all(lessThan(source,ubuf.resolution)))
             far += stars(source,angle,scale,0.0,-1.0,pixel,1.0)*ubuf.brightness;
-        material = particleField(pixel,particleDiskAbsorb(pixel,disk.a),ahead)*ubuf.brightness;
+        diskOcclusion = particleDiskAbsorb(pixel,disk.a);
+        material = particleField(pixel,diskOcclusion,ahead)*ubuf.brightness;
         ahead *= ubuf.brightness;
     }
     far = decodeDisplay(far);
@@ -959,7 +967,10 @@ void main() {
     material *= shadowPass;
     // A small share of near particles is in front of the disk: composited after
     // it, masked by the geometric shadow only, so the disk reads as behind them.
-    vec3 linearColour = disk.rgb+(1.0-disk.a)*(far+material)+ahead*shadowPass;
+    // Everything else is BEHIND the disk and is attenuated by the disk's own
+    // coverage, not by the alpha its shading left: a middle star crossing the
+    // material sinks into it instead of riding over the top of it.
+    vec3 linearColour = disk.rgb+(1.0-disk.a)*far+(1.0-diskOcclusion)*material+ahead*shadowPass;
     vec3 events = eventSlot(pixel,ubuf.event0Head,ubuf.event0Colour,ubuf.event0Tail01,ubuf.event0Tail23,ubuf.event0Tail4,ubuf.event0Shape,ubuf.event0Bounds);
     events += eventSlot(pixel,ubuf.event1Head,ubuf.event1Colour,ubuf.event1Tail01,ubuf.event1Tail23,ubuf.event1Tail4,ubuf.event1Shape,ubuf.event1Bounds);
     events += eventSlot(pixel,ubuf.event2Head,ubuf.event2Colour,ubuf.event2Tail01,ubuf.event2Tail23,ubuf.event2Tail4,ubuf.event2Shape,ubuf.event2Bounds);
