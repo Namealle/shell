@@ -326,6 +326,17 @@ function tests() {
         check("drainPending lands it on its family", !!landed && landed.kind === 10 && Math.abs(landed.start - 10) < 0.001);
         check("the queue is then empty", h2._state.pendingEvents.length === 0);
         check("pushEvent rejects an unknown family", h2.pushEvent("nope", 0, {}) === false);
+        // v9: overriding one phase of a supernova recomputes its duration, so
+        // `fire supernova tablet '{"shellSpan":20}'` is a shorter shell rather
+        // than a life cycle truncated in the middle of a phase.
+        {
+            h2._state.pendingEvents = [];
+            h2.pushEvent("supernova", 0, { precursor: 4, shellSpan: 20, remnant: 40 });
+            const fired = h2._state.pendingEvents[h2._state.pendingEvents.length - 1];
+            check("a fired supernova recomputes its duration from the overrides",
+                !!fired && Math.abs(fired.duration - (4 + fired.rise + fired.hold + 20 + 40)) < 1e-9,
+                fired ? fired.duration.toFixed(2) + " s" : "not queued");
+        }
         for (let i = 0; i < 8; ++i) h2.pushEvent("nova", 60, {});
         check("the queue is bounded", h2._state.pendingEvents.length <= 4, String(h2._state.pendingEvents.length));
     }

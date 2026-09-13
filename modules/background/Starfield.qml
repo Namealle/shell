@@ -1812,9 +1812,17 @@ Item {
         const e = captureRadial(kind, s.eventIds[kind]++, at);
         if (!e)
             return false;
-        if (overrides)
+        if (overrides) {
             for (const key of Object.keys(overrides))
                 e[key] = overrides[key];
+            // A supernova's duration is the SUM of its phases, so overriding one
+            // of them without this would leave the episode ending in the middle
+            // of a phase. Recomputed from whatever the overrides left behind,
+            // which is what makes `fire supernova tablet '{"shellSpan":20}'` a
+            // shorter shell rather than a truncated life cycle.
+            if (kind === 8)
+                e.duration = e.precursor + e.rise + e.hold + e.shellSpan + e.remnant;
+        }
         s.pendingEvents.push(e);
         return true;
     }

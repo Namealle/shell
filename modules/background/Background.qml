@@ -65,9 +65,9 @@ Variants {
                     Connections {
                         target: Services.Starfield
 
-                        function onFire(name: string, screen: string): void {
+                        function onFire(name: string, screen: string, overrides: var): void {
                             if (!screen || screen === win.modelData.name)
-                                starfield.item.pushEvent(name, 0, null);
+                                starfield.item.pushEvent(name, 0, overrides);
                         }
                     }
                     screenSeed: Services.Ambient.seedFor(win.modelData.name)

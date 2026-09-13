@@ -1,4 +1,4 @@
-# Starfield v8
+# Starfield v9
 `~/.config/caelestia/starfield.json` is watched with 150 ms debounce (XDG_CONFIG_HOME respected).
 Missing/invalid JSON, a non-object document or missing screens disables every output; deleted keys restore defaults.
 One validated snapshot owns configuration; the shell never writes it. Full schema and defaults:
@@ -62,7 +62,10 @@ FORWARDED like `blackHole`/`particles` (an absent key keeps the renderer's defau
   "starBirth":{"enabled":true,"everyMinutes":[8,16],"durationSec":[80,170],"gain":0.60,"condenseSec":[25,55],"haloPx":[40,9],"paletteMix":0.30},
   "nova":{"enabled":true,"everyMinutes":[6,13],"riseSec":[1.2,2.4],"holdSec":[0.6,1.6],"decaySec":[20,45],"gain":0.90,"shellShortSide":[0.035,0.06],"shellGain":0.26,"paletteMix":0.30},
   "redGiant":{"enabled":true,"everyMinutes":[18,34],"durationSec":[140,280],"gain":0.60,"swellSec":[45,80],"collapseSec":[30,55],"nebulaShortSide":0.030,"nebulaGain":0.16},
-  "supernova":{"enabled":true,"everyHours":[0.35,0.8],"riseSec":[0.8,1.5],"holdSec":[0.6,1.6],"decaySec":[50,130],"gain":1.35,"remnantSec":[90,200],"shellShortSide":[0.09,0.15],"shellGain":0.24,"echoGain":0.10,"echoDelaySec":[40,90],"hypernovaShare":0.15,"hypernovaGain":1.60,"hypernovaCooldownSec":10800,"paletteMix":0.35},
+  "supernova":{"enabled":true,"everyHours":[0.5,1],"precursorSec":[10,20],"riseSec":[0.8,1.5],"holdSec":[0.6,1.6],"decaySec":[25,60],
+    "flashShortSide":[0.15,0.25],"skyLift":0.35,"spikeGain":0.55,"gain":1.35,"shellSec":[30,90],"shellShortSide":[0.25,0.40],"shellGain":0.55,
+    "filaments":0.55,"remnantSec":[120,300],"remnantGain":0.26,"pulsarGain":0.30,"pulsarPeriodSec":1.4,
+    "hypernovaShare":0.15,"hypernovaGain":1.60,"hypernovaCooldownSec":10800,"paletteMix":0.35},
   "kilonova":{"enabled":true,"everyHours":[0.6,1.4],"flashSec":0.6,"gain":1.10,"ringShortSide":0.05,"ringGain":0.34,"ringSec":[8,15]},
   "pulsar":{"enabled":true,"everyHours":[0.5,1.1],"durationSec":[120,260],"periodSec":[0.9,2.2],"gain":0.70,"floorFraction":0.55,"edgeSec":0.14},
   "gammaBurst":{"enabled":true,"everyHours":[0.7,1.8],"riseSec":[0.4,0.7],"flashSec":[0.5,0.8],"gain":1.00,"beamShortSide":[0.10,0.18],"beamGain":0.42,"afterglowSec":[30,90]},
@@ -70,9 +73,9 @@ FORWARDED like `blackHole`/`particles` (an absent key keeps the renderer's defau
 "phenomena": {"tde":{"enabled":true,"everyMinutes":[40,90],"streakPx":[60,140],"stretchSec":[6,12],"fragments":[4,8],"diskFlash":0.15},
   "microlensing":{"enabled":true,"gainCap":2.5}, "moods":{"clearing":0.15,"nebular":0.15}}
 ```
-Measured on DP-3 (1440x2560), three seeds, six hours each: 39 meteors, 5.7 comets, 14 satellite passes, 4.9 star births, 6.2 novae, 2.3 red giants,
-0.8 supernovae, 1.2 pulsars, 0.8 kilonovae, 0.7 gamma-ray bursts, 0.7 showers and 0.6 slow wanderers **per hour** - a notable non-meteor event every
-~2.7 min and something dramatic every ~26 min. `modules/background/tools/test-events.mjs --audit [config.json]` reprints that table for any config
+Measured on DP-3 (2160x3840 device), three seeds, six hours each, v9 defaults: 38.9 meteors, 6.1 comets, 13.9 satellite passes, 5.0 star births, 6.3 novae,
+2.3 red giants, 0.94 supernovae, 1.3 pulsars, 0.8 kilonovae, 0.8 gamma-ray bursts, 0.7 showers and 0.7 slow wanderers **per hour** - something dramatic
+every 23.5 min, and the supernova alone is now on the screen **264 seconds of every hour** (v6 drew it for 0). `modules/background/tools/test-events.mjs --audit [config.json]` reprints that table for any config
 on all three of his outputs; it runs the shipped scheduler, not a copy of it.
 **`events.rateScale` (0-4, default 1) is the one dial for all of it.** It divides every interval in the catalogue - meteors, comets, satellites,
 showers, wanderers and the seven phenomena. 2 is twice as many events, 0.5 half as many, **0 turns every scheduled event off** (nothing is captured,
@@ -117,7 +120,7 @@ Event intervals allow up to 86400 s; minima: meteor 3, comet 60, satellite 45. C
 phenomenonCap 1–3 (long faint slots, separate from headCap and never spilling into it), phenomenonGainCap 0.3–3, dramaCooldownSec 300–86400 across all dramatic
 families (supernova, kilonova, gamma-ray burst), rateScale 0–4 dividing every interval.
 Schedules: `everyMinutes` ordered pair 1–1440, `everyHours` ordered 0.25–168. Every `gain` is 0–the value listed in the defaults block; shells/rings/nebulae ≤0.25 short
-sides, GRB beams ≤0.25, satelliteGlint gain is a 1–4 multiplier on an existing pass; durations 10–1800 s, sub-envelopes (rise/hold/decay/swell/collapse/echo/afterglow)
+sides (the v9 supernova's own `shellShortSide` and `flashShortSide` go to 0.6, and are diameters), GRB beams ≤0.25, satelliteGlint gain is a 1–4 multiplier on an existing pass; durations 10–1800 s, sub-envelopes (rise/hold/decay/swell/collapse/echo/afterglow)
 0–600 s, remnant ≤1800 s, cooldowns 600–604800 s, hypernovaShare 0–1, `haloPx` is a from–to span 0.5–96 px and may descend.
 Anti-strobe floors are VALIDATOR-ENFORCED, not advice: `riseSec` ≥0.8 s (nova and supernova), ≥0.35 s (gamma-ray burst, which is sub-second by nature — ten frames at
 30 fps, eased); kilonova `flashSec` ≥0.35 s; pulsar `periodSec` ≥0.8 s, `floorFraction` ≥0.5 (the trough never drops below half the peak, so a pulsar modulates instead
@@ -134,13 +137,14 @@ share. Both interpolate the two outcomes by the eased weight rather than moving 
 the middle half of the pass), and now also drives the head flash so the glint blooms. A satellite and a slow wanderer used a FIXED 0.65 px sigma whatever the buffer —
 14 lit pixels against a bright star's 1.55 px sigma and 243/255, smaller AND dimmer than an ordinary star; both scale with the near-layer optics now (0.62 and 0.56 of
 it) and their gain cap is 0.55 and 0.75 rather than 0.33 and 0.40. All seven phenomena are DRAWN, as kinds 5–11 on **three** phenomenon slots (event3/4/5, 80 B each; UBO reflection 1520 → 1600 B of 16384). `starBirth`, `nova`, `redGiant`,
-`supernova`, `pulsar` and `kilonova` share one kernel (style 3, radial: core + halo + ring + echo ring) and differ only in envelope, colour, size and schedule:
+`pulsar` and `kilonova` share one kernel (style 3, radial: core + halo + ring + echo ring) and differ only in envelope, colour, size and schedule:
 head=(x, y, coreSigmaPx, peak), shape=(haloSigmaPx, ringGain, ringWidthPx, ringRadiusPx), tail01=(echoRadiusPx, echoGain, haloGain, coreGain). Each component's gain is
 absolute and is divided by the slot peak, so a nova's shell outlives the core that threw it, a light echo outlives the shell, and a kilonova's ring reddens through the
 r-process colour after the flash that threw it has gone. `gammaBurst` is **style 4**: core + halo + two OPPOSED cones, no rings, so the ring channel is re-read as the
 beam — tail01=(haloSigmaPx, haloGain, coreGain, beamGain), shape=(dirX, dirY, beamLengthPx, beamWidthPx).
 **Placement.** An event composites after the disk and is not shadow-masked, so one sitting on the hole would shine straight through it; placement is therefore REJECTED,
-never clamped, inside 1.25× what the hole actually DRAWS, or within 0.05 short sides of an edge — sixteen attempts, then the episode is skipped. The drawn reach comes
+never clamped, inside 1.25× what the hole actually DRAWS, or within 0.05 short sides of an edge (v9's supernova asks for 0.12, because its shell reaches 0.20 short
+sides and a rim half off the screen is half an event; measured acceptance on the tablet with his hole on, 32 %) — sixteen attempts, then the episode is skipped. The drawn reach comes
 from `Physics.visibleRadius()` on the hole's own published uniforms, the same call the particles use, so one number moves both. **v6 excluded 1.6× `bhGeometry.y`, which
 is the LENSING reach — 8 Rh under his `target` preset, so 12.8 Rh. On DP-3 (2160x3840 device) that is 3041 px against a 1080 px half-width; on HDMI-A-1 2028 px and on
 the tablet 2534 px. It covered the whole buffer on all three: measured acceptance 0.000, 0/400 captures found a spot, so no phenomenon had EVER been placed on any of
@@ -202,6 +206,59 @@ magnification about the centre, so the correlation peak is the answer): hole on 
 three outputs, `qs` process CPU over 30 s and `nvidia-smi`: hole on 20.5 % of one core at 3 % GPU, camera 18.4 % at 2 %. The camera regime is CHEAPER live as well as in
 the harness -- no innermost orbit to subdivide for. Captures: `starfield-v2/evidence/v8-live-tablet-camera-{holeon,out,in}.png` and the `-trails.png` composites of all
 ten frames, which is what shows the streaming.
+v9, THE WARM START: v8 based every schedule on `previous ? previous.start : s.clock`, so a family with no previous episode waited a FULL random interval from the moment
+the shell started — after a restart the supernova was 21–48 minutes away, the kilonova 36–84 and the burst 42–108, and the first minutes of every session, the ones he
+actually watches, could not contain a dramatic event at all (his report, ledger 2284). The FIRST episode of each family now lands uniformly in **[0.3, 1] × that
+family's own interval MINIMUM**, and the first DRAMATIC one is additionally capped at `warmStartCapSec`, 240 s. Both bounds are divided by `events.rateScale` like every
+other interval, so at rateScale 2 the first supernova is at 120 s and at 0.5 it is at 480 s; the shared `dramaCooldownSec` is applied AFTER the cap, so the supernova
+takes the early slot (it is scheduled first) and the kilonova and the burst queue a cooldown behind it. A warm-started dramatic episode reserves on INSTANT slot
+occupancy instead of on any overlap across its whole life: ownership is sticky and claimed in the first second, so a free slot at its start is all it needs, and the
+three long quiet families would otherwise straddle the four-minute window and push it past the very cap the warm start exists to enforce; anything that collides later is
+retired and rescheduled by publishPhenomena, which already exists for that. `_state.firstEpisode` keeps it a per-process first, so a retired phenomenon reschedules on
+its ordinary interval and retirement can never loop. Pinned in `test-events.mjs`.
+v9, THE SUPERNOVA: a force-fired v8 supernova on his 2880x1800 tablet was a ~40 px dot with a soft halo (`starfield-v2/evidence/v8-fire-supernova-tablet-tiny.png`).
+It is a four-phase LIFE CYCLE now, on its own kernel — **style 6, `supernovaField`** — and its own four uniform vectors (UBO reflection 1600 → 1664 B of 16384), because
+one supernova is alive at a time: `dramaCooldownSec` is 900 s against a ~290 s life, and the tests pin that.
+**1 Precursor** (`precursorSec` 10–20 s): the star brightens, reddens and pulses faster. The pulse phase is the INTEGRAL of 1/period, so the period can shorten from
+3.2 s to 1.0 s without the pulse ever jumping, and its amplitude eases to nothing over the last 1.5 s — a swing left mid-stroke when the collapse takes over would be a
+step. The field's own stars cannot be addressed individually (they are a procedural hash grid), so this star is DRAWN at the site the shell will use; it is the same
+object one phase earlier, and it is the one phase that carries his palette, because a star is where a palette belongs.
+**2 Core collapse** (`riseSec` ≥0.8 s eased, then `holdSec`): a white-blue flash `flashShortSide` across (0.15–0.25 short sides at the 64/255 contour) with eight
+diffraction spikes (`spikeGain`), and `skyLift` — a GLOBAL lift that reaches every pixel. It SCALES the sky already there by 1 + 2.5·lift and adds a flat
+0.09·lift haze on top, so it lights the whole screen and still returns to exactly #000000: a multiply leaves a black pixel black, and both terms ease to zero with the
+flash. Its falloff is 0.55 of the long side, so the corners sit at 56 % of the centre — global, but with a gradient, so it reads as light arriving. `main()` gains four
+lines for it; nothing else in the shader knows about it.
+**3 Shell** (`shellSec` 30–90 s): a rim-brightened filamentary shock. Sedov-Taylor, r ∝ t^0.4 (measured 0.400), reaching `shellShortSide` (0.25–0.40 short sides
+across), broadening as it goes, cooling white → yellow → orange-red, with a hotter, narrower inner rim that dies first. `filaments` is how deeply the web breaks the
+front's radius AND its brightness — a ring broken only in brightness still reads as a circle.
+**4 Remnant** (`remnantSec` 2–5 min): a two-tone teal/red filament web, `remnantGain` faint, advected by its own noise and fading to nothing, with the neutron star the
+collapse left behind blinking at the centre (`pulsarGain`, `pulsarPeriodSec` ≥0.8 s, trough ≥0.55 of peak — the pulsar family's own anti-strobe floors). It grows out of
+the shell's last 40 % rather than replacing it, so there is no moment where one ends and the other begins.
+**The filament field** is value noise on a POLAR grid: `snPolar`, N cells around the circle so the angular index wraps exactly and nothing tears at atan's branch cut,
+two octaves (24 and 48 cells), ridged into filaments, two channels per call so the ridge and the two-tone pick share four hashes. Angular harmonics were tried first and
+are the wrong tool — locked harmonics make a rosette, and warping them by radius to break it makes a kaleidoscope or a pinwheel, and this sky has no spiral in it. The
+field is measured in the REMNANT's radius, not the shell's, and `snShell.z` is published from the first frame for that reason: the medium's inhomogeneity does not
+expand, the shock LIGHTS IT UP as it passes.
+**Where it is.** Every other phenomenon is nailed to the pixel it was placed on, which in the camera regime makes it the one thing on screen that is not moving. A
+supernova travels on the FAR layer's own streamline instead: u = (r/R)²/2 advancing at the rate the far grid advances, with the grid's cell factor cancelling between
+`advanceCells` and u, so it is that layer's motion rather than a copy of it — it reverses with `motion.camera.direction`, freezes with `speed` 0, slows as 1/r with
+radius, and is FIXED with the hole on, since `_state.camFlow` carries the regime blend and the 30 s crossfade eases the drift in without a step. It does not SCALE with
+the drift: that flow is area-preserving (tangential stretch r′/r, radial squash r/r′), so its isotropic magnification is exactly 1 and the remnant's apparent size is its
+own expansion — which is the truth for a source that far away. The particles' z/z′ perspective was the other candidate and cannot carry a life cycle at all: at the
+shipped `speed` 6 and `depth` 16 the camera crosses the whole depth in 60 active seconds, so a 3-D-anchored event would leave the screen before its shell finished.
+Channels: head=(x, y, coreSigmaPx, peak), colour=(r, g, b, 6), tail01=(haloSigmaPx, haloGain, coreGain, shellGain), shape=(shellRadiusPx, shellWidthPx, filamentAmp,
+toneWeight), plus `snFlash`=(x, y, skyLiftGain, skyLiftRadiusPx), `snTone`=(secondR, secondG, secondB, advectionPhase), `snShell`=(innerRadiusPx, innerGain,
+nebulaRadiusPx, nebulaGain), `snExtra`=(spikeGain, spikeLengthPx, pulsarGain, seedAngle). Every gain except the sky lift is a fraction of head.w, the same convention
+style 3 uses. The advection phase is the episode's own age × 0.05 and is NEVER wrapped: it indexes a noise field, where a wrap is a jump.
+v9 supernova key changes: `precursorSec`, `flashShortSide`, `skyLift`, `spikeGain`, `shellSec`, `filaments`, `remnantGain`, `pulsarGain`, `pulsarPeriodSec` are new;
+`everyHours` becomes [0.5, 1] (one every 30–60 min at rateScale 1), `shellShortSide` [0.25, 0.40], `shellGain` 0.55 (cap 0.80), `decaySec` [25, 60] and `remnantSec`
+[120, 300]; `shellShortSide` and `flashShortSide` are the drawn DIAMETER as a share of the short side, not a radius. `echoGain` and `echoDelaySec` are DROPPED — the
+remnant replaces the light echo — and a file carrying either warns with its index and is otherwise unaffected.
+`caelestia shell starfield fire <family> [screen] ['{"key":value}']` takes a third argument now: a JSON object written straight onto the captured episode, which is how
+a phase is addressed. A supernova's duration is recomputed from its phases afterwards, so `fire supernova tablet '{"precursor":4,"shellSpan":20,"remnant":40}'` is the
+same shapes in a quarter of the time rather than a life cycle truncated mid-phase. Invalid JSON is ignored; this is a test hook.
+`modules/background/tools/supernova-sheet.mjs` + `supernova_sheet.py` render and measure the life cycle offscreen through the real kernels and the real CPU envelope,
+one frame per named phase moment, reporting peak/255, lit pixels and both the 2/255 and 64/255 contours as a share of the short side.
 Black hole: `modules/background/BLACKHOLE.md` owns every default, the taste caps and the shader's own limiters; missing blackHole is disabled.
 Flat bounds: size 0.01–0.2 short sides, tilt 1–35° (the renderer accepts 80, only 35 is silhouette-verified), intensity/warmth/halos 0–1,
 spin 0–2 (pattern speed), inner 3–6 rs, outer max(inner+0.5, 3.5)–12 rs, beam 0–0.2, photonWidth 0.001–0.02 shadow radii,

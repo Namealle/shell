@@ -10,19 +10,36 @@ import "ambient/rules.js" as Rules
 Singleton {
     id: root
 
-    // Testing: `caelestia shell ipc call starfield fire <family> [screen]`
+    // Testing: `caelestia shell starfield fire <family> [screen] [overrides]`
     // queues one episode of a phenomenon family (starBirth, nova, redGiant,
     // supernova, pulsar, kilonova, gammaBurst) on one screen, or on every
     // screen when the name is empty. It goes through pushEvent, so it obeys
     // the same slot and cap rules as a scheduled one.
-    signal fire(string name, string screen)
+    //
+    // `overrides` is a JSON object written straight onto the captured episode,
+    // which is how a phase is addressed: a v9 supernova's whole life cycle is
+    // four to five minutes, and watching it through `grim` is only practical
+    // with the spans compressed. Example, the same shapes in a quarter of the
+    // time:  starfield fire supernova tablet '{"precursor":4,"shellSpan":20,"remnant":40}'
+    // Invalid JSON is ignored, not an error: this is a test hook.
+    signal fire(string name, string screen, var overrides)
 
     IpcHandler {
         target: "starfield"
 
-        function fire(name: string, screen: string): string {
-            root.fire(name, screen);
-            return `queued ${name} on ${screen || "every screen"}`;
+        function fire(name: string, screen: string, overrides: string): string {
+            let parsed = null;
+            if (overrides) {
+                try {
+                    const value = JSON.parse(overrides);
+                    if (value && typeof value === "object" && !Array.isArray(value))
+                        parsed = value;
+                } catch (error) {
+                    parsed = null;
+                }
+            }
+            root.fire(name, screen, parsed);
+            return `queued ${name} on ${screen || "every screen"}${parsed ? " with " + JSON.stringify(parsed) : ""}`;
         }
     }
 
