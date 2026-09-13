@@ -43,25 +43,81 @@ tilt accepts 1–80 deg but only 1–35 is silhouette-verified against CPU geode
 | disk.hue.innerTemperature / disk.hue.outerTemperature | 6500 / 1700 | 4200–10000 / 1000–2800 K |
 | disk.hue.warmth | .5 | 0–1 |
 | disk.glow.gain / disk.glow.radiusPx | .008 / 1.5 | 0–.008 / .25–2.5 physical px |
+| disk.halo.gain / disk.halo.reachRh | 0 / 1.43 | 0–1 fraction of photonCap at the shadow edge (0 = off, so every pre-v7 preset renders unchanged) / 1–2 Rh. The inner-halo band; bhGlow.z/.w |
+| disk.roll | 0 | -90–90 deg: roll of the disk PLANE in the image plane. bhDisk.z has always carried it through bhCrossing / bhDopplerFactors / the dust-lane axis; before v7 nothing wrote it |
 | photon.mode | shared-field | shared-field or off; unknown resolves shared-field |
 | photon.widthPx / photon.gain / photon.textureStrength | .45 / 1.18 / .8 | .1–.75 / 0–1.5 / 0–1 |
 
-## Target preset (owner's owner-target-wallpaper.png, 2026-09-12)
+## Target preset (v7, fitted to ~/Downloads/LocalSend/wallpaper.png 2026-09-13)
 `"blackHole": { "preset": "target" }` is exactly equivalent to this literal JSON,
 which the service may send instead if it prefers not to know preset names:
 
 ```json
-{"blackHole": {"size": 0.11, "tilt": 15, "intensity": 1, "haloUpper": 1,
- "haloLower": 0.9, "diskOuterRs": 10.5, "lensReach": 8, "lensStretch": 1.6,
- "footprintCap": 0.2, "diskCap": 1, "photonCap": 1,
- "disk": {"exposure": 1.7, "detail": 0.8, "falloff": 2.4,
-   "streaks": {"octaves": 3, "radialScale": 1.4, "innerPeriodSec": 12, "warp": 0.25, "grain": 0.08, "smear": 0.85},
-   "hue": {"innerTemperature": 7000, "outerTemperature": 1700, "warmth": 0.35, "whiteness": 0.85},
-   "glow": {"gain": 0.008, "radiusPx": 2.5},
-   "rim": {"skirt": 0.8, "fray": 0.7, "clump": 0.65},
-   "depth": {"foreground": 0.45, "lane": 0.35},
-   "arcs": {"gain": 0.013, "radiusRh": 1.6, "spacingRh": 0.55, "count": 4}},
- "photon": {"mode": "shared-field", "widthPx": 0.5, "gain": 1.35, "textureStrength": 0.8}}}
+{"blackHole": {
+  "size": 0.11,
+  "tilt": 13,
+  "intensity": 1,
+  "haloUpper": 0.82,
+  "haloLower": 0.51,
+  "diskOuterRs": 11,
+  "lensReach": 8,
+  "lensStretch": 1.6,
+  "footprintCap": 0.2,
+  "diskCap": 1,
+  "photonCap": 1,
+  "disk": {
+   "exposure": 1.7,
+   "detail": 0.29,
+   "falloff": 1.25,
+   "roll": 11,
+   "halo": {
+    "gain": 0.76,
+    "reachRh": 1.61
+   },
+   "streaks": {
+    "octaves": 2,
+    "radialScale": 1.4,
+    "innerPeriodSec": 12,
+    "warp": 0.25,
+    "grain": 0.08,
+    "smear": 0.85
+   },
+   "hue": {
+    "innerTemperature": 10000,
+    "outerTemperature": 2800,
+    "warmth": 0,
+    "whiteness": 0.49
+   },
+   "doppler": {
+    "strength": 0
+   },
+   "glow": {
+    "gain": 0.008,
+    "radiusPx": 2.5
+   },
+   "rim": {
+    "skirt": 1,
+    "fray": 0.92,
+    "clump": 0.3
+   },
+   "depth": {
+    "foreground": 0.09,
+    "lane": 0.35
+   },
+   "arcs": {
+    "gain": 0,
+    "radiusRh": 1.6,
+    "spacingRh": 0.55,
+    "count": 4
+   }
+  },
+  "photon": {
+   "mode": "shared-field",
+   "widthPx": 0.75,
+   "gain": 0.9,
+   "textureStrength": 0.8
+  }
+ }}
 ```
 
 `disk`/`photon` are LAYERED: the preset sits beneath whatever object is
@@ -74,29 +130,76 @@ that assigns them unconditionally replaces the binding and the preset can no
 longer reach them. Bind them as
 `x: cfg.x !== undefined ? cfg.x : pick("x", <default>)`, never as
 `x: cfg.x !== undefined ? cfg.x : <default>`.
-Measured 2880x1800: peak .6092 (on the thread; .5999 off it), disk mean .0460,
-q99 .5046, footprint 17.49% (3440x1440: 11.72%). The v5 default preset is NOT
-bit-identical to v4: lensReach 8, innerPeriodSec 12 and the ragged rim are
-deliberate look changes, and its footprint rises from 2.42% to 3.44%.
-v6 raises the preset's diskCap .6 -> 1 and photonCap .7 -> 1. At .6 a live
-3440x1440 render sat EXACTLY on the cap (q99.9 .5974 linear) while
-owner-target-wallpaper.png reaches .9727, so the cap was a binding constraint on
-the white level; lifting it gives q99.9 .6635 for +.32 points of footprint
-(7.13% -> 7.45%, against the .2 declared). It is NOT the only constraint:
-`disk.exposure` 2 (from 1.7) measured q99.9 .7331 at 7.55% footprint, and is
-left at 1.7 because that value is the owner's. The rest of the gap to the
-reference is not the ceiling at all — the reference's disk is a thin wide
-ellipse, smooth, and white through its inner band, where this one is thicker,
-filamentary (detail .8, octaves 3, warp .25, grain .08) and warmer. Its q99 is
-.7997 against this render's .1883: that is disk thickness, structure and hue,
-which is a calibration pass, not a cap.
 
-Outer arcs are an ART-DIRECTED approximation. A true order>=2 image lands at
-b_c*(1+3.4823*exp(-2pi)), i.e. .65% outside Rh, INSIDE the photon thread, so
-these wider bands stand in for that unresolved light plus outer halo material.
-They sample the shared field at mid-disk source radius and the order-0 crossing
-azimuth, so they shear on the same clock; they add light without coverage, are
-attenuated by the disk in front, and never reach the thread's radius.
+### How it was fitted, and how to refit it
+Nothing here was chosen by eye. `tools/bh_probe.py` renders the preview shader
+offscreen with exactly the uniforms BlackHole.qml would produce, and its
+`--check` fails if it has drifted from the .qml. `tools/bh_ringdiff.py`
+normalises the reference and the render into ONE frame -- shadow centred, its
+radius matched, the disk's major axis rotated level -- then measures ~35
+quantities plus a 9-band radial profile split into disk plane and polar cap.
+`tools/bh_fit.py` coordinate-descends the preset against a weighted objective;
+the judgement is in its OBJECTIVE table, the search is clerical.
+The reference's shadow is fitted twice (a ring score for the centre, then a
+circle least-squares-fitted to the steepest radial brightness rise) and lands at
+centre (1372.4, 757.3) radius 174.6 px, exactly on the photon ring the picture
+draws. Full before/after: ~/namealle/claude/caelestia/starfield-v2/evidence/
+v7-ring-table.md, v7-ring-compare.png, v7-ring-overlay.png, v7-ring-metrics.json.
+
+Headlines, reference -> v6 -> v7 (linear luminance, normalised frame):
+
+| | reference | v6 | v7 |
+|---|---:|---:|---:|
+| 1.00-1.20 Rh annulus | .5799 | .0572 | .5199 |
+| 1.20-1.45 Rh annulus | .4614 | .0578 | .3930 |
+| major-axis angle | +14.0 deg | +2.6 deg | +13.4 deg |
+| q50 / q90 / q99.9 | .119 / .639 / .958 | .052 / .254 / .866 | .112 / .500 / .963 |
+| azimuthal HF energy at 2.4 Rh | .655 | 2.053 | .640 |
+| "drawn ring" radial ripple | .189 | 1.340 | .196 |
+| R/B at 3 Rh | 3.44 | 11.17 | 3.48 |
+| white light fraction | .138 | .056 | .141 |
+
+What v7 changed and why, in order of how much it mattered:
+1. THE MOAT. v6 put .057 of light in the 1.0-1.45 Rh annuli where the reference
+   carries its brightest band (.580/.461), nearly isotropically (plane .603,
+   pole .616). That region is the photon-ring COMPLEX, the order>=2 image
+   pile-up, which this renderer cannot trace because the transfer LUT stops at
+   2pi. `disk.halo` is the same kind of ART-DIRECTED stand-in the outer arcs
+   already are, put where the reference actually carries its light. The shader
+   comment in bhDisk() states its shape, texture bound and occlusion rules.
+2. ROLL. The reference's disk plane is rolled +14.0 deg in the image plane.
+   bhDisk.z already carried a roll everywhere it mattered; nothing wrote it.
+3. TEXTURE. detail .8 measured 2.05 of azimuthal high-frequency energy against
+   the reference's .655: v6's arms were separated filaments, the reference's are
+   one sheet with striations. detail .29 lands on .640.
+4. OUTER ARCS OFF. Measured, the razor bands are the largest source of radial
+   ripple in the polar sector (1.34 with them, .30 without, reference .19), and
+   they are what the owner called "drawn" in v5. Dimming does NOT help, since
+   the ripple is relative to the local mean; only `arcs.gain: 0` does. Keys stay.
+5. COLOUR. innerTemperature 7000 -> 10000 and outerTemperature 1700 -> 2800 take
+   the outer arm's R/B from 11.17 to 3.48 against the reference's 3.44, and the
+   white-light fraction from .056 to .141 against .138.
+6. DOPPLER. The reference carries no beaming asymmetry (mean light left of
+   centre over right, .967); v6 measured 1.439. `disk.doppler.strength: 0`.
+   Put it back to .22 for the physical look; nothing else depends on it.
+7. LENSED ARC GAINS. haloUpper/haloLower 1/.9 -> .82/.51. The inner halo now
+   carries the ring hugging the shadow, so these can come down and thin the disk
+   vertically instead of padding it.
+
+Footprint against the declared .2 cap: .0711 at 3440x1440, .1061 at 2880x1800,
+.0955 at 1440x2560 (DP-3 rotated). Peak reaches the cap by design; q99.9 rises
+from .6635 (v6) to .80-.84 against the reference's .958.
+
+STILL DIFFERENT, and why. The disk's vertical half-thickness at 1.8 and 2.5 Rh
+is +123% and +99% against the reference. Lowering `tilt` fixes the middle and
+collapses the tip (at tilt 8 the tip half-height drops to .018 against .140),
+and extending the emitting radius lengthens the arms and fattens them in the
+same proportion -- both measured, both rejected by the fit. The reference's arms
+are long AND thin, which a lensed Schwarzschild disk at one inclination does not
+produce: closing that needs a radius-dependent vertical squash, i.e. new
+geometry, not a preset value. The lower crescent is also 29% brighter than the
+reference's and its inner edge starts at .374 Rh rather than .101, because the
+reference's near strip crosses further across the face of the shadow.
 
 ## Field, colour and clocks
 blackhole_noise.py: untagged 128x128 RGBA8, duplicated edges, RGB periods 32/64/127.
@@ -162,10 +265,13 @@ blackhole_lut.py is unchanged RK4: 1024x262 RGBA8. Rows 0–255 u(psi), 256/257
 end/turn psi/32, 258 capture, 259 b/12, 260 sentinels, 261 signed sky projection+validity.
 Decode (floor(R*255+.5)*256+floor(G*255+.5))/65535, then range; interpolate decoded words.
 Bake: qsb --glsl "100 es,120,150" --hlsl 50 --msl 12 -o OUTPUT INPUT.
+Offscreen rendering for measurement: tools/bhrender.c (surfaceless EGL,
+LIBGL_ALWAYS_SOFTWARE=1), driven by tools/bh_probe.py. QT_QPA_PLATFORM=offscreen
+renders ShaderEffect BLACK and QT_QUICK_BACKEND=software does not render it at all.
 Disk <=diskCap linear (default .25), photon composite <=photonCap on thread support
-(default .30); the target preset raises both to 1 (v5 had .60/.70; see the white-level measurement above).
+(default .30); the target preset raises both to 1 (v5 had .60/.70).
 Footprint <=3% (4% hard) at defaults; blackHole.footprintCap declares a larger budget
-for a preset (target .11, measured .0982 at 2880x1800, .1066 worst at tilt 35).
+for a preset (target .2, measured .1061 at 2880x1800, .0711 at 3440x1440).
 Overrides require a footprint check. No Kerr/DNGR beam tracing, spectral physics,
 film-grain fidelity or extended bloom. Phase 1 evidence: /tmp/starfield-dev/d4/report.md;
 Phase 2 (preset/footprintCap/whiteness/arcs, tilt to 35) evidence: d4/p2-*.json + p2-*.png
