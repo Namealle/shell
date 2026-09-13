@@ -41,11 +41,22 @@ function extract(name) {
     return "host[\"" + name + "\"] = function " + args + " " + qml.slice(open, i + 1) + ";";
 }
 
-const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "radialPlacement", "captureRadial", "dramatic", "scheduleRadial", "radialState", "eventPath", "eventState", "publishEvents", "publishPhenomena"];
+const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "scheduleRadial", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena"];
+
+// Readonly root constants the scheduler reads by bare name, taken from the
+// same source rather than restated here.
+function constants() {
+    const out = {};
+    const re = /readonly property (?:int|real|var) (\w+): (.+)/g;
+    let m;
+    while ((m = re.exec(qml))) {
+        try { out[m[1]] = JSON.parse(m[2].replace(/'/g, '"')); } catch (e) { /* not a literal */ }
+    }
+    return out;
+}
 
 export function scheduler(host) {
-    // radialNames is a readonly property, not a function.
-    host.radialNames = ["starBirth", "nova", "redGiant", "supernova", "pulsar"];
+    Object.assign(host, constants());
     // Sloppy mode: `with` resolves the QML root's bare property names onto the
     // host, which is exactly how the QML engine resolves them. The functions
     // are ASSIGNED, never declared, so a cross-call resolves through the host
@@ -104,7 +115,8 @@ export function makeHost(document, options) {
             phenomena: document.phenomena,
             phenomenonCap: document.events.phenomenonCap,
             dramaCooldownSec: document.events.dramaCooldownSec,
-            rateScale: document.events.rateScale
+            rateScale: document.events.rateScale,
+            phenomenonGainCap: document.events.phenomenonGainCap
         },
         shader,
         _hole: {
@@ -118,12 +130,12 @@ export function makeHost(document, options) {
         clock: 0,
         live: [0.5, 0.5, 0.5, 0.5],
         palette: [],
-        events: new Array(host.slotKinds === undefined ? 12 : host.slotKinds).fill(null),
+        events: new Array(12).fill(null),
         eventIds: new Array(12).fill(0),
         familyLast: {},
         moodClock: 0,
         mood: [0, 0, 0, 0],
-        phenomenonSlots: [null, null],
+        phenomenonSlots: [null, null, null],
         pendingEvents: []
     };
     return scheduler(host);
@@ -143,7 +155,7 @@ export function simulate(host, seconds, step) {
         host.publishEvents();
         // Slot occupancy, read back off the uniforms the shader would see.
         const drawn = new Set();
-        for (let i = 0; i < 5; ++i) {
+        for (let i = 0; i < 6; ++i) {
             const head = host.shader["event" + i + "Head"];
             if (!head || head.w <= 0) continue;
             const colour = host.shader["event" + i + "Colour"];
@@ -179,7 +191,7 @@ export function simulate(host, seconds, step) {
 // but never draws.
 export function instrument(host) {
     const realState = host.eventState, realRadial = host.radialState;
-    host._slotKind = [-1, -1, -1, -1, -1];
+    host._slotKind = [-1, -1, -1, -1, -1, -1];
     let order = [];
     host.eventState = function (e, branch, companion, segments) {
         const out = realState.call(host, e, branch, companion, segments);
@@ -194,16 +206,16 @@ export function instrument(host) {
     const realPublish = host.publishEvents;
     host.publishEvents = function () {
         order = [];
-        host._slotKind = [-1, -1, -1, -1, -1];
+        host._slotKind = [-1, -1, -1, -1, -1, -1];
         // A shower's children are kind-0 meteors; credit them to the shower.
         const shower = host._state.events[3];
         if (shower && shower.children)
             for (const child of shower.children) child._shower = true;
         realPublish.call(host);
         for (let i = 0; i < 3; ++i) host._slotKind[i] = order[i] === undefined ? -1 : order[i];
-        for (let i = 0; i < 2; ++i) {
+        for (let i = 0; i < 3; ++i) {
             const owner = host._state.phenomenonSlots[i];
-            host._slotKind[3 + i] = owner === null ? -1 : owner;
+            host._slotKind[3 + i] = owner ? owner.kind : -1;
         }
     };
     function kindOf(e) {
@@ -256,23 +268,92 @@ function check(name, ok, detail) {
 
 function tests() {
     const document = validateDocument(null);
-    const host = instrument(makeHost(document, { name: "d", width: 1440, height: 2560 }));
-    const stat = simulate(host, 3600, 1 / 15);
-    table(stat, "defaults, DP-3 (one hour)");
+    // Three hours: an hourly family can miss a one-hour window by luck, and a
+    // test that depends on luck is not a test.
+    const HOURS = 3;
+    const host = instrument(makeHost(document, { width: 1440, height: 2560 }));
+    const stat = simulate(host, HOURS * 3600, 1 / 15);
+    table(stat, "defaults, DP-3 (" + HOURS + " hours, per hour)");
     const by = {};
-    for (const s of stat) by[s.name] = s;
+    for (const s of stat) { s.drawnSec /= HOURS; by[s.name] = s; }
 
+    // A near-layer star on this buffer: 1.55 px sigma, 0.955 linear peak.
+    const STAR_SIGMA = 1.55, STAR_PEAK = 0.955;
     check("meteors fire at least 20/h", by.meteors.perHour >= 20, by.meteors.perHour.toFixed(1) + "/h");
-    check("comets fire at least 4/h", by.comet.perHour >= 4, by.comet.perHour.toFixed(1) + "/h");
-    check("satellites fire at least 8/h", by.satellites.perHour >= 8, by.satellites.perHour.toFixed(1) + "/h");
-    for (const name of ["starBirth", "nova", "redGiant", "supernova"]) {
+    check("comets fire every 5-15 min", by.comet.perHour >= 4 && by.comet.perHour <= 13, by.comet.perHour.toFixed(1) + "/h");
+    check("satellites cross every few minutes", by.satellites.perHour >= 10, by.satellites.perHour.toFixed(1) + "/h");
+    check("a satellite is at least as big as a star", by.satellites.peakSigma >= STAR_SIGMA * 0.95, by.satellites.peakSigma.toFixed(2) + " px");
+    for (const name of ["starBirth", "nova", "redGiant", "supernova", "pulsar", "kilonova", "gammaBurst"]) {
         check(name + " is scheduled", by[name].perHour > 0, by[name].perHour.toFixed(2) + "/h");
         check(name + " is actually drawn", by[name].drawnFrames > 0, by[name].drawnSec.toFixed(0) + " s/h");
+        check(name + " reads bigger than a star", by[name].peakSigma >= STAR_SIGMA * 1.8, by[name].peakSigma.toFixed(2) + " px");
     }
-    const notable = ["comet", "starBirth", "nova", "redGiant", "supernova", "pulsar", "kilonova"].reduce((a, n) => a + by[n].perHour, 0);
+    const notable = ["comet", "starBirth", "nova", "redGiant", "supernova", "pulsar", "kilonova", "gammaBurst"].reduce((a, n) => a + by[n].perHour, 0);
     check("a notable non-meteor event at least every 4 min", notable >= 15, notable.toFixed(1) + "/h");
-    check("phenomena peak above a bright star's core sigma", by.nova.peakSigma >= 6, by.nova.peakSigma.toFixed(1) + " px");
-    check("supernova outshines a comet", by.supernova.peakGain > 0.6, by.supernova.peakGain.toFixed(2));
+    check("a nova outshines a bright star", by.nova.peakGain > STAR_PEAK, by.nova.peakGain.toFixed(2));
+    check("a supernova outshines a nova", by.supernova.peakGain > by.nova.peakGain, by.supernova.peakGain.toFixed(2));
+
+    // rateScale is the master dial, and 0 means no scheduled events at all.
+    for (const scale of [0, 0.5, 2]) {
+        const doc = validateDocument({ events: { rateScale: scale } });
+        const h2 = instrument(makeHost(doc, { width: 1440, height: 2560 }));
+        const st = simulate(h2, 1800, 1 / 10);
+        const total = st.reduce((a, s) => a + s.perHour, 0);
+        if (scale === 0) check("rateScale 0 fires nothing", total === 0, total.toFixed(1) + "/h");
+        else check("rateScale " + scale + " scales the catalogue", total > 0, total.toFixed(1) + "/h");
+    }
+    {
+        const doc = validateDocument(null);
+        const h2 = makeHost(doc, { width: 1440, height: 2560 });
+        h2._state.clock = 10;
+        check("pushEvent queues an episode", h2.pushEvent("kilonova", 0, {}) && h2._state.pendingEvents.length === 1);
+        h2._state.events[10] = null;
+        h2.drainPending();
+        const landed = h2._state.events[10];
+        check("drainPending lands it on its family", !!landed && landed.kind === 10 && Math.abs(landed.start - 10) < 0.001);
+        check("the queue is then empty", h2._state.pendingEvents.length === 0);
+        check("pushEvent rejects an unknown family", h2.pushEvent("nope", 0, {}) === false);
+        for (let i = 0; i < 8; ++i) h2.pushEvent("nova", 60, {});
+        check("the queue is bounded", h2._state.pendingEvents.length <= 4, String(h2._state.pendingEvents.length));
+    }
+
+    // Anti-strobe: no phenomenon may step more than the nova's own rise slope
+    // between two 30 Hz frames. Proven by sampling, not asserted.
+    {
+        const doc = validateDocument(null);
+        const h2 = instrument(makeHost(doc, { width: 1440, height: 2560, screenSeed: 99 }));
+        const dt = 1 / 30;
+        // Each family's own eased-rise floor: 0.8 s for the slow phenomena,
+        // 0.35 s for the two sub-second bursts. A smoothstep to peak P over T
+        // seconds cannot exceed 1.5*P/T per second, so the per-frame bound is
+        // 0.05*P/T. Proven by sampling every published frame, not asserted.
+        const FLOOR = { 5: 0.8, 6: 0.8, 7: 0.8, 8: 0.8, 9: 0.8, 10: 0.35, 11: 0.35 };
+        const worst = {}, last = [0, 0, 0, 0, 0, 0], held = [0, 0, 0, 0, 0, 0], top = {};
+        for (let f = 0; f < Math.round(3 * 3600 / dt); ++f) {
+            h2._state.clock = f * dt;
+            h2._state.moodClock = f * dt;
+            h2.publishEvents();
+            for (let i = 3; i < 6; ++i) {
+                const g = h2.shader["event" + i + "Head"].w;
+                const owner = h2._state.phenomenonSlots[i - 3];
+                const kind = owner ? owner.kind : -1;
+                // An arrival, a departure or a handover is not a step.
+                if (kind >= 0 && kind === held[i] && last[i] > 0 && g > 0) {
+                    const step = Math.abs(g - last[i]);
+                    if (!(worst[kind] >= step)) worst[kind] = step;
+                }
+                top[kind] = Math.max(top[kind] || 0, g);
+                held[i] = kind;
+                last[i] = g;
+            }
+        }
+        for (const kind of Object.keys(FLOOR)) {
+            const bound = 0.05 * (top[kind] || 1) / FLOOR[kind];
+            const seen = worst[kind] || 0;
+            check("kind " + kind + " never steps faster than its eased rise floor",
+                seen <= bound * 1.05, seen.toFixed(4) + " <= " + bound.toFixed(4) + " per frame");
+        }
+    }
     console.log("\n" + (failures ? failures + " failures" : "all " + checks + " checks passed"));
     return failures;
 }

@@ -54,7 +54,9 @@ Singleton {
             satelliteGlint: document.events.satelliteGlint,
             phenomena: document.phenomena,
             phenomenonCap: document.events.phenomenonCap,
-            dramaCooldownSec: document.events.dramaCooldownSec
+            phenomenonGainCap: document.events.phenomenonGainCap,
+            dramaCooldownSec: document.events.dramaCooldownSec,
+            rateScale: document.events.rateScale
         })
     readonly property int eventHeadCap: document.events.headCap
     // Sparse pass-throughs: an absent key is the renderer's documented default.
