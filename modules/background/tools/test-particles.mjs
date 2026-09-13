@@ -742,6 +742,282 @@ const BIN_AREA = new Array(BINS).fill(0);
         && a.pool.counters.absorbed === b.pool.counters.absorbed,
         `${a.pool.counters.captures} captures, ${a.pool.counters.absorbed} swallowed`);
 }
+// ------------------------------------------- v10: event -> particle interface
+// His report, ledger 2285: "right now everything feels like separate pieces,
+// not part of one system." These are the checks on the system: an event's
+// footprint on the field is bounded, its debris is integrated like everything
+// else, and the material and the sprite that draws it obey one law.
+function pool(options) {
+    const o = options || {};
+    const input = birthInput();
+    const p = Physics.create(W, H, RH, o.seed === undefined ? 11 : o.seed, o.config || {},
+        (s, i) => Appearance.birth(s, i, input));
+    p.transientBirth = (s, i, t) => Appearance.transient(s, i, t);
+    p.absorb = o.camera ? 0 : 1;
+    if (o.camera) { p.cameraBlend = 1; p.cameraDir = 1; p.cameraDepth = 16; p.cameraRate = (16 - 1) * 6 / 360; }
+    for (let f = 0; f < Math.round((o.warmSec === undefined ? 90 : o.warmSec) / DT); ++f) {
+        p.absorb = o.camera ? 0 : 1;
+        if (o.camera) p.cameraBlend = 1;
+        Physics.advance(p, DT, 6, 0.5, W / 2, H / 2, 1, p.birthCallback);
+    }
+    return p;
+}
+function run(p, seconds, camera) {
+    for (let f = 0; f < Math.round(seconds / DT); ++f) {
+        p.absorb = camera ? 0 : 1;
+        if (camera) p.cameraBlend = 1;
+        Physics.advance(p, DT, 6, 0.5, W / 2, H / 2, 1, p.birthCallback);
+    }
+}
+{
+    // ---- applyImpulse: bounded momentum, a visible shove, a real relaxation
+    const p = pool({ camera: true });
+    const before = new Map();
+    for (let k = 0; k < p.liveCount; ++k) before.set(p.live[k], [p.x[p.live[k]], p.y[p.live[k]]]);
+    const strength = 900, reach = 0.35 * Math.min(W, H);
+    const hit = Physics.applyImpulse(p, W / 2, H / 2, strength, reach, "blast");
+    check("an impulse reaches the particles inside it and no others",
+        hit.count > 0 && hit.count < p.aliveCount,
+        `${hit.count} of ${p.aliveCount} particles inside ${Math.round(reach)} px`);
+    check("no particle receives more than the requested strength",
+        hit.peak <= strength + 1e-9 && hit.momentum <= strength * hit.count + 1e-9,
+        `peak ${hit.peak.toFixed(1)} px/s, total ${Math.round(hit.momentum)} px/s over ${hit.count}`);
+    // The kick is the only thing that moved: same simulation, one without it.
+    const quiet = pool({ camera: true });
+    let worst = 0;
+    for (let f = 0; f < 30; ++f) { run(p, DT, true); run(quiet, DT, true); }
+    for (const [i, at] of before) {
+        if (!p.alive[i]) continue;
+        const moved = Math.hypot(p.x[i] - at[0], p.y[i] - at[1]);
+        const r = Math.hypot(at[0] - W / 2, at[1] - H / 2);
+        if (r < 0.25 * reach && moved > worst) worst = moved;
+    }
+    check("a shock visibly displaces the stars it passes through",
+        worst > 20, `worst neighbour moved ${worst.toFixed(1)} px in one second`);
+    let half = 0;
+    run(p, 1, true);
+    for (let k = 0; k < p.liveCount; ++k) half = Math.max(half, Math.hypot(p.kickX[p.live[k]], p.kickY[p.live[k]]));
+    run(p, 8, true);
+    let residual = 0;
+    for (let k = 0; k < p.liveCount; ++k) residual = Math.max(residual, Math.hypot(p.kickX[p.live[k]], p.kickY[p.live[k]]));
+    check("and they relax back into the flow instead of keeping the kick",
+        residual === 0 && p.kickAlive === 0 && half > 0,
+        `peculiar velocity ${half.toFixed(1)} px/s at two seconds, none at ten (kickAlive ${p.kickAlive})`);
+    const clamped = Physics.applyImpulse(p, W / 2, H / 2, 1e9, 1e9, "blast");
+    check("an absurd request is clamped rather than thrown",
+        clamped.peak <= Physics.BOUNDS.impulsePx[1] + 1e-9,
+        `peak ${Math.round(clamped.peak)} px/s against the ${Physics.BOUNDS.impulsePx[1]} px/s bound`);
+}
+{
+    // ---- spawnBurst: the debris IS the explosion, and it is bounded
+    const p = pool({ camera: true });
+    const stars = p.aliveCount, lifeSum = p.lifetimeSum, samples = p.lifetimeSamples;
+    const made = Physics.spawnBurst(p, W / 2, H / 2, 300, [180, 520],
+        { lifeSec: [20, 60], sizePx: [1.1, 3.4], colour: [1, 0.97, 0.92] });
+    check("a burst makes the debris it was asked for", made === 300, `${made} debris`);
+    check("debris is not counted as population, so the field is not thinned",
+        p.transientCount === 300 && p.aliveCount - p.transientCount === stars,
+        `${p.aliveCount} alive, ${p.transientCount} transient, ${stars} stars`);
+    check("and it does not feed the lifetime estimator",
+        p.lifetimeSum === lifeSum && p.lifetimeSamples === samples);
+    const over = Physics.spawnBurst(p, W / 2, H / 2, 400, [180, 520], {});
+    check("the transient reserve is a hard ceiling",
+        p.transientCount <= p.config.debris.maxAlive,
+        `${p.transientCount} transient against a ${p.config.debris.maxAlive} reserve (second burst made ${over})`);
+    // Sedov: the debris front goes as t^0.4, which is the law the shell sprite
+    // is drawn with, so the rim runs through its own material.
+    const seen = [];
+    for (let k = 0; k < p.liveCount; ++k) if (p.transient[p.live[k]]) seen.push(p.live[k]);
+    const median = () => {
+        const v = seen.filter(i => p.alive[i] && p.transient[i]).map(i => Math.hypot(p.kickX[i], p.kickY[i]));
+        v.sort((a, b) => a - b);
+        return v[v.length >> 1];
+    };
+    run(p, 1, true);
+    const v1 = median();
+    run(p, 15, true);
+    const v16 = median();
+    // v = v0*(t0/t)^0.6 is the derivative of r ~ t^0.4, which is the Sedov law
+    // supernovaState() draws the rim with. One exponent, two consumers.
+    const slope = -Math.log(v16 / v1) / Math.log(16);
+    check("the debris decelerates on the shell's own Sedov law",
+        Math.abs(slope - 0.6) < 0.05,
+        `median debris speed ${v1.toFixed(0)} -> ${v16.toFixed(0)} px/s over 1 s -> 16 s, exponent ${slope.toFixed(3)} against 0.6`);
+    run(p, 75, true);
+    check("every ember dies at the end of its own life, and the field is whole",
+        p.transientCount === 0 && p.aliveCount >= 0.95 * p.targetPopulation,
+        `${p.aliveCount} of ${p.targetPopulation} stars alive, ${p.transientCount} transient after 75 s`);
+}
+{
+    // ---- the debris is drawn, and the atlas was allocated for it
+    const p = pool({ camera: true });
+    const ceiling = Appearance.bounds(p);
+    let items = Appearance.render(null, p, { twinkle: 0.22 });
+    let bins = Binning.build(null, items, p.width, p.height);
+    const height = Packing.capacity(bins, ceiling.maxItems, ceiling.maxSupport, ceiling.maxFlares,
+        ceiling.flareSupport, ceiling.maxBends, ceiling.bendSupport, ceiling.maxTde, ceiling.tdeSupport,
+        ceiling.maxWide, ceiling.wideSupport);
+    Physics.spawnBurst(p, W / 2, H / 2, 400, [180, 700], { lifeSec: [20, 60] });
+    const star = Physics.pickStar(p, { holdSec: 20 });
+    Physics.markNova(p, star, { precursorSec: 14, sizeGain: 5 });
+    let worstHeight = 0, embers = 0, colours = [];
+    for (let f = 0; f < 30 * 20; ++f) {
+        run(p, DT, true);
+        items = Appearance.render(items, p, { twinkle: 0.22 });
+        bins = Binning.build(bins, items, p.width, p.height);
+        const layout = Packing.layout(null, bins, items.count, height);
+        worstHeight = Math.max(worstHeight, layout.height);
+        if (f === 4) {
+            for (let n = 0; n < items.count; ++n)
+                if (p.transient[items.data[n * S + IID]]) { ++embers; if (colours.length < 1) colours.push([items.data[n * S + 7], items.data[n * S + 8], items.data[n * S + 9]]); }
+        }
+    }
+    check("the atlas the debris and the swollen star need is the one already allocated",
+        worstHeight === height, `${worstHeight} rows against the ${height} allocated`);
+    check("the debris reaches the render instances",
+        embers > 300, `${embers} ember instances drawn`);
+    check("an ember is born hot and white", colours.length === 1 && colours[0][0] > 0.9 && colours[0][2] > 0.5,
+        colours.length ? colours[0].map(c => c.toFixed(2)).join(",") : "none");
+}
+{
+    // ---- brightenNear: the flash lights its own neighbourhood, then stops
+    const p = pool({ camera: true });
+    const base = Appearance.render(null, p, { twinkle: 0 });
+    const light = new Map();
+    for (let n = 0; n < base.count; ++n) light.set(base.data[n * S + IID], base.data[n * S + 10]);
+    Physics.brightenNear(p, W / 2, H / 2, 0.4 * Math.min(W, H), 1.2, 4);
+    const lit = Appearance.render(null, p, { twinkle: 0 });
+    let lifted = 0, untouched = 0;
+    for (let n = 0; n < lit.count; ++n) {
+        const id = lit.data[n * S + IID], was = light.get(id);
+        if (was === undefined || was <= 0) continue;
+        const r = Math.hypot(lit.data[n * S] - W / 2, lit.data[n * S + 1] - H / 2);
+        if (lit.data[n * S + 10] > was * 1.02) ++lifted;
+        else if (r > 0.4 * Math.min(W, H)) ++untouched;
+    }
+    check("a flash lifts the stars around it", lifted > 20, `${lifted} instances brightened`);
+    check("and nothing outside its radius", untouched > 20 && lifted + untouched <= lit.count,
+        `${untouched} instances outside it unchanged`);
+    // Same clock, with and without the glow list: the only difference is the
+    // lift, so this measures it exactly instead of against a stale baseline.
+    const withoutGlow = () => {
+        const g = p.glows; p.glows = [];
+        const r = Appearance.render(null, p, { twinkle: 0 }); p.glows = g;
+        return r;
+    };
+    run(p, 2, true);
+    const mid = Appearance.render(null, p, { twinkle: 0 }), midRef = withoutGlow();
+    let midLift = 0;
+    for (let n = 0; n < mid.count; ++n)
+        if (midRef.data[n * S + 10] > 0) midLift = Math.max(midLift, mid.data[n * S + 10] / midRef.data[n * S + 10]);
+    run(p, 3, true);
+    const late = Appearance.render(null, p, { twinkle: 0 }), lateRef = withoutGlow();
+    let lateLift = 0;
+    for (let n = 0; n < late.count; ++n)
+        if (lateRef.data[n * S + 10] > 0) lateLift = Math.max(lateLift, late.data[n * S + 10] / lateRef.data[n * S + 10]);
+    check("the lift decays and then expires with its own clock",
+        p.glows.length === 0 && midLift > 1.05 && lateLift === 1,
+        `${midLift.toFixed(2)}x at two seconds, ${lateLift.toFixed(2)}x at five`);
+}
+{
+    // ---- pickStar: the supernova happens TO a star he can already see
+    for (const camera of [false, true]) {
+        const p = pool({ camera: camera, seed: camera ? 23 : 29 });
+        const margin = 0.10 * Math.min(W, H);
+        // How long a star can be held is a property of the regime, not a wish:
+        // with the hole on the field crosses the screen in seconds, so the
+        // renderer measures the flow and shortens the precursor to match.
+        const hold = camera ? 20 : Math.max(4, 0.5 * Math.min(W, H) / Math.max(1, Physics.flowSpeed(p)));
+        let ok = 0, tries = 0;
+        for (let n = 0; n < 40; ++n) {
+            const i = Physics.pickStar(p, { holdSec: hold, marginPx: margin, keepOutPx: camera ? 0 : 1.3 * p.diskRim });
+            ++tries;
+            if (i < 0) continue;
+            const onScreen = p.x[i] >= margin && p.x[i] <= W - margin && p.y[i] >= margin && p.y[i] <= H - margin;
+            const lives = p.safetyLife[i] - p.age[i] >= hold;
+            if (onScreen && lives && !p.transient[i] && p.alive[i] && p.age[i] >= 1.5) ++ok;
+            run(p, 1, camera);
+        }
+        check(`the precursor picks a live, visible, long-lived particle (${camera ? "camera" : "hole"})`,
+            ok === tries, `${ok}/${tries} picks`);
+    }
+    const p = pool({ camera: true });
+    const near = Physics.pickStar(p, { holdSec: 20, minSizePx: 2 });
+    check("and it prefers the near layer, where the eye has already learned it",
+        near >= 0 && p.depth[near] > 0.5, `depth ${near >= 0 ? p.depth[near] : "none"}`);
+    // The star is a particle: it keeps moving with the regime while it swells.
+    Physics.markNova(p, near, { precursorSec: 14, sizeGain: 5, lumGain: 5.5 });
+    const at = [p.x[near], p.y[near]];
+    let first = null, last = null;
+    for (let f = 0; f < 30 * 13; ++f) {
+        run(p, DT, true);
+        const items = Appearance.render(null, p, { twinkle: 0 });
+        for (let n = 0; n < items.count; ++n)
+            if (items.data[n * S + IID] === near) {
+                const row = [items.data[n * S + ICORE], items.data[n * S + 10], items.data[n * S], items.data[n * S + 1]];
+                if (!first) first = row;
+                last = row;
+            }
+    }
+    check("the precursor swells the star it named", last && first && last[0] >= 3 * first[0],
+        first && last ? `core ${first[0].toFixed(2)} -> ${last[0].toFixed(2)} px` : "not drawn");
+    check("and brightens it", last && first && last[1] > 2.5 * first[1],
+        first && last ? `light ${first[1].toFixed(2)} -> ${last[1].toFixed(2)}` : "not drawn");
+    check("and it is still the same particle, still moving with the field",
+        last && Math.hypot(last[2] - at[0], last[3] - at[1]) > 1,
+        last ? `moved ${Math.hypot(last[2] - at[0], last[3] - at[1]).toFixed(1)} px while it swelled` : "not drawn");
+}
+{
+    // ---- flowSpeed: the number "three to eight times the field" is measured
+    const camera = pool({ camera: true }), orbital = pool({});
+    const fc = Physics.flowSpeed(camera), fo = Physics.flowSpeed(orbital);
+    check("the field's own speed is measurable in both regimes",
+        fc > 4 && fc < 120 && fo > 40 && fo < 900,
+        `camera ${fc.toFixed(1)} px/s, orbital ${fo.toFixed(1)} px/s`);
+    // A body under its own proper motion holds it: that is the comet.
+    const i = Physics.spawnBody(camera, 0.2 * W, 0.5 * H, 6 * fc, 0, { lifeSec: 40, sizePx: 5 });
+    const v0 = Math.hypot(camera.vx[i] + camera.kickX[i], camera.vy[i] + camera.kickY[i]);
+    run(camera, 6, true);
+    const v1 = Math.hypot(camera.vx[i] + camera.kickX[i], camera.vy[i] + camera.kickY[i]);
+    check("a body keeps its proper motion across the field",
+        camera.alive[i] && v1 > 0.9 * v0 && v1 < 1.25 * v0,
+        `${v0.toFixed(0)} -> ${v1.toFixed(0)} px/s, ${(v1 / Math.max(1e-6, fc)).toFixed(1)}x the field`);
+}
+{
+    // ---- the nebula is something the field passes THROUGH
+    const p = pool({ camera: true });
+    Physics.setCloud(p, { x: W / 2, y: H / 2, radius: 0.35 * Math.min(W, H), aspect: 1, angle: 0,
+        drag: 0.9, tint: [1, 0.82, 0.66], weight: 0.5 });
+    // Against a control with no cloud: the camera regime rewrites the stored
+    // velocity every substep, so the only honest measure is the DRAWN speed
+    // (velocity plus peculiar channel) of the same simulation with and without.
+    const control = pool({ camera: true });
+    run(p, 12, true); run(control, 12, true);
+    const speedOf = (s, i) => Math.hypot(s.vx[i] + s.kickX[i], s.vy[i] + s.kickY[i]);
+    let inN = 0, inSum = 0, outN = 0, outSum = 0;
+    for (let k = 0; k < p.liveCount; ++k) {
+        const i = p.live[k];
+        if (!control.alive[i] || p.transient[i]) continue;
+        const ref = speedOf(control, i);
+        if (ref < 1) continue;
+        const ratio = speedOf(p, i) / ref;
+        if (Physics.cloudWeight(p, i) > 0.25) { ++inN; inSum += ratio; }
+        else if (Physics.cloudWeight(p, i) === 0) { ++outN; outSum += ratio; }
+    }
+    const inside = inSum / Math.max(1, inN), outside = outSum / Math.max(1, outN);
+    check("material inside the cloud is dragged and material outside is not",
+        inN > 20 && inside < 0.96 && outside > 0.995 && inside > 0.75,
+        `inside ${(inside * 100).toFixed(1)} % of the control speed over ${inN}, outside ${(outside * 100).toFixed(1)} % over ${outN}`);
+    const items = Appearance.render(null, p, { twinkle: 0 });
+    let warmed = 0;
+    for (let n = 0; n < items.count; ++n) {
+        const i = items.data[n * S + IID];
+        if (Physics.cloudWeight(p, i) > 0.3 && items.data[n * S + 7] > items.data[n * S + 9] + 0.02) ++warmed;
+    }
+    check("and it takes a little of the cloud's colour", warmed > 10, `${warmed} instances tinted`);
+    Physics.setCloud(p, null);
+    check("clearing the passage puts the field back", p.cloud === null);
+}
 {
     // ---- the renderer half: the far field reverses with the same one toggle
     const dir = dirname(fileURLToPath(import.meta.url));

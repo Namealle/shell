@@ -1,10 +1,18 @@
 // Physical-pixel, pause-safe particle dynamics. QML importable; no wall clock.
+// v10: `capacity` is the population ceiling PLUS the transient reserve, so an
+// event's debris can never take a slot a star was going to be born into.
+// `population` is still capped at 3200; `debrisAlive[1]` is the reserve on top.
 var BOUNDS = {
-    capacity: 3200, population: [0, 3200], radialSpeed: [0, 26], vref: [10, 600], epsilonRh: [0.01, 0.2],
+    capacity: 3680, population: [0, 3200], radialSpeed: [0, 26], vref: [10, 600], epsilonRh: [0.01, 0.2],
     substeps: [4, 32], betaBound: [0.1, 0.99], betaUnbound: [1.001, 2],
     captureRadius: [0.8, 6], gamma: [0, 2], spiralSec: [5, 240],
     safetyLifeSec: [30, 600], sizePx: [0.25, 12], exposureSec: [0, 0.1], maxPx: [0, 32], publishHz: [10, 30],
-    flareShare: [0, 0.5], flareMaxAlive: [0, 64], capturedLight: [0, 1]
+    flareShare: [0, 0.5], flareMaxAlive: [0, 64], capturedLight: [0, 1],
+    // ---- the event -> particle interface (v10) ----
+    debrisAlive: [0, 480],    // transient particles alive at once, atlas-reserved
+    burstCount: [0, 480],     // one spawnBurst() call
+    impulsePx: [0, 6000],     // px/s, the largest velocity any one kick may add
+    glows: 4                  // live brightenNear() sources
 };
 
 function number(value, fallback, lo, hi) {
@@ -28,6 +36,12 @@ function defaults() {
         depth: {frontShare: 0.12, binaryMaxAlive: 40},
         clustering: {share: 0.72, streams: 5, streamLifeSec: 150, burstDepth: 0.55},
         dust: {farFlow: 24, parallaxPx: 250, clusterGain: 1, clusterCells: 16, voidCells: 44, cellScale: 0.77},
+        // The transient reserve. It is unconditional, like the tidal-disruption
+        // ceiling, because the atlas is allocated once per configuration and a
+        // resize of the sampled texture cost 13 ms -> 6700 ms per frame on
+        // llvmpipe and never recovered. 400 covers the supernova's 150-400
+        // debris plus a comet nucleus, its shed motes and a fireball's spray.
+        debris: {maxAlive: 400, relaxSec: 1.6},
         safetyLifeSec: [180, 240]};
 }
 function validate(raw) {
@@ -83,6 +97,9 @@ function validate(raw) {
     d.dust.clusterCells = Math.round(number(du.clusterCells, 16, 2, 64));
     d.dust.voidCells = Math.round(number(du.voidCells, 44, 4, 192));
     d.dust.cellScale = number(du.cellScale, 0.77, 0.4, 2);
+    var db = r.debris || {};
+    d.debris.maxAlive = Math.round(number(db.maxAlive, 400, BOUNDS.debrisAlive[0], BOUNDS.debrisAlive[1]));
+    d.debris.relaxSec = number(db.relaxSec, 1.6, 0.05, 12);
     d.publishHz = Math.round(number(r.publishHz, 30, 10, 30));
     d.safetyLifeSec = range(r.safetyLifeSec, d.safetyLifeSec, BOUNDS.safetyLifeSec);
     return d;
@@ -225,16 +242,32 @@ function create(width, height, rh, seed, raw, birthCallback, geom) {
         // them every frame. blend 0 is the pure orbital regime.
         cameraBlend: 0, cameraDir: 1, cameraDepth: 16, cameraRate: 0, cameraRoll: 0, cameraRegime: 0, refillFor: 0,
         meanLifetime: 30, lifetimeSamples: 0, lifetimeSum: 0, burstPhase: ((seed >>> 0) % 6283)/1000,
+        // v10, the event -> particle interface. `kickAlive` is how many live
+        // particles carry a peculiar velocity; while it is zero the hot loop
+        // pays one hoisted boolean and nothing else. `transientCount` is how
+        // many of `aliveCount` are event debris, which the population target
+        // and the lifetime estimator both subtract out.
+        kickAlive: 0, transientCount: 0, glows: [], cloud: null, nova: null,
         birthCallback: birthCallback, counters: {births: 0, deaths: 0, absorbed: 0,
-            escapes: 0, safety: 0, captures: 0, passed: 0, steps: 0}};
+            escapes: 0, safety: 0, captures: 0, passed: 0, steps: 0,
+            debris: 0, impulses: 0, kicked: 0}};
     s.alive = new Uint8Array(s.capacity); s.generation = new Uint32Array(s.capacity);
+    s.transient = new Uint8Array(s.capacity);
     // Dense list of occupied slots. step() compacts it, launch() appends to it,
     // so no consumer ever walks the 3200 capacity slots to find 600 particles.
     s.live = new Int32Array(s.capacity); s.liveCount = 0;
     var fields = ['x','y','vx','vy','age','entryTime','circularSince','captureExposure','spiralRate',
         'radiusAtCapture','captureTime','launchClass','pericentre','safetyLife','spiralSec','depth',
         'r','g','b','size','capturedSize','luminosity','archetype','p0','p1','p2','p3','phase','seed',
-        'depthZ'];
+        'depthZ',
+        // The peculiar-velocity channel. It is added to the POSITION after the
+        // camera's magnification rather than to the velocity, because at
+        // cameraBlend 1 the stored velocity is overwritten by the magnification
+        // every substep and a velocity impulse would be discarded on the frame
+        // it landed. kickDrag is the decay exponent p in v = v0*(t0/t)^p, so
+        // p = 0.6 gives r ~ t^0.4 -- the same Sedov law the shell sprite draws
+        // -- and p = 0 is a body under its own proper motion that never slows.
+        'kickX','kickY','kickAge','kickDrag'];
     for (var j = 0; j < fields.length; ++j) s[fields[j]] = new Float64Array(s.capacity);
     configure(s, width, height, rh, raw, geom); s.mu = s.muBase;
     return s;
@@ -243,7 +276,9 @@ function create(width, height, rh, seed, raw, birthCallback, geom) {
 function rescale(s, factor) {
     if (!(factor > 0) || !isFinite(factor)) return;
     var scalar = ['width','height','rh','shadow','diskRim','arcRim','captureInner','captureOuter','captureFloor','qCap','epsilon','padding','centreX','centreY'];
-    var arrays = ['x','y','vx','vy','radiusAtCapture','pericentre','size','capturedSize'];
+    var arrays = ['x','y','vx','vy','radiusAtCapture','pericentre','size','capturedSize','kickX','kickY'];
+    for (var g=0; g<s.glows.length; ++g) { s.glows[g].x*=factor; s.glows[g].y*=factor; s.glows[g].radius*=factor; }
+    if (s.cloud) { s.cloud.x*=factor; s.cloud.y*=factor; s.cloud.radius*=factor; }
     for (var j=0;j<scalar.length;++j) s[scalar[j]]*=factor;
     for (j=0;j<arrays.length;++j) {
         var a=s[arrays[j]];
@@ -277,6 +312,9 @@ function pericentre(s, cls, f) {
 function finishBirth(s, i, cls, q, depthOverride) {
     if (!s.alive[i]) { ++s.aliveCount; s.live[s.liveCount++]=i; }
     s.alive[i]=1; ++s.generation[i]; ++s.counters.births;
+    if (s.transient[i]) { s.transient[i]=0; if (s.transientCount>0) --s.transientCount; }
+    if (s.kickX[i] || s.kickY[i]) { s.kickX[i]=0; s.kickY[i]=0; if (s.kickAlive>0) --s.kickAlive; }
+    s.kickAge[i]=0; s.kickDrag[i]=0;
     s.age[i]=0; s.circularSince[i]=-1; s.captureExposure[i]=0;
     var x=s.x[i], y=s.y[i];
     s.entryTime[i]=x>=0 && x<=s.width && y>=0 && y<=s.height ? s.clock : -1;
@@ -415,6 +453,9 @@ function inject(s, x, y, vx, vy, depth, birthCallback) {
     s.x[i] = x; s.y[i] = y; s.vx[i] = vx; s.vy[i] = vy; s.depthZ[i] = 0;
     if (!s.alive[i]) { ++s.aliveCount; s.live[s.liveCount++] = i; }
     s.alive[i] = 1; ++s.generation[i]; ++s.counters.births;
+    if (s.transient[i]) { s.transient[i]=0; if (s.transientCount>0) --s.transientCount; }
+    if (s.kickX[i] || s.kickY[i]) { s.kickX[i]=0; s.kickY[i]=0; if (s.kickAlive>0) --s.kickAlive; }
+    s.kickAge[i]=0; s.kickDrag[i]=0;
     s.age[i] = 0; s.circularSince[i] = -1; s.captureExposure[i] = 0;
     s.entryTime[i] = x >= 0 && x <= s.width && y >= 0 && y <= s.height ? s.clock : -1;
     s.spiralRate[i] = 0; s.radiusAtCapture[i] = 0; s.captureTime[i] = -1;
@@ -443,7 +484,8 @@ function doom(s, options) {
     var inner = s.captureOuter, deep = 6 * s.shadow, far = 12 * s.shadow;
     for (var k = 0; k < s.liveCount; ++k) {
         var i = s.live[k];
-        if (!s.alive[i] || s.radiusAtCapture[i] > 0) continue;
+        if (!s.alive[i] || s.radiusAtCapture[i] > 0 || s.transient[i]) continue;
+        if (novaStar(s) === i) continue;
         if (s.pericentre[i] > deep) continue;
         var dx = s.x[i] - s.centreX, dy = s.y[i] - s.centreY;
         var r = Math.sqrt(dx * dx + dy * dy);
@@ -508,6 +550,371 @@ function tdeStep(s, birthCallback) {
     s.counters.tde = (s.counters.tde || 0) + 1;
     s.counters.tdeFragments = (s.counters.tdeFragments || 0) + made;
 }
+// ---- v10: the event -> particle interface -----------------------------------
+// Until v9 an event was a sprite scheduled BESIDE the sky: a supernova faded in
+// and out where no star had ever been, and a comet drifted at the field's own
+// speed with its tail pointing the wrong way. His report (ledger 2285) is one
+// sentence: "right now everything feels like separate pieces, not part of one
+// system." These four calls are that system. Everything an event does to the
+// field goes through them, so a sprite and the material it is made of share
+// one position, one velocity and one clock by construction rather than by two
+// pieces of code being kept in step.
+//
+//   applyImpulse   a radial shove on the particles that are already there
+//   spawnBurst     new material born at a point, integrated like everything else
+//   brightenNear   a transient luminosity lift on the stars around a flash
+//   pickStar       the existing particle an event is going to happen TO
+//
+// Debris lives in the same atlas as every other particle, so it gets the
+// lensing, the depth ordering, the disk occlusion and the tidal treatment for
+// free and costs no uniform, no slot and no shader change.
+
+// How much of a kick belongs in the velocity and how much in the peculiar
+// channel. With the hole on the velocity IS the dynamics, so a shove changes
+// the orbit and gravity answers it. With the camera on the stored velocity is
+// overwritten by the magnification every substep (see step()), so a velocity
+// kick is discarded on the frame it lands and the shove has to ride the
+// peculiar channel instead, where it decays back into the flow.
+function deliver(s, i, vx, vy, drag) {
+    var blend = cameraOn(s);
+    if (blend < 1) { s.vx[i] += (1 - blend) * vx; s.vy[i] += (1 - blend) * vy; }
+    if (blend > 0) {
+        var had = s.kickX[i] !== 0 || s.kickY[i] !== 0;
+        s.kickX[i] += blend * vx; s.kickY[i] += blend * vy;
+        // A fresh kick restarts the decay clock; an existing one keeps its own,
+        // so a particle caught by two shocks does not have the first undone.
+        if (!had) { s.kickAge[i] = 0.02; s.kickDrag[i] = drag; ++s.kickAlive; }
+    }
+    ++s.counters.kicked;
+}
+// A radial push with falloff, centred on (x, y).
+//
+//   profile 'blast'  (default) strongest at the centre, zero at radiusPx
+//   profile 'shell'  a band at radiusPx: the shock front passing through
+//   profile 'flat'   uniform inside radiusPx
+//
+// `profile` may also be an object {kind, widthPx, skip, drag, includeTransient}.
+// Bounded by construction: no particle receives more than `strength` px/s, so
+// the total momentum delivered is at most strength * (particles in reach), and
+// the return value reports both so a caller and a test can check it.
+function applyImpulse(s, x, y, strength, radiusPx, profile) {
+    var o = typeof profile === 'string' ? {kind: profile} : (profile || {});
+    var kind = o.kind || 'blast';
+    var v0 = number(strength, 0, 0, BOUNDS.impulsePx[1]);
+    var reach = number(radiusPx, 0, 0, 8 * Math.max(s.width, s.height));
+    var out = {count: 0, momentum: 0, peak: 0};
+    if (!(v0 > 0) || !(reach > 0)) return out;
+    var band = Math.max(1, number(o.widthPx, 0.22 * reach, 0.5, reach));
+    var skip = o.skip === undefined ? -1 : o.skip;
+    // A shoved star relaxes back into the flow: the exponent is the one that
+    // leaves it at 1 % of the kick after `debris.relaxSec`, so one configured
+    // number owns how long the jolt is visible.
+    var relax = s.config.debris.relaxSec;
+    var drag = number(o.drag, Math.max(0.2, Math.min(4, Math.log(100) / Math.log(Math.max(1.5, relax / 0.02)))), 0, 4);
+    var all = o.includeTransient === true;
+    var inner = kind === 'shell' ? Math.max(0, reach - 2.5 * band) : 0;
+    var outer2 = kind === 'shell' ? (reach + 2.5 * band) * (reach + 2.5 * band) : reach * reach;
+    for (var k = 0; k < s.liveCount; ++k) {
+        var i = s.live[k];
+        if (!s.alive[i] || i === skip) continue;
+        if (!all && s.transient[i]) continue;
+        var dx = s.x[i] - x, dy = s.y[i] - y, r2 = dx * dx + dy * dy;
+        if (r2 > outer2) continue;
+        var r = Math.sqrt(r2);
+        if (r < 1e-4) { dx = 1; dy = 0; r = 1; }
+        var w;
+        if (kind === 'flat') w = 1;
+        else if (kind === 'shell') {
+            if (r < inner) continue;
+            var t = (r - reach) / band;
+            w = Math.exp(-t * t);
+        } else {
+            var u = r / reach;
+            w = (1 - u) * (1 - u) * (1 + u);   // 1 at the centre, 0 at the reach
+        }
+        if (!(w > 0.002)) continue;
+        var speed = v0 * w;
+        deliver(s, i, speed * dx / r, speed * dy / r, drag);
+        ++out.count; out.momentum += speed;
+        if (speed > out.peak) out.peak = speed;
+    }
+    ++s.counters.impulses;
+    return out;
+}
+// How many transient slots are left. The reserve is what the atlas was
+// allocated for; the second term is the hard slot count, which a stress preset
+// could otherwise walk into.
+function debrisRoom(s) {
+    var reserve = s.config.debris.maxAlive - s.transientCount;
+    var slots = s.capacity - s.aliveCount - 8;
+    return Math.max(0, Math.min(reserve, slots));
+}
+// A transient particle: same arrays, same integration, same atlas, but it does
+// not count toward the population target and it does not feed the lifetime
+// estimator. `traits` owns everything a birth callback would otherwise own,
+// because event debris takes its colour from the physics of the event and not
+// from his palette.
+function spawnAt(s, x, y, vx, vy, kx, ky, traits) {
+    var t = traits || {};
+    var i = freeSlot(s);
+    if (i < 0) return -1;
+    if (!s.alive[i]) { ++s.aliveCount; s.live[s.liveCount++] = i; }
+    s.alive[i] = 1; ++s.generation[i]; ++s.counters.births;
+    if (!s.transient[i]) { s.transient[i] = 1; ++s.transientCount; }
+    s.x[i] = x; s.y[i] = y; s.vx[i] = vx; s.vy[i] = vy;
+    s.age[i] = 0; s.circularSince[i] = -1; s.captureExposure[i] = 0;
+    s.entryTime[i] = x >= 0 && x <= s.width && y >= 0 && y <= s.height ? s.clock : -1;
+    s.spiralRate[i] = 0; s.radiusAtCapture[i] = 0; s.captureTime[i] = -1;
+    s.launchClass[i] = 1;
+    s.pericentre[i] = s.qCap;
+    s.safetyLife[i] = Math.max(0.5, number(t.lifeSec, 30, 0.5, 600));
+    s.spiralSec[i] = between(s, s.config.capture.spiralSec);
+    s.depth[i] = t.depth === undefined ? 1 : t.depth;
+    s.depthZ[i] = cameraOn(s) > 0 ? number(t.depthZ, 0, 0, 64) : 0;
+    if (!(s.depthZ[i] >= CAMERA_NEAR)) s.depthZ[i] = 0;
+    s.seed[i] = random(s); s.phase[i] = random(s) * Math.PI * 2;
+    s.size[i] = number(t.sizePx, 2.4, 0.25, 12);
+    s.capturedSize[i] = s.size[i];
+    var c = t.colour || [1, 1, 1];
+    s.r[i] = number(c[0], 1, 0, 1); s.g[i] = number(c[1], 1, 0, 1); s.b[i] = number(c[2], 1, 0, 1);
+    s.luminosity[i] = number(t.lum, 2.6, 0, 8);
+    s.archetype[i] = t.archetype === undefined ? 7 : t.archetype;
+    s.p0[i] = s.safetyLife[i]; s.p1[i] = number(t.fast, 0, 0, 1);
+    s.p2[i] = 0; s.p3[i] = 0;
+    s.kickX[i] = 0; s.kickY[i] = 0; s.kickAge[i] = 0; s.kickDrag[i] = 0;
+    if (kx || ky) {
+        s.kickX[i] = kx; s.kickY[i] = ky;
+        s.kickAge[i] = number(t.t0, 0.02, 0.002, 4);
+        s.kickDrag[i] = number(t.drag, 0.6, 0, 4);
+        ++s.kickAlive;
+    }
+    // Appearance owns exposure, the streak ceiling, the tidal traits and the
+    // ember's end colour; Physics must not reach into its arrays, so the
+    // renderer hands it in the way it hands in `birthCallback`. Without one the
+    // particle still integrates correctly, it just keeps the previous
+    // occupant's optical traits, which is what the node fixtures see.
+    if (s.transientBirth) s.transientBirth(s, i, t);
+    return i;
+}
+// Debris born at a point with radial velocities. The speeds are the speeds at
+// t0 (the first 0.02 s), and `drag` is the exponent p in v = v0*(t0/t)^p: at the
+// default 0.6 the displacement is r ~ t^0.4, which is the SAME Sedov law the
+// shell sprite draws, so the rim runs through the middle of its own debris
+// instead of beside it.
+function spawnBurst(s, x, y, count, speedRange, traits) {
+    var t = traits || {};
+    var want = Math.round(number(count, 0, 0, BOUNDS.burstCount[1]));
+    var room = debrisRoom(s);
+    var n = Math.min(want, room);
+    if (!(n > 0)) return 0;
+    var sr = Array.isArray(speedRange) && speedRange.length === 2
+        ? [number(speedRange[0], 0, 0, BOUNDS.impulsePx[1]), number(speedRange[1], 0, 0, BOUNDS.impulsePx[1])]
+        : [60, 240];
+    var lo = Math.min(sr[0], sr[1]), hi = Math.max(sr[0], sr[1]);
+    var sizes = Array.isArray(t.sizePx) && t.sizePx.length === 2 ? t.sizePx : [1.1, 3.2];
+    var lives = Array.isArray(t.lifeSec) && t.lifeSec.length === 2 ? t.lifeSec : [20, 60];
+    var lums = Array.isArray(t.lum) && t.lum.length === 2 ? t.lum : [2.2, 4.2];
+    var fastShare = number(t.fastShare, 0.07, 0, 0.35);
+    var fastGain = number(t.fastGain, 2.6, 1, 8);
+    var spread = number(t.spreadSec, 0, 0, 4);
+    var made = 0;
+    for (var j = 0; j < n; ++j) {
+        // A shell is a sphere seen flat, so the speeds are not uniform on the
+        // screen: the material moving across the line of sight shows its full
+        // speed and the material coming at us shows a fraction of it. sqrt of a
+        // uniform draw is that projection, and it is what stops the burst from
+        // reading as a ring with a hole in the middle.
+        var angle = random(s) * Math.PI * 2;
+        var project = Math.sqrt(random(s));
+        var fast = random(s) < fastShare;
+        // Uniform in the requested range, so the MEDIAN ejecta speed is the
+        // midpoint times the projection's 0.707 and the caller can solve for
+        // the reach it wants. A skewed draw here would quietly put the whole
+        // cloud inside the rim the sprite is drawing.
+        var base = lo + (hi - lo) * random(s);
+        var speed = base * project * (fast ? fastGain : 1);
+        if (speed > BOUNDS.impulsePx[1]) speed = BOUNDS.impulsePx[1];
+        var life = lives[0] + (lives[1] - lives[0]) * random(s);
+        var trait = {
+            lifeSec: life + spread * random(s),
+            sizePx: sizes[0] + (sizes[1] - sizes[0]) * random(s) * (fast ? 1.35 : 1),
+            lum: lums[0] + (lums[1] - lums[0]) * random(s) * (fast ? 1.3 : 1),
+            colour: t.colour || [1, 0.97, 0.92],
+            depth: t.depth === undefined ? (random(s) < 0.45 ? 1 : 0) : t.depth,
+            depthZ: t.depthZ,
+            fast: fast ? 1 : 0,
+            drag: number(t.drag, 0.6, 0, 4),
+            t0: number(t.t0, 0.02, 0.002, 4)
+        };
+        if (spawnAt(s, x, y, 0, 0, Math.cos(angle) * speed, Math.sin(angle) * speed, trait) >= 0) ++made;
+    }
+    s.counters.debris += made;
+    return made;
+}
+// A body with its own proper motion: the comet's nucleus. drag 0, so it holds
+// its speed across the field instead of relaxing into the flow, and with the
+// hole on the velocity goes into vx/vy where gravity bends it into a real
+// hyperbolic pass.
+function spawnBody(s, x, y, vx, vy, traits) {
+    var t = traits || {};
+    var blend = cameraOn(s);
+    var kx = blend * vx, ky = blend * vy;
+    var i = spawnAt(s, x, y, (1 - blend) * vx, (1 - blend) * vy, kx, ky,
+        {lifeSec: t.lifeSec, sizePx: t.sizePx, lum: t.lum, colour: t.colour,
+         depth: t.depth === undefined ? 1 : t.depth, depthZ: t.depthZ,
+         archetype: t.archetype === undefined ? 0 : t.archetype,
+         drag: 0, t0: 0.02, streakPx: t.streakPx, exposureSec: t.exposureSec});
+    return i;
+}
+// A transient luminosity lift on the stars that are already there: the flash
+// lighting its neighbourhood. Rendered by Appearance.render(), so it costs one
+// distance test per particle per live glow and nothing at all when there are
+// none.
+function brightenNear(s, x, y, radius, gain, decaySec) {
+    var r = number(radius, 0, 0, 8 * Math.max(s.width, s.height));
+    var g = number(gain, 0, 0, 8);
+    var d = number(decaySec, 1, 0.05, 120);
+    if (!(r > 0) || !(g > 0)) return false;
+    if (s.glows.length >= BOUNDS.glows) s.glows.shift();
+    s.glows.push({x: x, y: y, radius: r, gain: g, start: s.clock, decay: d});
+    return true;
+}
+function glowStep(s) {
+    for (var i = s.glows.length - 1; i >= 0; --i)
+        if (s.clock - s.glows[i].start >= s.glows[i].decay) s.glows.splice(i, 1);
+}
+// A cloud the field passes THROUGH: the nebula. One ellipse, a slight drag and
+// a colour weight, applied once per outer step over the live list rather than
+// inside the substep loop, because it is a per-second effect and not a force.
+function setCloud(s, cloud) {
+    if (!cloud || !(cloud.radius > 0)) { s.cloud = null; return; }
+    s.cloud = {x: cloud.x, y: cloud.y, radius: cloud.radius,
+        aspect: number(cloud.aspect, 1, 0.2, 5), angle: number(cloud.angle, 0, -7, 7),
+        drag: number(cloud.drag, 0, 0, 1), tint: cloud.tint || [1, 0.86, 0.72],
+        weight: number(cloud.weight, 0, 0, 1)};
+}
+function cloudWeight(s, i) {
+    var c = s.cloud;
+    if (!c) return 0;
+    var dx = s.x[i] - c.x, dy = s.y[i] - c.y;
+    var cs = Math.cos(-c.angle), sn = Math.sin(-c.angle);
+    var u = (dx * cs - dy * sn) / c.radius, v = (dx * sn + dy * cs) / (c.radius * c.aspect);
+    var q = u * u + v * v;
+    return q >= 1 ? 0 : (1 - q) * (1 - q);
+}
+function cloudStep(s, dt) {
+    var c = s.cloud;
+    if (!c || !(c.drag > 0) || !(dt > 0)) return;
+    // The drag is expressed in each regime's OWN terms, because a multiply on
+    // the stored velocity only works in one of them: with the camera on that
+    // velocity is rewritten by the magnification every substep, so damping it
+    // there is erased on the same frame and the cloud would do nothing in the
+    // one regime he actually runs. In the camera regime the cloud instead HOLDS
+    // THE MATERIAL BACK IN DEPTH -- the approach slows by `drag` while the
+    // particle is inside -- which slows it on the screen, keeps it smaller and
+    // keeps it dimmer, all three of the depth cues together, and leaves it
+    // honestly further away once the cloud has gone past.
+    var blend = cameraOn(s);
+    var camDir = s.cameraDir < 0 ? -1 : 1;
+    var camRate = s.cameraRate > 0 && isFinite(s.cameraRate) ? s.cameraRate : 0;
+    var far = cameraFar(s);
+    for (var k = 0; k < s.liveCount; ++k) {
+        var i = s.live[k];
+        if (!s.alive[i]) continue;
+        var w = cloudWeight(s, i);
+        if (!(w > 0.004)) continue;
+        var hold = c.drag * w;
+        if (hold > 0.6) hold = 0.6;
+        if (blend > 0 && camRate > 0) {
+            var z = s.depthZ[i] + camDir * camRate * dt * hold * blend;
+            if (z < CAMERA_NEAR) z = CAMERA_NEAR; else if (z > far) z = far;
+            s.depthZ[i] = z;
+        }
+        if (blend < 1) {
+            var f = Math.exp(-hold * (1 - blend) * dt);
+            s.vx[i] *= f; s.vy[i] *= f;
+            if (s.kickX[i] || s.kickY[i]) { s.kickX[i] *= f; s.kickY[i] *= f; }
+        }
+    }
+}
+// The star an event is going to happen TO. It must be a real particle that is
+// already on the screen and will still be there when its precursor runs out,
+// because the whole point is that he can see the star BEFORE it goes.
+function pickStar(s, options) {
+    var o = options || {};
+    var margin = number(o.marginPx, 0.10 * Math.min(s.width, s.height), 0, Math.min(s.width, s.height) / 2);
+    var need = number(o.holdSec, 25, 0, 600);
+    var keepOut = number(o.keepOutPx, 0, 0, 8 * Math.max(s.width, s.height));
+    var minSize = number(o.minSizePx, 0, 0, 12);
+    var best = -1, bestScore = -Infinity;
+    var cx = s.centreX, cy = s.centreY;
+    for (var k = 0; k < s.liveCount; ++k) {
+        var i = s.live[k];
+        if (!s.alive[i] || s.transient[i]) continue;
+        if (s.radiusAtCapture[i] > 0 || doomed(s, i)) continue;
+        if (s.age[i] < 1.5) continue;                       // still fading in
+        if (s.safetyLife[i] - s.age[i] < need) continue;    // would die mid-precursor
+        if (s.size[i] < minSize) continue;
+        var x = s.x[i], y = s.y[i];
+        if (x < margin || x > s.width - margin || y < margin || y > s.height - margin) continue;
+        var dx = x - cx, dy = y - cy, r = Math.sqrt(dx * dx + dy * dy);
+        if (r < keepOut) continue;
+        // Where it will be when the precursor ends. A star that walks off the
+        // screen mid-swell is the same defect as one that dies mid-swell.
+        var px = x + (s.vx[i] + s.kickX[i]) * need, py = y + (s.vy[i] + s.kickY[i]) * need;
+        if (px < 0.4 * margin || px > s.width - 0.4 * margin || py < 0.4 * margin || py > s.height - 0.4 * margin) continue;
+        // ... and not into the hole. With the hole on the field streams inward
+        // fast, so a long precursor simply has no candidate; the caller shortens
+        // `holdSec` against the measured flow rather than pretending otherwise.
+        if (keepOut > 0 && Math.hypot(px - cx, py - cy) < keepOut) continue;
+        // Bright, near, and not moving fast: a near star that holds still is the
+        // one the eye has already learned before it starts to swell.
+        var speed = Math.sqrt(s.vx[i] * s.vx[i] + s.vy[i] * s.vy[i]);
+        var score = (s.depth[i] > 0.5 ? 2.4 : 0) + s.size[i] * 0.5 + s.luminosity[i] * 0.25
+            - speed / Math.max(1, s.config.vref) - (o.jitter ? 0 : 0) + random(s) * 0.8;
+        if (score > bestScore) { bestScore = score; best = i; }
+    }
+    return best;
+}
+// The precursor descriptor, shaped like `s.tde`: the renderer marks the star
+// here and Appearance.render() reads it, so the swelling is a property of THAT
+// particle and travels with it.
+function markNova(s, i, options) {
+    if (!(i >= 0) || !s.alive[i]) return false;
+    var o = options || {};
+    s.nova = {index: i, generation: s.generation[i], start: s.clock,
+        precursor: Math.max(0.5, number(o.precursorSec, 14, 0.5, 240)),
+        sizeGain: number(o.sizeGain, 4, 1, 12),
+        lumGain: number(o.lumGain, 5.5, 1, 20),
+        warm: o.warm || [1, 0.60, 0.38],
+        hot: o.hot || [0.84, 0.92, 1]};
+    return true;
+}
+function novaStar(s) {
+    var n = s.nova;
+    if (!n) return -1;
+    if (!s.alive[n.index] || s.generation[n.index] !== n.generation) { s.nova = null; return -1; }
+    return n.index;
+}
+function clearNova(s) { s.nova = null; }
+// Mean screen speed of the live field, which is what "three to eight times
+// faster than everything around it" is measured against. Sampled rather than
+// summed: 96 particles is inside 4 % of the mean at these populations and the
+// call is once per comet, not once per frame.
+function flowSpeed(s) {
+    var n = s.liveCount;
+    if (!n) return 0;
+    var stride = Math.max(1, Math.floor(n / 96));
+    var sum = 0, count = 0;
+    for (var k = 0; k < n; k += stride) {
+        var i = s.live[k];
+        if (!s.alive[i] || s.transient[i]) continue;
+        var vx = s.vx[i] + s.kickX[i], vy = s.vy[i] + s.kickY[i];
+        sum += Math.sqrt(vx * vx + vy * vy); ++count;
+    }
+    return count ? sum / count : 0;
+}
+
 // Stream table for clustered births. Each stream is a birth-frozen edge position
 // with its own drift and width, re-rolled on its own lifetime, so the preferred
 // directions wander over minutes instead of being fixed forever.
@@ -544,10 +951,29 @@ function damp(s, i, dt, gamma, nu) {
 }
 function kill(s, i, cause) {
     s.alive[i]=0; --s.aliveCount; ++s.counters.deaths; ++s.counters[cause];
+    if (s.kickX[i] || s.kickY[i]) { s.kickX[i]=0; s.kickY[i]=0; if (s.kickAlive>0) --s.kickAlive; }
+    // Event debris is NOT a star: it must not be counted toward the population
+    // target (which would suppress ordinary births for the debris' whole life)
+    // and it must not feed the lifetime estimator (400 forty-second lives
+    // against a 97 s orbital mean would quadruple the birth rate for minutes).
+    if (s.transient[i]) {
+        s.transient[i]=0; if (s.transientCount>0) --s.transientCount;
+        return;
+    }
     ++s.lifetimeSamples; s.lifetimeSum+=s.age[i];
     // A 30-second prior avoids the first short plunges dominating birth rate.
     s.meanLifetime=(3000+s.lifetimeSum)/(100+s.lifetimeSamples);
     s.birthRate=s.targetPopulation/s.meanLifetime;
+}
+// Public death, for an event that consumes a particle: the supernova's
+// precursor star is removed on the frame it detonates, and the cause is its
+// own counter so a swallow rate is not polluted by it.
+function remove(s, i, cause) {
+    if (!(i >= 0 && i < s.capacity) || !s.alive[i]) return false;
+    var name = cause || 'consumed';
+    if (s.counters[name] === undefined) s.counters[name] = 0;
+    kill(s, i, name);
+    return true;
 }
 function swept(x, y, nx, ny, radius) {
     var dx=nx-x,dy=ny-y,den=dx*dx+dy*dy;
@@ -606,6 +1032,7 @@ function step(s, dt, options) {
     // with it, and it is the right way round anyway -- he asked for the hole AND
     // its physics off, not for an invisible mass to go on pulling.
     var blend=cameraOn(s), gravity=(1-blend)*(1-blend), DZ=s.depthZ;
+    var KX=s.kickX, KY=s.kickY, KA=s.kickAge, KD=s.kickDrag, anyKick=s.kickAlive>0;
     var camRate=0, camDir=1, camFar=cameraFar(s), camRoll=0;
     if (blend>0) {
         mu*=gravity; drag*=gravity;
@@ -669,6 +1096,30 @@ function step(s, dt, options) {
                 }
                 nx+=blend*(mx-nx); ny+=blend*(my-ny);
                 vx+=blend*((nx-x)*invH-vx); vy+=blend*((ny-y)*invH-vy);
+            }
+            // The peculiar-velocity channel. It moves the POSITION and never
+            // the velocity, which is the only way a shove survives a regime
+            // where the magnification rewrites the velocity every substep. Its
+            // decay is v = v0*(t0/t)^p: at p = 0.6 the displacement is exactly
+            // r ~ t^0.4, the Sedov law the shell sprite is drawn with, so the
+            // rim and the debris it is made of cannot drift apart. p = 0 is a
+            // body under its own proper motion and never slows.
+            if (anyKick) {
+                var kx=KX[i], ky=KY[i];
+                if (kx!==0 || ky!==0) {
+                    nx+=kx*h; ny+=ky*h;
+                    var ka=KA[i], kp=KD[i];
+                    KA[i]=ka+h;
+                    if (kp>0) {
+                        var decay=Math.pow(ka/(ka+h),kp);
+                        kx*=decay; ky*=decay;
+                        // 2 px/s is 0.07 px in a 30 Hz frame: the shove is
+                        // over. Without a floor the power law's tail runs for
+                        // half a minute at speeds nothing can see.
+                        if (kx*kx+ky*ky<4) { kx=0; ky=0; --s.kickAlive; }
+                        KX[i]=kx; KY[i]=ky;
+                    }
+                }
             }
             if (ENTRY[i]<0) {
                 var entry=viewportEntry(cx+x,cy+y,cx+nx,cy+ny,width,height);
@@ -737,7 +1188,11 @@ function step(s, dt, options) {
     s.clock+=dt;++s.counters.steps;
 }
 function replenish(s, dt, callback) {
-    if (s.aliveCount>=s.targetPopulation) { s.birthAccumulator=0;return; }
+    // Event debris is not part of the population: counting it here would stop
+    // ordinary births for the whole life of a burst and leave a thinned field
+    // behind the explosion.
+    var stars = s.aliveCount - s.transientCount;
+    if (stars>=s.targetPopulation) { s.birthAccumulator=0;return; }
     // Burst modulation: two incommensurate 4096-safe cycles with mean 1, so the
     // population target is unchanged but arrivals come in waves. It is an INFALL
     // idea - the stream arriving in gusts - and the camera has no infall; with a
@@ -763,10 +1218,10 @@ function replenish(s, dt, callback) {
     var push = s.refillFor > 0 ? Math.min(1, s.refillFor/30) : 0;
     if (camera > push) push = camera;
     var rate = push > 0
-        ? s.birthRate + push*(s.targetPopulation-s.aliveCount)/10
+        ? s.birthRate + push*(s.targetPopulation-stars)/10
         : s.birthRate;
     s.birthAccumulator+=dt*rate*(burst>0 ? burst : 0);
-    while (s.birthAccumulator>=1-1e-12 && s.aliveCount<s.targetPopulation) {
+    while (s.birthAccumulator>=1-1e-12 && s.aliveCount-s.transientCount<s.targetPopulation) {
         var searched=0;
         while (s.alive[s.nextSlot] && searched<s.capacity) { s.nextSlot=(s.nextSlot+1)%s.capacity;++searched; }
         if (searched===s.capacity) { s.birthAccumulator=0;return; }
@@ -843,6 +1298,11 @@ function advance(s, dt, radialSpeed, filteredFlow, centreX, centreY, rotationSig
         // Outside the hot loop and outside step(): one descriptor test per
         // outer step, nothing per particle.
         tdeStep(s,birthCallback || s.birthCallback);
+        // The nebula's drag and the flash glows are per-second effects, not
+        // forces: once per outer step over the live list, and both are inert
+        // (one null test) when no event is running.
+        cloudStep(s,fixed);
+        if (s.glows.length) glowStep(s);
         s.accumulator=Math.max(0,s.accumulator-fixed);++count;
     }
     return count;
@@ -854,5 +1314,10 @@ if (typeof module !== 'undefined' && module.exports) module.exports = {
     damp: damp, random: random, swept: swept, viewportEntry: viewportEntry, rescale: rescale,
     doom: doom, doomed: doomed, tdeStep: tdeStep, inject: inject,
     visibleRadius: visibleRadius, screenRadius: screenRadius,
-    cameraLaunch: cameraLaunch, cameraDepthOf: cameraDepthOf, CAMERA_NEAR: CAMERA_NEAR
+    cameraLaunch: cameraLaunch, cameraDepthOf: cameraDepthOf, CAMERA_NEAR: CAMERA_NEAR,
+    // v10, the event -> particle interface
+    applyImpulse: applyImpulse, spawnBurst: spawnBurst, spawnBody: spawnBody,
+    brightenNear: brightenNear, pickStar: pickStar, markNova: markNova,
+    novaStar: novaStar, clearNova: clearNova, flowSpeed: flowSpeed,
+    remove: remove, debrisRoom: debrisRoom, setCloud: setCloud, cloudWeight: cloudWeight
 };

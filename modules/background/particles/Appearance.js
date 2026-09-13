@@ -26,6 +26,39 @@ function ensure(s) {
         s[k] = new Float64Array(s.capacity);
     s.entryStamp.fill(-1);
 }
+// v10. The optical half of Physics.spawnAt(): a transient particle takes its
+// colour and its life from the physics of the event that made it, never from
+// his palette, so this is a separate entry point rather than a flag inside
+// birth(). The renderer wires it up once (`pool.transientBirth`), exactly as it
+// wires up the ordinary birth callback.
+//
+// Kind 7, the EMBER, is supernova debris: hot white on the frame it is born,
+// cooling through yellow and orange to a dim red over its own life while its
+// core shrinks and its light falls. The shader knows nothing about it -- it
+// reads flare, near and front out of the flags and the low three bits are the
+// CPU's alone -- so this costs no shader change and no uniform.
+var EMBER_YELLOW = [1, 0.90, 0.55], EMBER_ORANGE = [1, 0.55, 0.22];
+function transient(s, i, traits) {
+    ensure(s);
+    var t = traits || {};
+    var seed = (Math.imul(i + 1, 1664525) ^ Math.imul(s.generation[i], 1013904223)) >>> 0;
+    s.flare[i] = 0;
+    s.front[i] = draw(seed, 89) < 0.35 ? 1 : 0;
+    s.exposure[i] = clamp(t.exposureSec === undefined ? s.config.streak.exposureSec : t.exposureSec, 0, 0.25);
+    // Never above the deformation ceiling: `bounds()` allocates the atlas for
+    // an instance no wider than `bendMaxPx`, and a debris streak past it would
+    // resize the sampled texture, which cost 13 ms -> 6700 ms per frame on
+    // llvmpipe and never recovered.
+    s.maxStreak[i] = clamp(t.streakPx === undefined ? s.config.streak.maxPx : t.streakPx, 0, s.config.streak.bendMaxPx);
+    s.entryStamp[i] = -1;
+    s.shimmerRate[i] = 193 + Math.floor(draw(seed, 79) * 238);
+    s.stretch[i] = 0;
+    s.tideOnset[i] = 0.62 + 0.80 * draw(seed, 97);
+    s.tideGain[i] = 0.55 + 0.45 * draw(seed, 101);
+    s.tideRate[i] = 0.45 + 1.45 * draw(seed, 103);
+    var end = t.endColour || [0.92, 0.20, 0.10];
+    s.altR[i] = end[0]; s.altG[i] = end[1]; s.altB[i] = end[2];
+}
 function birth(s, i, input) {
     ensure(s);
     var seed = ((input.seed | 0) ^ Math.imul(i + 1, 1664525) ^ Math.imul(s.generation[i], 1013904223)) >>> 0;
@@ -151,6 +184,12 @@ function supportFor(core, streak, flare) {
 // instance may be fully stretched: `streak.bendMaxAlive` is a smooth budget on
 // the summed stretch, not a hard per-instance switch, and a transient can carry
 // it above the budget for a second while the relaxations catch up.
+// A v10 event may draw a handful of instances WIDER than any configured star:
+// the supernova's precursor swells to five times its own size and the comet's
+// nucleus is a body, not a point. Both are bounded additions of the same shape
+// as the tidal-disruption ceiling — three instances at the packed core maximum
+// and the deformation streak ceiling — so the atlas is still allocated once.
+var WIDE_INSTANCES = 3, WIDE_CORE_PX = 12;
 function bounds(s) {
     var z = s.config.sizes;
     var core = Math.round(clamp(Math.max(z.nearPx[1], z.middlePx[1], z.capturedPx[1]), 0.25, 12) * 16) / 16;
@@ -162,7 +201,14 @@ function bounds(s) {
     // bounded by streak.maxPx; only the capped bend and flare sets are wider.
     var plain = (supportFor(core, streak, false) + minor) * Math.SQRT1_2;
     var bent = (supportFor(core, s.config.streak.bendMaxPx, false) + minor) * Math.SQRT1_2;
-    var items = s.targetPopulation + s.config.depth.binaryMaxAlive;
+    // v10: event debris shares the atlas with the stars, so the transient
+    // reserve is part of the item ceiling. It is unconditional for the same
+    // reason the tidal-disruption ceiling is: the atlas is allocated once per
+    // configuration and a resize of the sampled texture cost 13 ms -> 6700 ms
+    // per frame on llvmpipe and never recovered.
+    var items = s.targetPopulation + s.config.depth.binaryMaxAlive + s.config.debris.maxAlive;
+    var wideMinor = supportFor(WIDE_CORE_PX, 0, false);
+    var wide = (supportFor(WIDE_CORE_PX, s.config.streak.bendMaxPx, false) + wideMinor) * Math.SQRT1_2;
     // One tidal-disruption victim may be stretched to the longest trail the
     // packed streak byte carries. That ceiling is a phenomena bound the
     // particle config never sees, so the atlas is sized for it
@@ -173,7 +219,8 @@ function bounds(s) {
         maxSupport: Math.max(plain, minor),
         maxFlares: s.config.flare.maxAlive, flareSupport: supportFor(nearCore, streak, true),
         maxBends: items, bendSupport: Math.max(bent, minor),
-        maxTde: 1, tdeSupport: Math.max(tde, minor)};
+        maxTde: 1, tdeSupport: Math.max(tde, minor),
+        maxWide: WIDE_INSTANCES, wideSupport: Math.max(wide, minor)};
 }
 // Render instances are one flat Float64Array, not an array of objects: writing
 // eighteen properties per instance per frame is the single most expensive thing
@@ -222,6 +269,8 @@ function render(previous, s, style) {
     var RCAP = s.radiusAtCapture, CTIME = s.captureTime, ENTRY = s.entryTime, STAMP = s.entryStamp;
     var STRETCH = s.stretch, TONSET = s.tideOnset, TGAIN = s.tideGain, TRATE = s.tideRate;
     var EXPOSURE = s.exposure, MAXSTREAK = s.maxStreak, GEN = s.generation, SHIMMER = s.shimmerRate;
+    var KX = s.kickX, KY = s.kickY;
+    if (!KX) { KX = new Float64Array(s.capacity); KY = new Float64Array(s.capacity); }
     var R = s.r, G = s.g, B = s.b, ALTR = s.altR, ALTG = s.altG, ALTB = s.altB;
     var live = s.live, n = s.liveCount, cx = s.centreX, cy = s.centreY;
     // Central fade radius follows the same envelope as the swallow radius; with
@@ -292,12 +341,66 @@ function render(previous, s, style) {
         tdeWeight = tu * tu * (3 - 2 * tu);
         tdeStreak = tde.streakPx;
     }
+    // v10, THE PRECURSOR. The supernova is a star that explodes, so before it
+    // explodes it has to BE a star: Physics.markNova() names one live particle
+    // and this swells it, brightens it, walks it red then blue-white and pulses
+    // it faster while it keeps moving with the regime like everything else.
+    // Resolved once per frame; the loop pays one integer compare.
+    var nova = s.nova, novaIndex = -1, novaT = 0, novaPulse = 1;
+    var novaSize = 1, novaLum = 1, novaWarm = null, novaHot = null;
+    if (nova && s.alive[nova.index] && s.generation[nova.index] === nova.generation) {
+        novaIndex = nova.index;
+        var nAge = clock - nova.start;
+        novaT = nAge <= 0 ? 0 : (nAge >= nova.precursor ? 1 : nAge / nova.precursor);
+        // The pulse phase is the INTEGRAL of 1/period, so the period can fall
+        // from 3.2 s to 1.0 s without the pulse ever jumping, and the amplitude
+        // eases to nothing over the last 1.2 s so the detonation never cuts it
+        // mid-stroke. Same construction as supernovaState's precursor, because
+        // it is the same object one layer down.
+        var T0 = 3.2, T1 = 1.0;
+        var ph = 2 * Math.PI * (nova.precursor / (T1 - T0)) * Math.log((T0 + (T1 - T0) * novaT) / T0);
+        var amp = (0.16 + 0.34 * novaT) * smooth(0, 1.2, nova.precursor - nAge);
+        novaPulse = 1 + amp * Math.sin(ph);
+        novaSize = 1 + (nova.sizeGain - 1) * Math.pow(novaT, 1.25);
+        novaLum = 1 + (nova.lumGain - 1) * Math.pow(novaT, 1.7);
+        novaWarm = nova.warm; novaHot = nova.hot;
+    }
+    // Transient luminosity from a flash (Physics.brightenNear). Resolved into
+    // four flat numbers per source so the loop does squared distances only.
+    var glowN = 0, glowX = [0, 0, 0, 0], glowY = [0, 0, 0, 0], glowR2 = [0, 0, 0, 0], glowG = [0, 0, 0, 0];
+    var glowList = s.glows || [];
+    for (var gi = 0; gi < glowList.length && glowN < 4; ++gi) {
+        var gl = glowList[gi];
+        var gu = (clock - gl.start) / Math.max(1e-6, gl.decay);
+        if (!(gu >= 0 && gu < 1)) continue;
+        glowX[glowN] = gl.x; glowY[glowN] = gl.y;
+        glowR2[glowN] = gl.radius * gl.radius;
+        glowG[glowN] = gl.gain * (1 - gu) * (1 - gu);
+        ++glowN;
+    }
+    // The nebula the field is passing THROUGH: material inside it takes a
+    // little of the cloud's colour. The drag half lives in Physics.cloudStep.
+    var cloud = s.cloud, cloudCos = 1, cloudSin = 0, cloudRx = 1, cloudRy = 1, cloudW = 0;
+    if (cloud && cloud.weight > 0) {
+        cloudCos = Math.cos(-cloud.angle); cloudSin = Math.sin(-cloud.angle);
+        cloudRx = cloud.radius; cloudRy = cloud.radius * cloud.aspect;
+        cloudW = cloud.weight;
+    } else cloud = null;
     for (var k = 0; k < n; ++k) {
         var i = live[k];
         var kind = KIND[i], phase = PHASE[i];
         var oscillation = cycle * P0[i] + phase;
-        var behavior = 1, ox = 0, oy = 0;
-        if (kind === 1) behavior += P1[i] * Math.sin(oscillation);
+        var behavior = 1, ox = 0, oy = 0, ember = -1;
+        if (kind === 7) {
+            // An ember: supernova debris. Its whole appearance is its own age
+            // over its own life — it comes in inside two frames because an
+            // explosion does not fade in, it burns down over tens of seconds,
+            // and it cools through the ramp below.
+            var elife = P0[i] > 0.01 ? P0[i] : 1;
+            ember = AGE[i] / elife;
+            if (ember > 1) ember = 1; else if (!(ember > 0)) ember = 0;
+            behavior = smooth(0, 0.07, AGE[i]) * (0.18 + 0.82 * Math.pow(1 - ember, 1.7));
+        } else if (kind === 1) behavior += P1[i] * Math.sin(oscillation);
         else if (kind === 2) {
             if (ENTRY) STAMP[i] = ENTRY[i];
             else if (STAMP[i] < 0 && X[i] >= 0 && X[i] <= width && Y[i] >= 0 && Y[i] <= height) STAMP[i] = clock;
@@ -314,6 +417,8 @@ function render(previous, s, style) {
         } else if (kind === 5) { ox = P1[i] * Math.cos(oscillation); oy = P1[i] * Math.sin(oscillation); }
         var captured = RCAP[i] > 0 ? smooth(0, 4, clock - CTIME[i]) : 0;
         var core = SIZE[i] + captured * (CAPSIZE[i] - SIZE[i]);
+        if (ember >= 0) core *= 0.55 + 0.45 * (1 - ember);
+        else if (i === novaIndex) core *= novaSize;
         var camScale = 1, camFade = 1;
         if (camBlend > 0) {
             var z = DZ[i];
@@ -325,7 +430,11 @@ function render(previous, s, style) {
             camFade = 1 - camBlend * (1 - camScale * (1 - smooth(0.90, 1, t)) * smooth(0, 0.06, t));
             core *= camScale;
         }
-        var vx = VX[i], vy = VY[i];
+        // The peculiar-velocity channel is part of the motion that is DRAWN:
+        // debris and a comet's nucleus carry all of theirs there in the camera
+        // regime, so a streak built from the stored velocity alone would point
+        // the wrong way or vanish. Two adds per particle per frame.
+        var vx = VX[i] + KX[i], vy = VY[i] + KY[i];
         var speed = Math.sqrt(vx * vx + vy * vy);
         var dx = X[i] - cx, dy = Y[i] - cy;
         var radius = Math.sqrt(dx * dx + dy * dy);
@@ -402,7 +511,9 @@ function render(previous, s, style) {
             fade = u * u * (3 - 2 * u);
         }
         var age0 = AGE[i];
-        if (age0 < 0.35) { var w0 = age0 <= 0 ? 0 : age0 / 0.35; fade *= w0 * w0 * (3 - 2 * w0); }
+        // An ember has its own two-frame entrance in `behavior`: an explosion
+        // does not fade in over a third of a second.
+        if (age0 < 0.35 && ember < 0) { var w0 = age0 <= 0 ? 0 : age0 / 0.35; fade *= w0 * w0 * (3 - 2 * w0); }
         var shimmer = twinkle > 0 ? 1 + 0.15 * twinkle * Math.sin(cycle * SHIMMER[i] + phase) : 1;
         var light = LUM[i] * (1 - dim * captured) * behavior * fade * shimmer * camFade;
         var mix = kind === 6 ? 0.5 - 0.5 * Math.cos(oscillation) : 0;
@@ -411,6 +522,55 @@ function render(previous, s, style) {
         var cr = R[i] + mix * (ALTR[i] - R[i]);
         var cg = G[i] + mix * (ALTG[i] - G[i]);
         var cb = B[i] + mix * (ALTB[i] - B[i]);
+        if (ember >= 0) {
+            // Hot white -> yellow -> orange -> dim red, over the ember's own
+            // life. Three segments so the yellow and the orange are real stops
+            // and not an average of the two ends.
+            var e0, e1, ef;
+            if (ember < 0.12) { e0 = null; e1 = EMBER_YELLOW; ef = ember / 0.12; }
+            else if (ember < 0.45) { e0 = EMBER_YELLOW; e1 = EMBER_ORANGE; ef = (ember - 0.12) / 0.33; }
+            else { e0 = EMBER_ORANGE; e1 = null; ef = (ember - 0.45) / 0.55; }
+            var a0r = e0 ? e0[0] : cr, a0g = e0 ? e0[1] : cg, a0b = e0 ? e0[2] : cb;
+            var a1r = e1 ? e1[0] : ALTR[i], a1g = e1 ? e1[1] : ALTG[i], a1b = e1 ? e1[2] : ALTB[i];
+            cr = a0r + (a1r - a0r) * ef; cg = a0g + (a1g - a0g) * ef; cb = a0b + (a1b - a0b) * ef;
+        } else if (i === novaIndex) {
+            // The star walks red first and then blue-white, which is the order
+            // the collapse goes in, and it pulses faster as it goes.
+            if (novaT < 0.62) {
+                var wf = novaT / 0.62;
+                cr += (novaWarm[0] - cr) * wf; cg += (novaWarm[1] - cg) * wf; cb += (novaWarm[2] - cb) * wf;
+            } else {
+                var hf = (novaT - 0.62) / 0.38;
+                cr = novaWarm[0] + (novaHot[0] - novaWarm[0]) * hf;
+                cg = novaWarm[1] + (novaHot[1] - novaWarm[1]) * hf;
+                cb = novaWarm[2] + (novaHot[2] - novaWarm[2]) * hf;
+            }
+            light *= novaLum * novaPulse;
+        }
+        if (glowN > 0) {
+            // The flash lighting its own neighbourhood. Squared distances only.
+            var gx = X[i], gy = Y[i], lift = 0;
+            for (var g = 0; g < glowN; ++g) {
+                var gdx = gx - glowX[g], gdy = gy - glowY[g];
+                var gq = (gdx * gdx + gdy * gdy) / glowR2[g];
+                if (gq < 1) lift += glowG[g] * (1 - gq) * (1 - gq);
+            }
+            if (lift > 0) light *= 1 + lift;
+        }
+        if (cloud) {
+            // Inside the passing cloud the material takes a little of its
+            // colour. The drag half of the same envelope is Physics.cloudStep.
+            var ndx = X[i] - cloud.x, ndy = Y[i] - cloud.y;
+            var nu = (ndx * cloudCos - ndy * cloudSin) / cloudRx;
+            var nv = (ndx * cloudSin + ndy * cloudCos) / cloudRy;
+            var nq = nu * nu + nv * nv;
+            if (nq < 1) {
+                var nw = cloudW * (1 - nq) * (1 - nq);
+                cr += (cloud.tint[0] - cr) * nw;
+                cg += (cloud.tint[1] - cg) * nw;
+                cb += (cloud.tint[2] - cb) * nw;
+            }
+        }
         if (doomed > 0) {
             // Spreading the same light over a far longer trail dims the core;
             // the material also reddens as it is torn out.
@@ -454,5 +614,5 @@ function render(previous, s, style) {
     return items;
 }
 
-if (typeof module !== "undefined") module.exports = { birth: birth, render: render, draw: draw,
+if (typeof module !== "undefined") module.exports = { birth: birth, transient: transient, render: render, draw: draw,
     supportFor: supportFor, bounds: bounds, instances: instances, STRIDE: STRIDE };

@@ -26,12 +26,20 @@ function layout(previous, bins, count, minHeight) {
 // sampled texture is allocated once and never resized. A single resize of the
 // sampled texture cost 13 ms -> 6700 ms per frame of scene-graph submission on
 // llvmpipe, and it did not recover; a pre-sized texture never pays it.
-function capacity(bins, maxItems, maxSupport, maxFlares, flareSupport, maxBends, bendSupport, maxTde, tdeSupport) {
+function capacity(bins, maxItems, maxSupport, maxFlares, flareSupport, maxBends, bendSupport, maxTde, tdeSupport, maxWide, wideSupport) {
     var perAxis = Math.floor(2 * maxSupport / 32) + 2;
     var references = maxItems * perAxis * perAxis;
     if (maxBends > 0) {
         var bendAxis = Math.floor(2 * bendSupport / 32) + 2;
         references += maxBends * (bendAxis * bendAxis - perAxis * perAxis);
+    }
+    if (maxWide > 0 && wideSupport > 0) {
+        // v10: the supernova's swollen precursor and the comet's nucleus are
+        // wider than any configured star. A handful of instances, bounded like
+        // the flare and tidal-disruption sets rather than a ceiling on all.
+        var wideAxis = Math.floor(2 * wideSupport / 32) + 2;
+        var bendBase = maxBends > 0 ? Math.floor(2 * bendSupport / 32) + 2 : perAxis;
+        references += maxWide * Math.max(0, wideAxis * wideAxis - bendBase * bendBase);
     }
     if (maxTde > 0 && tdeSupport > 0) {
         // A tidal-disruption victim is one instance with a far wider footprint

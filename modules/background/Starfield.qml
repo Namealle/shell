@@ -3190,6 +3190,10 @@ Item {
             + ":" + geometry.arcSpacingRh + ":" + geometry.arcCount;
         if (!_particles) {
             _particles = ParticlePhysics.create(w, h, rh, screenSeed ^ varietySeed, _particleSettings, undefined, geometry);
+            // v10: the optical half of a transient birth. Physics must not reach
+            // into Appearance's arrays, so it is handed in exactly the way the
+            // ordinary birth callback is.
+            _particles.transientBirth = (pool, index, traits) => ParticleAppearance.transient(pool, index, traits);
             _particleConfiguration = signature;
         } else if (signature !== _particleConfiguration) {
             // DPR converts units only; ordinary resize and reactive edits leave
@@ -3340,7 +3344,7 @@ Item {
         // scene-graph submission on llvmpipe and did not recover.
         if (!_particleAtlasHeight) {
             const ceiling = ParticleAppearance.bounds(pool);
-            _particleAtlasHeight = ParticlePacking.capacity(_particleBins, ceiling.maxItems, ceiling.maxSupport, ceiling.maxFlares, ceiling.flareSupport, ceiling.maxBends, ceiling.bendSupport, ceiling.maxTde, ceiling.tdeSupport);
+            _particleAtlasHeight = ParticlePacking.capacity(_particleBins, ceiling.maxItems, ceiling.maxSupport, ceiling.maxFlares, ceiling.flareSupport, ceiling.maxBends, ceiling.bendSupport, ceiling.maxTde, ceiling.tdeSupport, ceiling.maxWide, ceiling.wideSupport);
         }
         const layout = ParticlePacking.layout(canvas.packet, _particleBins, _particleItems.count, _particleAtlasHeight);
         _particleAtlasHeight = layout.height;
