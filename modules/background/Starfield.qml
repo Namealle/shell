@@ -1894,10 +1894,22 @@ Item {
     }
 
     // One passage every 20-45 minutes at rateScale 1, and never on the same
-    // screen as a supernova remnant: it takes its turn in the SHARED dramatic
-    // cooldown (familyLast.drama, dramaCooldownSec), which at 900 s against a
-    // <= 480 s passage and a <= 333 s supernova separates the two in both
-    // directions without a second mechanism.
+    // screen as a supernova remnant. The two directions are covered
+    // differently, and deliberately:
+    //   - A dramatic family scheduled AFTER a passage is placed reads
+    //     familyLast.drama, which a passage writes exactly as the dramatic
+    //     families write it, so it takes its turn in the shared cooldown.
+    //   - A dramatic episode already on the books is RESERVED against here,
+    //     by the overlap test schedule() already uses for the transient heads.
+    // Reading familyLast.drama for the second direction is what a dramatic
+    // family does, and it is wrong for this one: those families schedule in
+    // chronological order, so their `last` is the most recent start, while a
+    // passage is scheduled once against whatever the first round of dramatic
+    // schedules left there - a gamma-ray burst booked for 90 minutes out was
+    // pushing the FIRST passage of a session to 92 minutes, measured, and
+    // making `everyMinutes` below ~15 min inert. Reserving against the actual
+    // episodes is both stricter (it is the real overlap) and honest about
+    // what it costs (nothing, unless they would collide).
     function scheduleNebula(): var {
         const s = _state;
         if (!nebulaEnabled())
@@ -1912,12 +1924,24 @@ Item {
         range = [range[0] / rate, range[1] / rate];
         const base = s.nebulaLast === null ? s.clock : s.nebulaLast;
         let start = Math.max(s.clock, base + range[0] + (range[1] - range[0]) * random(index, salt));
-        const cooldown = clamp(Number((eventFamilies || {}).dramaCooldownSec) || 900, 300, 86400) / rate;
-        const last = s.familyLast.drama === undefined ? -1e12 : s.familyLast.drama;
-        start = Math.max(start, last + cooldown);
         const e = captureNebula(index, start);
         if (!e)
             return null;
+        for (let pass = 0; pass < 6; ++pass) {
+            let moved = false;
+            for (let kind = 5; kind < s.events.length; ++kind) {
+                const other = s.events[kind];
+                if (!dramatic(kind) || !other)
+                    continue;
+                if (start < other.start + other.duration && start + e.duration > other.start) {
+                    start = other.start + other.duration + 1;
+                    moved = true;
+                }
+            }
+            if (!moved)
+                break;
+        }
+        e.start = start;
         s.familyLast.drama = start;
         s.nebulaLast = start;
         return e;

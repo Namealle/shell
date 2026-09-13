@@ -502,6 +502,24 @@ function nebulaTests() {
             gaps.length > 20 && Math.min(...gaps) >= 1200 - 1 && mean >= 1500 && mean <= 2900,
             gaps.length + " passages, mean " + (mean / 60).toFixed(1) + " min, min " + (Math.min(...gaps) / 60).toFixed(1) + " min");
     }
+    // The first passage of a session is inside the documented interval, not
+    // behind the whole first round of dramatic schedules.
+    {
+        const firsts = [];
+        for (const seed of [7, 12345, 20260913]) {
+            const host = nebulaHost({ screenSeed: seed });
+            for (let t = 0; t < 900; t += 5) {
+                host._state.clock = t;
+                host._state.geo[0] = t;
+                host.publishEvents();
+                host.publishNebula();
+            }
+            firsts.push(host._state.nebula.start / 60);
+        }
+        check("the first passage of a session is inside 20-50 min",
+            firsts.every(x => x >= 20 && x <= 50),
+            firsts.map(x => x.toFixed(1)).join(", ") + " min on three seeds");
+    }
     // Never beside a supernova: both families write the same familyLast.drama.
     {
         const host = nebulaHost();

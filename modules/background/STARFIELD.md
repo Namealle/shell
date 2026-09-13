@@ -194,9 +194,13 @@ drawn over the hole. Like every event it ignores `brightness`. It takes its turn
 a supernova remnant never occupy the same screen — 900 s against a ≤480 s passage and a ≤333 s supernova separates them in both directions with no second mechanism.
 `caelestia shell starfield fire nebula [screen]` forces one through the same `pushEvent`; it waits for a running passage and is dropped two minutes later, exactly as a
 pushed phenomenon waits for its family's entry.
-That cooldown is the BINDING constraint on the rate, not `everyMinutes`: a passage is scheduled once, against `familyLast.drama` as it stands at that moment, and the
-first round of supernova/kilonova/gamma-ray-burst schedules already reaches an hour and a half out — so on a cold start the first passage lands at 92 min on the default
-catalogue and `everyMinutes` below ~15 min changes nothing. Lower `dramaCooldownSec` to move both.
+The two directions of "never beside a supernova remnant" are covered differently and deliberately: a dramatic family scheduled AFTER a passage is placed reads
+`familyLast.drama`, which a passage writes exactly as they do, so it takes its turn in the shared cooldown; a dramatic episode already on the books is RESERVED against
+by the overlap test `schedule()` already uses for the transient heads. Reading `familyLast.drama` for that second direction is what a dramatic family does and it is
+wrong for this one — those schedule in chronological order, so their `last` is the most recent start, while a passage is scheduled once against whatever the first round
+of dramatic schedules happened to leave there. A gamma-ray burst booked ninety minutes out was pushing the FIRST passage of a session to 92 min and making
+`everyMinutes` below ~15 min inert; reserving against the actual episodes is stricter (it is the real overlap) and costs nothing unless they would collide. Measured
+first passage on three seeds: 22.2, 34.1, 37.7 min.
 Bounds: `everyMinutes` 1–1440, `durationSec` 60–1800 (a crossing that reaches the rim sooner ends there), `fadeSec` 5–300 (capped at 0.45 of the duration), `sizeShortSide`
 0.15–1.2, `gain` 0–0.35, `dustOpacity` 0–0.9, `stars` 0–3 (the renderer rounds), `starGain` 0–0.8, `paletteMix` 0–0.45, `driftScale` 0.05–2. Measured through the shipped
 kernel offscreen (`tools/nebula_sheet.py`, llvmpipe, the real noise texture, his palette): q99 0.21–0.30 linear at the shipped gain, q999 0.34, peak 229/255 in the star
