@@ -585,7 +585,15 @@ function step(s, dt, options) {
     // magnification fades in, so the toggle is a thirty-second change of regime
     // and never a cut. At blend 1 the stored velocity IS the camera velocity,
     // so streaks, the tidal direction term and the tests all read the truth.
-    var blend=cameraOn(s), gravity=1-blend, DZ=s.depthZ;
+    // Gravity leaves AHEAD of the picture, as the square of the envelope. The
+    // swallow radius follows `absorb` linearly, so a linear mass fade leaves a
+    // late crossfade holding 6 % of the pull with a 14 px event horizon, and a
+    // star diving into that gap whips round it: measured worst one-frame streak
+    // change 8.0 px against a 2.8 px orbital baseline. Squaring it takes the
+    // peak speed at a given radius down by four at that point and the artefact
+    // with it, and it is the right way round anyway -- he asked for the hole AND
+    // its physics off, not for an invisible mass to go on pulling.
+    var blend=cameraOn(s), gravity=(1-blend)*(1-blend), DZ=s.depthZ;
     var camRate=0, camDir=1, camFar=cameraFar(s), camRoll=0;
     if (blend>0) {
         mu*=gravity; drag*=gravity;
@@ -719,8 +727,12 @@ function step(s, dt, options) {
 function replenish(s, dt, callback) {
     if (s.aliveCount>=s.targetPopulation) { s.birthAccumulator=0;return; }
     // Burst modulation: two incommensurate 4096-safe cycles with mean 1, so the
-    // population target is unchanged but arrivals come in waves.
-    var depth = s.config.clustering.burstDepth;
+    // population target is unchanged but arrivals come in waves. It is an INFALL
+    // idea - the stream arriving in gusts - and the camera has no infall; with a
+    // mean life of 21 s against the orbital 97 s a gust also lands inside one
+    // generation instead of averaging out, and the field measured a 467-600
+    // swing against 577-600. It fades out with the rest of the regime.
+    var depth = s.config.clustering.burstDepth * (1 - cameraOn(s));
     var burst = depth > 0
         ? 1+depth*0.5*(Math.sin(s.clock*(2*Math.PI/23)+s.burstPhase)+Math.sin(s.clock*(2*Math.PI/71)+s.burstPhase*1.7))
         : 1;
@@ -748,7 +760,7 @@ function advance(s, dt, radialSpeed, filteredFlow, centreX, centreY, rotationSig
     // The stability limits are gravity's, and the camera has none: a blend of 1
     // relaxes every particle back to a single kick-drift-kick, so the regime
     // that has no hole does not pay for the hole's innermost orbit.
-    var gravity=1-cameraOn(s);
+    var camera=cameraOn(s), gravity=(1-camera)*(1-camera);
     var finest=0.029/Math.sqrt(Math.max(s.mu,muTarget)*gravity/Math.pow(s.rh,3));
     var fixed=Math.min(nominal,finest*subs);
     var accumulator=s.accumulator+dt;

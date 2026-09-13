@@ -645,8 +645,24 @@ const BIN_AREA = new Array(BINS).fill(0);
     // few hundred px/s, i.e. ~20 px in a frame. Nothing may teleport.
     check("no star jumps when the regime crossfades", worst < 60,
         `worst one-frame move ${worst.toFixed(1)} px across the 30 s change`);
+    // The same 120 s with no crossfade measures 2.8 px. The residue is a star
+    // diving at the fading mass while its swallow radius is already small;
+    // gravity leaving as the SQUARE of the envelope took it from 8.0 to 6.6.
     check("no streak jumps when the regime crossfades", worstStreak < 8,
-        `worst one-frame streak change ${worstStreak.toFixed(2)} px`);
+        `worst one-frame streak change ${worstStreak.toFixed(2)} px against 2.8 px with no change of regime`);
+    // Population stability: the infall's burst modulation is a gust in the
+    // arriving stream, and a gust lands inside one camera generation (21 s mean
+    // life against the orbital 97) instead of averaging out. With it still on,
+    // twenty minutes of camera measured a 467-600 swing against the orbital
+    // 577-600; it fades out with the rest of the regime.
+    let low = 600, high = 0;
+    fly({warmSec: 120, measureSec: 480, visit: (items, pool, t) => {
+        if (t < 180) return;
+        low = Math.min(low, pool.aliveCount);
+        high = Math.max(high, pool.aliveCount);
+    }});
+    check("the camera regime holds its population as steadily as the infall",
+        low > 540 && high <= 600, `${low}-${high} alive over eight minutes`);
 }
 {
     // ---- depth is the only thing that dims and shrinks a star, and it can only

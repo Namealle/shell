@@ -212,7 +212,25 @@ it. Pinned in the tests.
 
 The crossfade is the hole's own 30 s enable envelope read backwards, and the
 regimes always sum to one. Measured worst one-frame move across the change:
-21 px, which is what the orbital regime's own fastest star does anyway.
+21 px, which is what the orbital regime's own fastest star does anyway. Two
+things about it are not linear in the envelope, both measured:
+
+- **gravity leaves as the SQUARE of it.** The swallow radius follows `absorb`
+  linearly, so a linear mass fade leaves a late crossfade holding 6 % of the
+  pull behind a 14 px event horizon, and a star diving into that gap whips
+  round it — worst one-frame streak change 8.0 px against a 2.8 px baseline
+  with no change of regime. Squaring takes the peak speed at a given radius
+  down by four, and 8.0 px to 6.6. It is the right way round anyway: the mass
+  should be gone before its horizon is.
+- **`clustering.burstDepth` fades out with the regime.** Arrival gusts are an
+  INFALL idea, and a gust lands inside one camera generation (21 s mean life
+  against the orbital 97) instead of averaging out: twenty minutes measured a
+  467-600 population swing against the orbital 577-600. With it off the camera
+  holds 545-600, and `clustering.share` never reached `cameraLaunch` at all.
+
+Cost, measured on 2160x3840 with 600 stars (simulation + render + binning, one
+core, per frame): 0.164 ms camera against 0.187 ms orbital. The camera regime is
+CHEAPER, because there is no innermost orbit to subdivide for.
 
 ## Tidal deformation (v6)
 
