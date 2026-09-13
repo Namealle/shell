@@ -72,9 +72,11 @@ layout(std140, binding = 0) uniform buf {
     float particleMu;
     // Microlensing flux ceiling (phenomena.microlensing). 1 disables it.
     float lensFlux;
-    // Phenomenon slots 3-4: long, faint, low-gain radial events only, so they
+    // Phenomenon slots 3-5: long, faint, low-gain radial events only, so they
     // carry five vectors rather than a transient slot's seven. Neither class
-    // spills into the other. 160 B, against 224 B for two full slots.
+    // spills into the other. 240 B, against 336 B for three full slots. v8
+    // added the third: with seven families on two slots a red giant and a
+    // supernova spent most of an hour queued behind a 200 s star birth.
     vec4 event3Head;
     vec4 event3Colour;
     vec4 event3Tail01;
@@ -85,6 +87,11 @@ layout(std140, binding = 0) uniform buf {
     vec4 event4Tail01;
     vec4 event4Shape;
     vec4 event4Bounds;
+    vec4 event5Head;
+    vec4 event5Colour;
+    vec4 event5Tail01;
+    vec4 event5Shape;
+    vec4 event5Bounds;
 #define BH_UNIFORMS
 #include "blackhole.glsl"
 #undef BH_UNIFORMS
@@ -647,12 +654,70 @@ float tailSegment(vec2 pixel, vec2 a, vec2 b, float travelled, vec4 head, vec4 s
     vec2 delta = pixel - mix(a, b, t);
     float r2 = dot(delta, delta);
     // Compact circular cross-section; bounding box alone must not cut a glow.
-    float support = head.z * (style > 0.5 ? 14.0 : 6.0);
+    float support = head.z * 14.0;
     if (r2 >= support * support) return 0.0;
     float variance = width * width + 0.0833333;
     float light = exp2(-0.7213475 * r2 / variance) * width / sqrt(variance);
     light *= pow(1.0 - u, style > 0.5 ? 1.6 : 2.0);
+    // Style 0 leaves an ionisation train: a wide, dim component that outlives
+    // the bright core of the streak, so a meteor leaves something behind
+    // instead of a clean hairline. Its own (1-u) power is shallower, which is
+    // what makes the train read as persistence rather than as a fatter streak.
+    if (style < 0.5) {
+        float train = width * 5.0 + 1.6;
+        light += 0.18 * exp2(-0.7213475 * r2 / (train * train)) * pow(1.0 - u, 0.7);
+    }
     return light * (1.0 - smoothstep(0.64 * support * support, support * support, r2));
+}
+// Style 5, comet: nucleus and coma, a straight bluish ion tail and a curved,
+// striated warm dust tail, both anti-sunward from the only light source on the
+// sky (the hole, or the radial centre when it is off). Every tail brightens
+// toward the nucleus. ~2 exp2 for the coma, 1 exp2 + 1 cos per tail, inside
+// the CPU bounds only.
+//   head   = (x, y, nucleusSigmaPx, gain)
+//   tail01 = (ionDirX, ionDirY, ionLengthPx, ionWidthPx)
+//   tail23 = (dustDirX, dustDirY, dustLengthPx, dustWidth0Px)
+//   tail4  = (dustCurve, comaSigmaPx)
+//   shape  = (ionGain, dustGain, comaGain, striationAmp)
+vec3 cometField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec2 tail4, vec4 shape) {
+    vec2 p = pixel - head.xy;
+    float r2 = dot(p, p);
+    float sigma2 = head.z * head.z;
+    float variance = sigma2 + 0.0833333;
+    float nucleus = exp2(-0.7213475 * r2 / variance) * sigma2 / variance;
+    float coma2 = max(tail4.y * tail4.y, 0.0001);
+    float inner = exp2(-0.7213475 * r2 / coma2);
+    float outer = exp2(-0.1000000 * r2 / coma2);
+    vec3 sum = (nucleus * 1.30 + shape.z * (inner * 0.72 + outer * 0.26)) * mix(colour.rgb, vec3(1.0), 0.55);
+    if (shape.x > 0.0 && tail01.z > 0.0) {
+        vec2 d = tail01.xy;
+        float along = dot(p, d);
+        if (along > 0.0 && along < tail01.z) {
+            float u = along / tail01.z;
+            float across = dot(p, vec2(-d.y, d.x));
+            float w = max(tail01.w * (0.8 + 1.7 * u), 0.5);
+            // Ion rays: near-parallel streamers, so the modulation is in the
+            // across coordinate and drifts slowly down the tail.
+            float ray = 1.0 + shape.w * 0.75 * cos(9.0 * across / w + 3.1 * u);
+            sum += shape.x * exp2(-1.4426950 * across * across / (w * w)) * pow(1.0 - u, 1.5)
+                 * max(ray, 0.0) * smoothstep(0.0, 0.06, u) * mix(vec3(0.50, 0.69, 1.0), colour.rgb, 0.32);
+        }
+    }
+    if (shape.y > 0.0 && tail23.z > 0.0) {
+        vec2 d = tail23.xy;
+        float along = dot(p, d);
+        if (along > 0.0 && along < tail23.z) {
+            float u = along / tail23.z;
+            // The parabola is applied to the SAMPLE point, so the curved tail
+            // is a straight one in warped space: six ops, no curve solve.
+            float across = dot(p, vec2(-d.y, d.x)) - tail4.x * u * u * tail23.z;
+            float w = max(tail23.w * (0.7 + 2.8 * u), 0.5);
+            float striae = 1.0 + shape.w * (0.50 * cos(5.5 * across / w + 7.0 * u) + 0.28 * cos(13.0 * u));
+            sum += shape.y * exp2(-1.4426950 * across * across / (w * w)) * pow(1.0 - u, 1.25)
+                 * max(striae, 0.0) * smoothstep(0.0, 0.05, u) * mix(vec3(1.0, 0.87, 0.64), colour.rgb, 0.32);
+        }
+    }
+    return head.w * max(sum, vec3(0.0));
 }
 // Style 3, radial: core + halo + ring + echo ring. One kernel draws nova,
 // supernova, hypernova, star birth, red giant, a pulsar's point and a light
@@ -669,6 +734,28 @@ vec3 radialField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 shape, ve
     float r2 = dot(p, p);
     float sigma2 = head.z * head.z;
     float variance = sigma2 + 0.0833333;
+    // Style 4, gamma-ray burst: core + halo + two OPPOSED cones. No rings, so
+    // the ring channel is re-read as the beam and tail01 as the gains.
+    //   tail01 = (haloSigmaPx, haloGain, coreGain, beamGain)
+    //   shape  = (dirX, dirY, beamLengthPx, beamWidthPx)
+    if (colour.w > 3.5) {
+        float value = tail01.z * exp2(-0.7213475 * r2 / variance) * sigma2 / variance;
+        if (tail01.y > 0.0 && tail01.x > 0.0)
+            value += tail01.y * exp2(-0.7213475 * r2 / (tail01.x * tail01.x));
+        if (tail01.w > 0.0 && shape.z > 0.0) {
+            float along = abs(dot(p, shape.xy));
+            float u = along / shape.z;
+            if (u < 1.0) {
+                float across = dot(p, vec2(-shape.y, shape.x));
+                float w = max(shape.w * (0.30 + 1.0 * u), 0.5);
+                // smoothstep off the origin keeps the cones from doubling the
+                // core; pow(1-u,2) is what makes them read as beams, not bars.
+                value += tail01.w * exp2(-1.4426950 * across * across / (w * w))
+                       * (1.0 - u) * (1.0 - u) * smoothstep(0.0, 0.10, u);
+            }
+        }
+        return head.w * max(value, 0.0) * colour.rgb;
+    }
     float value = tail01.w * exp2(-0.7213475 * r2 / variance) * sigma2 / variance;
     if (tail01.z > 0.0 && shape.x > 0.0)
         value += tail01.z * exp2(-0.7213475 * r2 / (shape.x * shape.x));
@@ -690,16 +777,21 @@ vec3 radialField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 shape, ve
 }
 vec3 eventSlot(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec2 tail4, vec4 shape, vec4 bounds) {
     if (head.w <= 0.0 || pixel.x < bounds.x || pixel.y < bounds.y || pixel.x > bounds.z || pixel.y > bounds.w) return vec3(0.0);
+    if (colour.w > 4.5) return cometField(pixel, head, colour, tail01, tail23, tail4, shape);
     if (colour.w > 2.5) return radialField(pixel, head, colour, tail01, shape, bounds);
     vec2 p = pixel - head.xy;
     float r2 = dot(p, p);
     float sigma2 = head.z * head.z;
     float variance = sigma2 + 0.0833333;
-    float extent = head.z * (colour.w > 0.5 && colour.w < 1.5 ? 14.0 : 6.0);
+    // shape.w is the HEAD FLASH for styles 0 and 2: the entry bloom of a
+    // meteor, and a satellite's glint. It widens the halo and the taper
+    // together, so the flash is a bloom rather than a brighter dot.
+    float flash = clamp(shape.w, 0.0, 1.0);
+    float extent = head.z * (colour.w > 0.5 && colour.w < 1.5 ? 14.0 : 6.0 + 12.0 * flash);
     float taper = 1.0 - smoothstep(0.64 * extent * extent, extent * extent, r2);
     float hot = exp2(-0.7213475 * r2 / variance) * sigma2 / variance;
-    float glow = colour.w > 1.5 ? 0.0 : exp2(-r2 / (sigma2 * (colour.w > 0.5 ? 32.0 : 6.0)));
-    vec3 nucleus = (hot * (colour.w > 1.5 ? 1.0 : 1.35) + glow * (colour.w > 0.5 ? 0.22 : 0.12)) * taper * mix(colour.rgb, vec3(1.0), 0.60);
+    float glow = colour.w > 1.5 ? exp2(-r2 / (sigma2 * (6.0 + 40.0 * flash))) : exp2(-r2 / (sigma2 * (colour.w > 0.5 ? 32.0 : 6.0 + 34.0 * flash)));
+    vec3 nucleus = (hot * (colour.w > 1.5 ? 1.0 : 1.35) + glow * (colour.w > 0.5 ? 0.22 * flash : 0.12 + 0.62 * flash)) * taper * mix(colour.rgb, vec3(1.0), 0.60);
     float tail = 0.0;
     if (shape.z > 0.5) tail = tailSegment(pixel, tail01.xy, tail01.zw, 0.0, head, shape, colour.w);
     float distance = length(tail01.zw - tail01.xy);
@@ -923,6 +1015,7 @@ void legacyMain() {
     vec3 e2 = eventSlot(pixel,ubuf.event2Head,ubuf.event2Colour,ubuf.event2Tail01,ubuf.event2Tail23,ubuf.event2Tail4,ubuf.event2Shape,ubuf.event2Bounds);
     e2 += radialField(pixel,ubuf.event3Head,ubuf.event3Colour,ubuf.event3Tail01,ubuf.event3Shape,ubuf.event3Bounds);
     e2 += radialField(pixel,ubuf.event4Head,ubuf.event4Colour,ubuf.event4Tail01,ubuf.event4Shape,ubuf.event4Bounds);
+    e2 += radialField(pixel,ubuf.event5Head,ubuf.event5Colour,ubuf.event5Tail01,ubuf.event5Shape,ubuf.event5Bounds);
     if (hole) {
         vec3 events = decodeDisplay(e0+e1+e2);
         if (max(events.r,max(events.g,events.b))>0.0 && localEnvelope<1.0) {
@@ -985,6 +1078,7 @@ void main() {
     events += eventSlot(pixel,ubuf.event2Head,ubuf.event2Colour,ubuf.event2Tail01,ubuf.event2Tail23,ubuf.event2Tail4,ubuf.event2Shape,ubuf.event2Bounds);
     events += radialField(pixel,ubuf.event3Head,ubuf.event3Colour,ubuf.event3Tail01,ubuf.event3Shape,ubuf.event3Bounds);
     events += radialField(pixel,ubuf.event4Head,ubuf.event4Colour,ubuf.event4Tail01,ubuf.event4Shape,ubuf.event4Bounds);
+    events += radialField(pixel,ubuf.event5Head,ubuf.event5Colour,ubuf.event5Tail01,ubuf.event5Shape,ubuf.event5Bounds);
     vec3 colour = encodeDisplay(linearColour+decodeDisplay(events));
     float dither = fract(52.9829189*fract(dot(floor(pixel),vec2(0.06711056,0.00583715))))-0.5;
     float lit = step(1.0/255.0,max(colour.r,max(colour.g,colour.b)));

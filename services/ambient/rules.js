@@ -212,16 +212,16 @@ function validateArchetypes(value) {
 function validateFamilies(value, comet) {
     // duration, weight, gain cap, tail range, bend range. Unspecified tails are conservative defaults.
     var defaults = comet ? {
-        fast: [[4, 9], 0.15, 0.55, [0.04, 0.08], [0, 0]],
-        slow: [[30, 65], 0.50, 0.26, [0.20, 0.32], [0, 0]],
-        bent: [[12, 28], 0.30, 0.38, [0.08, 0.18], [0.02, 0.06]],
-        pulsating: [[20, 40], 0.05, 0.32, [0.12, 0.22], [0.02, 0.06]],
-        fragmenting: [[8, 16], 0, 0.38, [0.08, 0.16], [0.02, 0.06]],
-        spiral: [[18, 35], 0, 0.25, [0.08, 0.16], [0, 0.06]]
+        fast: [[4, 9], 0.18, 0.95, [0.06, 0.11], [0, 0]],
+        slow: [[30, 65], 0.34, 0.70, [0.20, 0.32], [0, 0]],
+        bent: [[12, 28], 0.28, 0.80, [0.12, 0.20], [0.02, 0.06]],
+        pulsating: [[20, 40], 0.08, 0.75, [0.14, 0.24], [0.02, 0.06]],
+        fragmenting: [[8, 16], 0.02, 0.80, [0.08, 0.16], [0.02, 0.06]],
+        spiral: [[18, 35], 0.10, 0.65, [0.08, 0.18], [0, 0.06]]
     } : {
-        straight: [[0.7, 1.3], 0.75, 0.85, [0.08, 0.14], [0, 0]],
+        straight: [[0.7, 1.3], 0.72, 0.85, [0.08, 0.14], [0, 0]],
         curved: [[0.9, 1.7], 0.20, 0.80, [0.04, 0.10], [0.005, 0.02]],
-        skipping: [[1.2, 2.2], 0.05, 0.70, [0.08, 0.14], [0, 0]]
+        skipping: [[1.2, 2.2], 0.08, 0.70, [0.08, 0.14], [0, 0]]
     };
     var input = object(value), out = {}, names = Object.keys(defaults);
     for (var i = 0; i < names.length; i++) {
@@ -254,90 +254,103 @@ var RISE_FLOOR = 0.8;
 var PERIOD_FLOOR = 0.8;
 var FLOOR_FRACTION = 0.5;
 var EDGE_FLOOR = 0.10;
+// A gamma-ray burst is sub-second by nature, so it gets its own rise floor
+// rather than the nova's. 0.35 s is ten frames at 30 fps: eased, never a step.
+var BURST_RISE_FLOOR = 0.35;
 
 // Every row is [default, kind, low, high]. Kinds: bool, num, int, pair (ordered),
 // span (a from-to pair, which may descend), minutes, hours. A malformed or
 // out-of-range value is REJECTED, never clamped: the documented default applies
 // and only the key's index warns, exactly as PARTICLE_SPEC does.
 var EVENT_SPEC = {
-    phenomenonCap: [2, "int", 1, 2],
-    dramaCooldownSec: [4500, "num", 600, 86400]
+    phenomenonCap: [3, "int", 1, 3],
+    dramaCooldownSec: [900, "num", 300, 86400],
+    // One master dial on every interval in the catalogue: 2 is twice as many
+    // events, 0.5 half as many, 0 turns scheduled events off entirely.
+    rateScale: [1, "num", 0, 4],
+    phenomenonGainCap: [1.6, "num", 0.3, 3]
 };
 
+// v8 rates and gains. v6 shipped every phenomenon at a gain below an ordinary
+// bright star's (0.95 linear) and a core sigma of 2.25 px against a star's
+// 1.55: measured on his DP-3, a nova was 125/255 where a star is 243/255, and
+// star birth 46/255. Three families were off. He reported seeing no cosmic
+// events at all (ledger 2283); these are the rates and gains that answer it.
 var EVENT_FAMILY_SPEC = {
     starBirth: {
         enabled: [true, "bool"],
-        everyMinutes: [[20, 45], "minutes"],
-        durationSec: [[180, 360], "pair", 10, 1800],
-        gain: [0.22, "num", 0, 0.22],
-        condenseSec: [[40, 90], "pair", 1, 600],
-        haloPx: [[18, 4], "span", 0.5, 64],
+        everyMinutes: [[8, 16], "minutes"],
+        durationSec: [[80, 170], "pair", 10, 1800],
+        gain: [0.60, "num", 0, 0.60],
+        condenseSec: [[25, 55], "pair", 1, 600],
+        haloPx: [[40, 9], "span", 0.5, 96],
         paletteMix: [0.30, "num", 0, 0.45]
     },
     nova: {
         enabled: [true, "bool"],
-        everyMinutes: [[25, 50], "minutes"],
-        riseSec: [[1.5, 3], "pair", RISE_FLOOR, 30],
-        holdSec: [[0.5, 1.5], "pair", 0, 30],
-        decaySec: [[25, 60], "pair", 1, 600],
-        gain: [0.45, "num", 0, 0.45],
-        shellShortSide: [[0.02, 0.04], "pair", 0, 0.15],
-        shellGain: [0.12, "num", 0, 0.12],
+        everyMinutes: [[6, 13], "minutes"],
+        riseSec: [[1.2, 2.4], "pair", RISE_FLOOR, 30],
+        holdSec: [[0.6, 1.6], "pair", 0, 30],
+        decaySec: [[20, 45], "pair", 1, 600],
+        gain: [0.90, "num", 0, 0.90],
+        shellShortSide: [[0.035, 0.06], "pair", 0, 0.25],
+        shellGain: [0.26, "num", 0, 0.30],
         paletteMix: [0.30, "num", 0, 0.45]
     },
     redGiant: {
         enabled: [true, "bool"],
-        everyMinutes: [[45, 90], "minutes"],
-        durationSec: [[240, 480], "pair", 10, 1800],
-        gain: [0.28, "num", 0, 0.28],
-        swellSec: [[90, 150], "pair", 1, 600],
-        collapseSec: [[45, 75], "pair", 1, 600],
-        nebulaShortSide: [0.015, "num", 0, 0.15],
-        nebulaGain: [0.06, "num", 0, 0.06]
+        everyMinutes: [[18, 34], "minutes"],
+        durationSec: [[140, 280], "pair", 10, 1800],
+        gain: [0.60, "num", 0, 0.60],
+        swellSec: [[45, 80], "pair", 1, 600],
+        collapseSec: [[30, 55], "pair", 1, 600],
+        nebulaShortSide: [0.030, "num", 0, 0.25],
+        nebulaGain: [0.16, "num", 0, 0.20]
     },
     supernova: {
         enabled: [true, "bool"],
-        everyHours: [[1.5, 3], "hours"],
+        everyHours: [[0.35, 0.8], "hours"],
         riseSec: [[0.8, 1.5], "pair", RISE_FLOOR, 30],
-        holdSec: [[0.5, 1.5], "pair", 0, 30],
-        decaySec: [[90, 240], "pair", 1, 600],
-        gain: [0.70, "num", 0, 0.70],
-        remnantSec: [[180, 360], "pair", 1, 1800],
-        shellShortSide: [[0.06, 0.11], "pair", 0, 0.15],
-        shellGain: [0.10, "num", 0, 0.10],
-        echoGain: [0.04, "num", 0, 0.04],
-        echoDelaySec: [[60, 120], "pair", 1, 600],
+        holdSec: [[0.6, 1.6], "pair", 0, 30],
+        decaySec: [[50, 130], "pair", 1, 600],
+        gain: [1.35, "num", 0, 1.35],
+        remnantSec: [[90, 200], "pair", 1, 1800],
+        shellShortSide: [[0.09, 0.15], "pair", 0, 0.25],
+        shellGain: [0.24, "num", 0, 0.30],
+        echoGain: [0.10, "num", 0, 0.20],
+        echoDelaySec: [[40, 90], "pair", 1, 600],
         hypernovaShare: [0.15, "num", 0, 1],
-        hypernovaGain: [0.78, "num", 0, 0.78],
-        hypernovaCooldownSec: [21600, "num", 600, 604800],
+        hypernovaGain: [1.60, "num", 0, 1.60],
+        hypernovaCooldownSec: [10800, "num", 600, 604800],
         paletteMix: [0.35, "num", 0, 0.45]
     },
     kilonova: {
-        enabled: [false, "bool"],
-        minSpacingSec: [3600, "num", 600, 604800],
-        maxPerHour: [1, "int", 0, 4],
-        flashSec: [0.4, "num", 0.1, 5],
-        gain: [0.55, "num", 0, 0.55],
-        ringShortSide: [0.03, "num", 0, 0.15],
+        enabled: [true, "bool"],
+        everyHours: [[0.6, 1.4], "hours"],
+        flashSec: [0.6, "num", 0.35, 5],
+        gain: [1.10, "num", 0, 1.10],
+        ringShortSide: [0.05, "num", 0, 0.25],
+        ringGain: [0.34, "num", 0, 0.40],
         ringSec: [[8, 15], "pair", 1, 120]
     },
     pulsar: {
-        enabled: [false, "bool"],
-        everyHours: [[2, 4], "hours"],
-        durationSec: [[240, 600], "pair", 10, 1800],
-        periodSec: [[0.8, 2.0], "pair", PERIOD_FLOOR, 60],
-        gain: [0.30, "num", 0, 0.30],
-        floorFraction: [0.60, "num", FLOOR_FRACTION, 1],
-        edgeSec: [0.12, "num", EDGE_FLOOR, 5]
+        enabled: [true, "bool"],
+        everyHours: [[0.5, 1.1], "hours"],
+        durationSec: [[120, 260], "pair", 10, 1800],
+        periodSec: [[0.9, 2.2], "pair", PERIOD_FLOOR, 60],
+        gain: [0.70, "num", 0, 0.70],
+        floorFraction: [0.55, "num", FLOOR_FRACTION, 1],
+        edgeSec: [0.14, "num", EDGE_FLOOR, 5]
     },
     gammaBurst: {
-        enabled: [false, "bool"],
-        everyHours: [[4, 12], "hours"],
+        enabled: [true, "bool"],
+        everyHours: [[0.7, 1.8], "hours"],
+        riseSec: [[0.4, 0.7], "pair", BURST_RISE_FLOOR, 30],
         flashSec: [[0.5, 0.8], "pair", 0.1, 5],
-        gain: [0.45, "num", 0, 0.45],
+        gain: [1.00, "num", 0, 1.00],
         beamShortSide: [[0.10, 0.18], "pair", 0, 0.25],
-        afterglowSec: [[30, 90], "pair", 1, 600],
-        cooldownSec: [14400, "num", 600, 604800]
+        beamGain: [0.42, "num", 0, 0.50],
+        afterglowSec: [[30, 90], "pair", 1, 600]
     },
     satelliteGlint: {
         enabled: [true, "bool"],
@@ -443,20 +456,22 @@ function validateEvents(value, warn) {
         headCap: Math.round(number(e.headCap, 3, 1, 3)),
         shower: {
             enabled: boolean(s.enabled, true),
-            everyHours: interval(s.everyHours, [2, 5], 2, 168),
+            everyHours: interval(s.everyHours, [0.75, 2], 0.25, 168),
             durationSec: interval(s.durationSec, [30, 60], 30, 60),
             gain: number(s.gain, 0.60, 0, 0.60)
         },
         slowWanderer: {
             enabled: boolean(w.enabled, true),
-            everyHours: interval(w.everyHours, [2, 6], 2, 168),
+            everyHours: interval(w.everyHours, [0.75, 2], 0.25, 168),
             durationSec: interval(w.durationSec, [180, 360], 180, 360),
-            gain: number(w.gain, 0.40, 0, 0.40)
+            gain: number(w.gain, 0.75, 0, 0.75)
         }
     };
     var caps = validateFamily(e, EVENT_SPEC, warn, true);
     out.phenomenonCap = caps.phenomenonCap;
     out.dramaCooldownSec = caps.dramaCooldownSec;
+    out.rateScale = caps.rateScale;
+    out.phenomenonGainCap = caps.phenomenonGainCap;
     var names = Object.keys(EVENT_FAMILY_SPEC);
     for (var i = 0; i < names.length; i++)
         out[names[i]] = validateFamily(e[names[i]], EVENT_FAMILY_SPEC[names[i]], warn);
@@ -1207,13 +1222,13 @@ function validateDocument(value, warn) {
         },
         comet: {
             enabled: boolean(comet.enabled, true),
-            interval: interval(comet.interval, [900, 1800], 60),
+            interval: interval(comet.interval, [300, 900], 60),
             paletteMix: number(comet.paletteMix, 0.35, 0, 0.45),
             families: validateFamilies(comet.families, true)
         },
         satellites: {
             enabled: boolean(satellites.enabled, true),
-            interval: interval(satellites.interval, [240, 480], 45)
+            interval: interval(satellites.interval, [150, 330], 45)
         },
         palette: validatePalette(d.palette, warn),
         archetypes: validateArchetypes(d.archetypes),

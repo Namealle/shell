@@ -29,9 +29,9 @@ Item {
     property bool meteorsEnabled: true
     property vector2d meteorsInterval: Qt.vector2d(45, 120)
     property bool cometEnabled: true
-    property vector2d cometInterval: Qt.vector2d(900, 1800)
+    property vector2d cometInterval: Qt.vector2d(300, 900)
     property bool satellitesEnabled: true
-    property vector2d satellitesInterval: Qt.vector2d(240, 480)
+    property vector2d satellitesInterval: Qt.vector2d(150, 330)
     property string motionMode: "radial"
     property real radialSpeed: 6
     property real centreWander: 0.012
@@ -216,16 +216,21 @@ Item {
             bucket: 0,
             travel: [0, 0],
             // 0-4 transient (meteors, comet, satellites, shower, slowWanderer);
-            // 5-9 radial phenomena (star birth, nova, red giant, supernova,
-            // pulsar). The two classes never share a slot in either direction.
-            events: [null, null, null, null, null, null, null, null, null, null],
-            eventIds: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            // 5-11 radial phenomena (star birth, nova, red giant, supernova,
+            // pulsar, kilonova, gamma-ray burst). The two classes never share a
+            // slot in either direction.
+            events: [null, null, null, null, null, null, null, null, null, null, null, null],
+            eventIds: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            // R6: episodes handed to the scheduler from outside its intervals
+            // (a physics detection, or a family whose arrival is conditional).
+            // Drained by publishEvents into the family's own entry, in order.
+            pendingEvents: [],
             familyLast: {},
             moodClock: Date.now() / 1000,
             moodCorrection: 0,
             mood: [0, 0, 0, 0],
             // Which kind owns phenomenon slot 3 and slot 4, or null.
-            phenomenonSlots: [null, null],
+            phenomenonSlots: [null, null, null],
             historyWrites: 0,
             publications: 0
         };
@@ -599,8 +604,17 @@ Item {
         };
     }
 
-    // Kinds 5-9 are the radial phenomena; their names are the JSON family keys.
-    readonly property var radialNames: ["starBirth", "nova", "redGiant", "supernova", "pulsar"]
+    // Kinds 5-11 are the radial phenomena; their names are the JSON family keys.
+    readonly property var radialNames: ["starBirth", "nova", "redGiant", "supernova", "pulsar", "kilonova", "gammaBurst"]
+    // Transient heads 0-2, phenomenon slots 3-5. v8 adds the third phenomenon
+    // slot: with seven families on two slots a red giant and a supernova spent
+    // most of an hour queued behind a 200 s star birth.
+    readonly property int transientSlotCount: 3
+    readonly property int phenomenonSlotCount: 3
+    // Combined peak linear gain across the phenomenon slots, outside a flash.
+    // v6 held this at 0.55, which was below a single near star's 0.95: two
+    // phenomena together could not reach the brightness of one ordinary star.
+    readonly property real phenomenonGainCeiling: 1.6
 
     function eventConfig(kind: int): var {
         const config = eventFamilies || {};
@@ -615,27 +629,37 @@ Item {
         const cfg = eventConfig(kind);
         if (cfg.enabled !== undefined)
             return cfg.enabled !== false;
-        // An absent family is its documented default, and the pulsar's is off:
-        // a strictly periodic point is the one item in the catalogue the taste
-        // rules argue against, so it never turns itself on.
-        return kind !== 9;
+        // v6 shipped the pulsar, kilonova and gamma-ray burst off on a taste
+        // argument. He could not see any cosmic event at all (ledger 2283), so
+        // every family in the catalogue is on and the anti-strobe floors - not
+        // an off switch - are what keeps them civil.
+        return true;
     }
 
     function familyDefaults(kind: int): var {
         // weight, duration low/high, gain cap, tail low/high, bend low/high,
         // travel low/high. Lengths are fractions of the captured short side.
         return kind === 0 ? {
-            straight: [0.75, 0.7, 1.3, 0.85, 0.08, 0.14, 0, 0, 0.28, 0.38],
+            straight: [0.72, 0.7, 1.3, 0.85, 0.08, 0.14, 0, 0, 0.28, 0.38],
             curved: [0.20, 0.9, 1.7, 0.80, 0.06, 0.10, 0.005, 0.02, 0.28, 0.38],
-            skipping: [0.05, 1.2, 2.2, 0.70, 0.08, 0.12, 0, 0.008, 0.3, 0.4]
+            skipping: [0.08, 1.2, 2.2, 0.70, 0.08, 0.12, 0, 0.008, 0.3, 0.4]
         } : {
-            fast: [0.15, 4, 9, 0.55, 0.04, 0.08, 0, 0, 0.35, 0.65],
-            slow: [0.50, 30, 65, 0.26, 0.20, 0.32, 0, 0, 0.5, 0.8],
-            bent: [0.30, 12, 28, 0.38, 0.10, 0.18, 0.02, 0.06, 0.5, 0.8],
-            pulsating: [0.05, 20, 40, 0.32, 0.12, 0.22, 0.01, 0.04, 0.5, 0.8],
-            fragmenting: [0, 8, 16, 0.38, 0.06, 0.14, 0.01, 0.04, 0.45, 0.65],
-            spiral: [0, 18, 35, 0.25, 0.08, 0.16, 0, 0, 0.5, 0.8]
+            fast: [0.18, 4, 9, 0.95, 0.06, 0.11, 0, 0, 0.35, 0.65],
+            slow: [0.34, 30, 65, 0.70, 0.20, 0.32, 0, 0, 0.5, 0.8],
+            bent: [0.28, 12, 28, 0.80, 0.12, 0.20, 0.02, 0.06, 0.5, 0.8],
+            pulsating: [0.08, 20, 40, 0.75, 0.14, 0.24, 0.01, 0.04, 0.5, 0.8],
+            fragmenting: [0.02, 8, 16, 0.80, 0.08, 0.16, 0.01, 0.04, 0.45, 0.65],
+            spiral: [0.10, 18, 35, 0.65, 0.10, 0.18, 0, 0, 0.5, 0.8]
         };
+    }
+
+    // coma scale, ion length, ion gain, dust length, dust gain, dust curve,
+    // striation amplitude, dust lag angle in radians. Lengths multiply the
+    // captured `tail`; this table is the whole of what makes one comet family
+    // look unlike another. A fast comet is a bright blue spike with a stub of
+    // dust; a slow one is a broad curved fan; a bent one is nearly all dust.
+    function cometLook(family: string): var {
+        return family === "fast" ? [0.80, 1.25, 0.75, 0.55, 0.26, 0.06, 0.16, 0.13] : family === "slow" ? [1.55, 1.25, 0.48, 1.15, 0.52, 0.20, 0.42, 0.26] : family === "bent" ? [1.20, 0.85, 0.32, 1.30, 0.58, 0.42, 0.58, 0.38] : family === "pulsating" ? [1.35, 1.15, 0.60, 0.95, 0.38, 0.16, 0.30, 0.20] : family === "fragmenting" ? [0.85, 0.90, 0.50, 0.80, 0.34, 0.13, 0.48, 0.18] : [1.10, 0.95, 0.42, 1.05, 0.44, 0.32, 0.36, 0.30];
     }
 
     function chooseFamily(kind: int, index: int, start: real): string {
@@ -668,7 +692,10 @@ Item {
     function captureEvent(kind: int, index: int, start: real, family: string): var {
         const salt = screenSeed + 113 + kind * 701;
         const cfg = eventConfig(kind);
-        const d = kind < 2 ? familyDefaults(kind)[family] : [1, kind === 4 ? 180 : 30, kind === 4 ? 360 : 45, kind === 4 ? 0.40 : 0.33, 0, 0, 0.01, 0.04, 0.85, 1.1];
+        // kind >= 2: weight, duration low/high, gain cap, tail, bend, travel.
+        // The 0.33/0.40 gain caps v6 used put a satellite and a slow wanderer
+        // below an ordinary star; 0.55 puts them at one that moves.
+        const d = kind < 2 ? familyDefaults(kind)[family] : [1, kind === 4 ? 180 : 30, kind === 4 ? 360 : 45, kind === 4 ? 0.75 : 0.55, 0, 0, 0.01, 0.04, 0.85, 1.1];
         const f = (cfg.families || {})[family] || cfg;
         function sample(key, fallback, lo, hi, offset) {
             const range = parameterRange(f, key, fallback, lo, hi);
@@ -723,7 +750,11 @@ Item {
             tail: sample("tailShortSide", [d[4], d[5]], 0, 0.4, 11) * shortSide,
             gain: clamp(f.gain === undefined ? d[3] : f.gain, 0, d[3]),
             headCap: Math.round(clamp(eventHeadCap, 0, 3)),
-            pointWidth: kind === 0 ? optics * 0.40 * (fireball ? 1.4 : 1) : kind === 1 ? optics * 0.70 : 0.65,
+            // v6 gave a satellite and a slow wanderer a FIXED 0.65 px sigma
+            // whatever the buffer: measured, 14 lit pixels against a bright
+            // star's 1.55 px sigma and 243/255. They were smaller and dimmer
+            // than an ordinary star, which is why he never saw one.
+            pointWidth: kind === 0 ? optics * 0.42 * (fireball ? 1.5 : 1) : kind === 1 ? optics * 0.55 : kind === 4 ? optics * 0.56 : optics * 0.62,
             colour: colour,
             bend: toward,
             pulsePeriod: sample("periodSec", [4, 9], 2, 60, 12),
@@ -734,6 +765,28 @@ Item {
             omega: (random(index, salt + 15) < 0.5 ? -1 : 1) * Math.PI / 3,
             radius: shortSide * (0.22 + 0.12 * random(index, salt + 16))
         };
+        // A comet is not a streak with a wider brush. It carries a coma, a
+        // straight ion tail pointing away from the only light source on the sky
+        // and a broader dust tail that lags behind it and curves, all captured
+        // here and drawn by shader style 5.
+        if (kind === 1) {
+            const look = cometLook(family);
+            event.coma = optics * 2.6 * look[0];
+            event.ionLength = event.tail * look[1];
+            event.ionWidth = Math.max(1.2, shortSide * 0.0030 * (0.7 + 0.6 * random(index, salt + 24)));
+            event.ionGain = look[2];
+            event.dustLength = event.tail * look[3];
+            event.dustWidth = Math.max(2, shortSide * 0.0075 * (0.75 + 0.5 * random(index, salt + 25)));
+            event.dustGain = look[4];
+            event.curve = look[5];
+            event.striae = look[6];
+            event.lagAngle = look[7];
+            event.dustSide = random(index, salt + 28) < 0.5 ? -1 : 1;
+            event.comaGain = 0.34 + 0.18 * random(index, salt + 27);
+            // Anti-sunward means away from the hole; with no hole, away from
+            // the radial centre the whole field already flows out of.
+            event.light = _hole.enabled ? [_hole.bhCentre.x, _hole.bhCentre.y] : centre.slice();
+        }
         // Satellite glint: one hash-placed smooth brightening somewhere along
         // the pass. Birth-frozen like everything else here, so it never moves,
         // and it modulates the gain the slot already publishes at 30 Hz - no
@@ -758,16 +811,20 @@ Item {
         const s = _state;
         if (!eventEnabled(kind))
             return null;
+        const master = rateScale();
+        if (master <= 0)
+            return null;
         const index = s.eventIds[kind]++;
         const cfg = eventConfig(kind);
         let range;
         if (kind >= 3) {
-            range = parameterRange(cfg, "everyHours", kind === 3 ? [2, 5] : [2, 6], 0.01, 168).map(x => x * 3600);
+            range = parameterRange(cfg, "everyHours", kind === 3 ? [0.75, 2] : [0.75, 2], 0.01, 168).map(x => x * 3600);
         } else {
             const v = kind === 0 ? meteorsInterval : kind === 1 ? cometInterval : satellitesInterval;
             const minimum = clamp(v.x, kind === 0 ? 3 : kind === 1 ? 60 : 45, 604800);
             range = [minimum, clamp(v.y, minimum, 604800)];
         }
+        range = [range[0] / master, range[1] / master];
         const shower = s.events[3];
         const inShower = shower && s.clock >= shower.start && s.clock <= shower.start + shower.duration;
         const activeMood = !inShower && s.mood[0] === 3 ? s.mood[1] : 0;
@@ -840,13 +897,36 @@ Item {
     // composite after the disk and are not shadow-masked, so one inside the
     // lensing reach would shine straight through the hole. Rejection, not
     // clamping, so the distribution outside the exclusion stays uniform.
+    // How far out the hole is actually DRAWN, from its own published uniforms -
+    // the same call the particles use so that one number moves both.
+    // bhGeometry.y is the LENSING reach (8 Rh under the `target` preset), not
+    // the drawn material: 1.6x it is 12.8 Rh, which on his DP-3, HDMI-A-1 and
+    // tablet alike covers the WHOLE buffer. Measured acceptance 0.000 on all
+    // three, so radialPlacement returned null every time and no phenomenon had
+    // ever been placed on any of his screens (his report, ledger 2283). The
+    // exclusion has to be the material an event would shine through, which is
+    // the disk's rim (887 px on DP-3 against a 3041 px lensing reach).
+    function holeReach(): real {
+        if (!_hole.enabled)
+            return 0;
+        const radii = ParticlePhysics.visibleRadius(_hole.bhGeometry.x, {
+            innerRs: _hole.bhDisk.x,
+            outerRs: _hole.bhDisk.y,
+            arcGain: _hole.bhArcs.x,
+            arcRadiusRh: _hole.bhArcs.y,
+            arcSpacingRh: _hole.bhArcs.z,
+            arcCount: _hole.bhArcs.w
+        });
+        return Math.max(radii.arcs, radii.disk);
+    }
+
     function radialPlacement(index: int, salt: real): var {
         const w = width * devicePixelRatio, h = height * devicePixelRatio;
         const shortSide = Math.min(w, h);
         const margin = 0.05 * shortSide;
         const centre = [w * 0.5 + shader.centreOffset.x, h * 0.5 + shader.centreOffset.y];
-        const keepOut = 1.6 * (_hole.enabled ? _hole.bhGeometry.y : 0);
-        for (let attempt = 0; attempt < 8; ++attempt) {
+        const keepOut = 1.25 * holeReach();
+        for (let attempt = 0; attempt < 16; ++attempt) {
             const x = margin + (w - 2 * margin) * random(index, salt + 40 + attempt * 2);
             const y = margin + (h - 2 * margin) * random(index, salt + 41 + attempt * 2);
             if (Math.hypot(x - centre[0], y - centre[1]) >= keepOut)
@@ -872,9 +952,13 @@ Item {
         function value(key, fallback, cap) {
             return clamp(cfg[key] === undefined ? fallback : cfg[key], 0, cap);
         }
-        // Near-layer optical scale, so a phenomenon is as legible as the
-        // brightest stars rather than as a speck of dust.
-        const core = optics * 0.9;
+        // Near-layer optical scale. v6 used optics*0.9, which on his DP-3 is a
+        // 2.25 px sigma against a bright star's 1.55 px: measured, a nova was
+        // 125/255 where a star is 243/255 and 17 px across, so every phenomenon
+        // read as a slightly odd star. The family-scaled core below is 3.5-6.5
+        // px and the gains are raised to match (his report, ledger 2283).
+        const coreScale = kind === 5 ? 1.6 : kind === 6 ? 2.0 : kind === 7 ? 1.8 : kind === 8 ? 2.6 : kind === 9 ? 1.4 : kind === 10 ? 2.2 : 1.8;
+        const core = optics * coreScale;
         const e = {
             kind: kind,
             family: name,
@@ -903,81 +987,137 @@ Item {
             e.colour = [c[0] + (1 - c[0]) * 0.45, c[1] + (1 - c[1]) * 0.45, c[2] + (1 - c[2]) * 0.45];
         }
         if (kind === 5) {
-            e.gain = value("gain", 0.22, 0.22);
-            e.duration = sample("durationSec", [180, 360], 10, 1800, 3);
-            e.condense = Math.min(sample("condenseSec", [40, 90], 0, 600, 5), e.duration * 0.5);
-            // haloPx is a from-to span and MAY descend (18 -> 4 is the default
+            e.gain = value("gain", 0.60, 0.60);
+            e.duration = sample("durationSec", [80, 170], 10, 1800, 3);
+            e.condense = Math.min(sample("condenseSec", [25, 55], 0, 600, 5), e.duration * 0.5);
+            // haloPx is a from-to span and MAY descend (40 -> 9 is the default
             // condensation), so it is read directly rather than through
             // parameterRange, which sorts its pair.
-            const raw = Array.isArray(cfg.haloPx) && cfg.haloPx.length === 2 && cfg.haloPx.every(x => Number.isFinite(x)) ? cfg.haloPx : [18, 4];
-            e.halo0 = clamp(raw[0], 0.5, 64) * optics * 0.5;
-            e.halo1 = clamp(raw[1], 0.5, 64) * optics * 0.5;
+            const raw = Array.isArray(cfg.haloPx) && cfg.haloPx.length === 2 && cfg.haloPx.every(x => Number.isFinite(x)) ? cfg.haloPx : [40, 9];
+            e.halo0 = clamp(raw[0], 0.5, 96) * optics * 0.5;
+            e.halo1 = clamp(raw[1], 0.5, 96) * optics * 0.5;
         } else if (kind === 6) {
-            e.gain = value("gain", 0.45, 0.45);
-            e.rise = Math.max(0.8, sample("riseSec", [1.5, 3], 0, 600, 3));
-            e.hold = sample("holdSec", [0.5, 1.5], 0, 600, 5);
-            e.decay = sample("decaySec", [25, 60], 0, 600, 7);
+            e.gain = value("gain", 0.90, 0.90);
+            e.rise = Math.max(0.8, sample("riseSec", [1.2, 2.4], 0, 600, 3));
+            e.hold = sample("holdSec", [0.6, 1.6], 0, 600, 5);
+            e.decay = sample("decaySec", [20, 45], 0, 600, 7);
             e.duration = e.rise + e.hold + e.decay;
-            e.shell = sample("shellShortSide", [0.02, 0.04], 0, 0.15, 9) * shortSide;
-            e.shellGain = value("shellGain", 0.12, 0.15);
+            e.shell = sample("shellShortSide", [0.035, 0.06], 0, 0.25, 9) * shortSide;
+            e.shellGain = value("shellGain", 0.26, 0.30);
         } else if (kind === 7) {
-            e.gain = value("gain", 0.28, 0.28);
-            e.duration = sample("durationSec", [240, 480], 10, 1800, 3);
-            e.swell = Math.min(sample("swellSec", [90, 150], 0, 600, 5), e.duration * 0.4);
-            e.collapse = Math.min(sample("collapseSec", [45, 75], 0, 600, 7), e.duration * 0.3);
-            e.nebula = clamp(cfg.nebulaShortSide === undefined ? 0.015 : cfg.nebulaShortSide, 0, 0.15) * shortSide;
-            e.nebulaGain = value("nebulaGain", 0.06, 0.15);
-            e.warm = [1, 0.86, 0.72];
+            e.gain = value("gain", 0.60, 0.60);
+            e.duration = sample("durationSec", [140, 280], 10, 1800, 3);
+            e.swell = Math.min(sample("swellSec", [45, 80], 0, 600, 5), e.duration * 0.4);
+            e.collapse = Math.min(sample("collapseSec", [30, 55], 0, 600, 7), e.duration * 0.3);
+            e.nebula = clamp(cfg.nebulaShortSide === undefined ? 0.030 : cfg.nebulaShortSide, 0, 0.25) * shortSide;
+            e.nebulaGain = value("nebulaGain", 0.16, 0.20);
+            e.warm = [1, 0.80, 0.62];
         } else if (kind === 8) {
             e.rise = Math.max(0.8, sample("riseSec", [0.8, 1.5], 0, 600, 3));
-            e.hold = sample("holdSec", [0.5, 1.5], 0, 600, 5);
-            e.decay = sample("decaySec", [90, 240], 0, 600, 7);
-            e.remnant = sample("remnantSec", [180, 360], 0, 1800, 9);
+            e.hold = sample("holdSec", [0.6, 1.6], 0, 600, 5);
+            e.decay = sample("decaySec", [50, 130], 0, 600, 7);
+            e.remnant = sample("remnantSec", [90, 200], 0, 1800, 9);
             e.duration = e.rise + e.hold + e.decay + e.remnant;
-            e.shell = sample("shellShortSide", [0.06, 0.11], 0, 0.15, 11) * shortSide;
-            e.shellGain = value("shellGain", 0.10, 0.15);
-            e.echoGain = value("echoGain", 0.04, 0.15);
-            e.echoDelay = sample("echoDelaySec", [60, 120], 0, 600, 13);
+            e.shell = sample("shellShortSide", [0.09, 0.15], 0, 0.25, 11) * shortSide;
+            e.shellGain = value("shellGain", 0.24, 0.30);
+            e.echoGain = value("echoGain", 0.10, 0.20);
+            e.echoDelay = sample("echoDelaySec", [40, 90], 0, 600, 13);
             e.echoScale = 2 + random(index, salt + 15);
             const share = clamp(cfg.hypernovaShare === undefined ? 0.15 : cfg.hypernovaShare, 0, 1);
-            const cooldown = Math.max(600, Math.min(604800, Number(cfg.hypernovaCooldownSec) || 21600));
+            const cooldown = Math.max(600, Math.min(604800, Number(cfg.hypernovaCooldownSec) || 10800));
             const last = _state.familyLast.hypernova === undefined ? -1e12 : _state.familyLast.hypernova;
             e.hyper = random(index, salt + 17) < share && start - last >= cooldown;
-            e.gain = e.hyper ? value("hypernovaGain", 0.78, 0.78) : value("gain", 0.70, 0.70);
+            e.gain = e.hyper ? value("hypernovaGain", 1.60, 1.60) : value("gain", 1.35, 1.35);
             if (e.hyper)
                 e.peakColour = [0.82, 0.90, 1];
+        } else if (kind === 9) {
+            // A pulsar MODULATES; the validator floors (period >= 0.8 s, trough
+            // >= 0.5 of peak, edge >= 0.10 s) make a square blink unreachable.
+            e.gain = value("gain", 0.70, 0.70);
+            e.duration = sample("durationSec", [120, 260], 10, 1800, 3);
+            e.period = Math.max(0.8, sample("periodSec", [0.9, 2.2], 0, 600, 5));
+            e.floor = Math.max(0.5, clamp(cfg.floorFraction === undefined ? 0.55 : cfg.floorFraction, 0, 1));
+            e.edge = Math.max(0.10, clamp(cfg.edgeSec === undefined ? 0.14 : cfg.edgeSec, 0, 600));
+        } else if (kind === 10) {
+            // Kilonova: a hot white flash, then one ring that expands and
+            // reddens through the r-process colour as it goes.
+            e.gain = value("gain", 1.10, 1.10);
+            e.flash = Math.max(0.35, clamp(cfg.flashSec === undefined ? 0.6 : cfg.flashSec, 0, 5));
+            e.ringSpan = sample("ringSec", [8, 15], 1, 120, 3);
+            e.duration = e.flash + e.ringSpan;
+            e.ring = clamp(cfg.ringShortSide === undefined ? 0.05 : cfg.ringShortSide, 0, 0.25) * shortSide;
+            e.ringGain = value("ringGain", 0.34, 0.40);
+            e.coolColour = [1, 0.62, 0.42];
+            e.peakColour = [0.90, 0.95, 1];
         } else {
-            e.gain = value("gain", 0.30, 0.30);
-            e.duration = sample("durationSec", [240, 600], 10, 1800, 3);
-            e.period = Math.max(0.8, sample("periodSec", [0.8, 2], 0, 600, 5));
-            e.floor = Math.max(0.5, clamp(cfg.floorFraction === undefined ? 0.60 : cfg.floorFraction, 0, 1));
-            e.edge = Math.max(0.10, clamp(cfg.edgeSec === undefined ? 0.12 : cfg.edgeSec, 0, 600));
+            // Gamma-ray burst: a hard point with two opposed beams (shader
+            // style 4), then a long afterglow point. The rise is eased over
+            // riseSec so a sub-second peak never arrives as a single frame.
+            e.gain = value("gain", 1.00, 1.00);
+            e.rise = Math.max(0.35, sample("riseSec", [0.4, 0.7], 0, 30, 3));
+            e.flash = sample("flashSec", [0.5, 0.8], 0.1, 5, 5);
+            e.afterglow = sample("afterglowSec", [30, 90], 1, 600, 7);
+            e.duration = e.rise + e.flash + e.afterglow;
+            e.beam = sample("beamShortSide", [0.10, 0.18], 0, 0.25, 9) * shortSide;
+            e.beamWidth = Math.max(2, e.beam * 0.055);
+            e.beamGain = value("beamGain", 0.42, 0.50);
+            const a = random(index, salt + 11) * Math.PI;
+            e.beamDir = [Math.cos(a), Math.sin(a)];
+            e.peakColour = [0.80, 0.88, 1];
         }
         return e;
     }
 
+    // Schedule key, default range, bounds and unit per radial kind, so both
+    // scheduleRadial and the documentation read from one table.
+    function radialSchedule(kind: int): var {
+        const minutes = (range) => ({
+            key: "everyMinutes",
+            range: range,
+            low: 1,
+            high: 1440,
+            unit: 60
+        });
+        const hours = (range) => ({
+            key: "everyHours",
+            range: range,
+            low: 0.1,
+            high: 168,
+            unit: 3600
+        });
+        return kind === 5 ? minutes([8, 16]) : kind === 6 ? minutes([6, 13]) : kind === 7 ? minutes([18, 34]) : kind === 8 ? hours([0.35, 0.8]) : kind === 9 ? hours([0.5, 1.1]) : kind === 10 ? hours([0.6, 1.4]) : hours([0.7, 1.8]);
+    }
+
     // Dramatic families share one cooldown, so the sky never stacks two of them.
     function dramatic(kind: int): bool {
-        return kind === 8;
+        return kind === 8 || kind === 10 || kind === 11;
+    }
+
+    // One master dial on every interval in the catalogue. 1 is the shipped
+    // cadence, 2 is twice as many, 0 turns scheduled events off entirely.
+    function rateScale(): real {
+        const raw = Number((eventFamilies || {}).rateScale);
+        return Number.isFinite(raw) ? clamp(raw, 0, 4) : 1;
     }
 
     function scheduleRadial(kind: int): var {
         const s = _state;
         if (!eventEnabled(kind))
             return null;
+        const rate = rateScale();
+        if (rate <= 0)
+            return null;
         const index = s.eventIds[kind]++;
         const cfg = eventConfig(kind);
         const salt = screenSeed + 5501 + kind * 907;
-        let range;
-        if (kind === 8 || kind === 9)
-            range = parameterRange(cfg, "everyHours", kind === 8 ? [1.5, 3] : [2, 4], 0.25, 168).map(x => x * 3600);
-        else
-            range = parameterRange(cfg, "everyMinutes", kind === 5 ? [20, 45] : kind === 6 ? [25, 50] : [45, 90], 1, 1440).map(x => x * 60);
+        const fallback = radialSchedule(kind);
+        let range = parameterRange(cfg, fallback.key, fallback.range, fallback.low, fallback.high).map(x => x * fallback.unit);
+        range = [range[0] / rate, range[1] / rate];
         const previous = s.events[kind];
         const base = previous ? previous.start : s.clock;
         let start = Math.max(s.clock, base + range[0] + (range[1] - range[0]) * random(index, salt));
         if (dramatic(kind)) {
-            const cooldown = clamp(Number((eventFamilies || {}).dramaCooldownSec) || 4500, 600, 86400);
+            const cooldown = clamp(Number((eventFamilies || {}).dramaCooldownSec) || 1500, 300, 86400) / rate;
             const last = s.familyLast.drama === undefined ? -1e12 : s.familyLast.drama;
             start = Math.max(start, last + cooldown);
         }
@@ -987,11 +1127,10 @@ Item {
         // Phenomena reserve against each other only: the transient heads are a
         // separate class and must never be pushed around by a six-minute
         // remnant, which is the whole reason for the split. Reservation allows
-        // exactly `phenomenonCap` to overlap, so the second slot is used but no
-        // episode is ever scheduled into a slot that cannot exist — a
-        // phenomenon that lost a slot mid-life would pop, which is the failure
-        // this whole pass is about.
-        const cap = Math.round(clamp(Number((eventFamilies || {}).phenomenonCap) || 2, 1, 2));
+        // exactly `phenomenonCap` to overlap, so a slot is used but no episode
+        // is ever scheduled into a slot that cannot exist — a phenomenon that
+        // lost a slot mid-life would pop.
+        const cap = Math.round(clamp(Number((eventFamilies || {}).phenomenonCap) || phenomenonSlotCount, 1, phenomenonSlotCount));
         for (let pass = 0; pass < 6; ++pass) {
             const ends = [];
             for (let k = 5; k < s.events.length; ++k) {
@@ -1123,7 +1262,7 @@ Item {
                     echoAbs = e.echoGain * ease(delayed / 0.15) * (1 - delayed);
                 }
             }
-        } else {
+        } else if (e.kind === 9) {
             // Pulsar: a raised cosine with guaranteed edges and a trough that
             // never drops below floorFraction of the peak. It modulates.
             const phase = modulo(age, e.period) / e.period;
@@ -1132,8 +1271,70 @@ Item {
             const shaped = duty * (1 - soft) + soft * 0.5;
             const env = e.gain * (e.floor + (1 - e.floor) * shaped) * ease(age / 8) * ease((e.duration - age) / 8);
             coreAbs = env;
-            haloAbs = 0.10 * env;
-            halo = e.core * 2.5;
+            haloAbs = 0.14 * env;
+            halo = e.core * 3;
+        } else if (e.kind === 10) {
+            // Kilonova: a hot flash that cools into one expanding r-process
+            // ring. The colour ramp is the whole point of the family, so it is
+            // driven by the RING's own age rather than the core's.
+            // 0.35 s is the burst rise floor: ten frames at 30 fps, eased, so a
+            // sub-second family is still never a step. The decay is paced to
+            // the same budget - it was the fall, not the rise, that first
+            // tripped the anti-strobe test.
+            const rise = Math.max(0.35, e.flash * 0.6);
+            let env;
+            if (age < rise)
+                env = e.gain * ease(age / rise);
+            else
+                env = e.gain * Math.exp(-2.2 * (age - rise) / Math.max(0.5, e.flash));
+            exempt = ease((e.flash + 2 - age) / 2);
+            coreAbs = env;
+            haloAbs = 0.22 * env;
+            halo = e.core * 3.2;
+            const u = clamp((age - rise) / Math.max(0.001, e.ringSpan), 0, 1);
+            if (u > 0 && u < 1) {
+                ringRadius = e.ring * Math.pow(u, 0.6);
+                ringWidth = Math.max(2, e.core * (0.9 + 5 * u));
+                ringAbs = e.ringGain * ease(u / 0.12) * (1 - u) * (1 - u);
+                const warm = ease(u / 0.7);
+                const hot = e.peakColour, cool = e.coolColour;
+                colour = [hot[0] + (cool[0] - hot[0]) * warm, hot[1] + (cool[1] - hot[1]) * warm, hot[2] + (cool[2] - hot[2]) * warm];
+            } else
+                colour = e.peakColour;
+        } else {
+            // Gamma-ray burst: an eased sub-second point with two opposed
+            // beams (style 4), then a long afterglow point on the same core.
+            // The rise is >= 0.35 s by construction, so nothing lands inside a
+            // single frame at 30 fps.
+            const peakAt = e.rise + e.flash * 0.35;
+            let env;
+            if (age < e.rise)
+                env = e.gain * ease(age / e.rise);
+            else if (age < peakAt)
+                env = e.gain;
+            else if (age < e.rise + e.flash)
+                // The flash decays TO the afterglow level, not to zero: ending
+                // it at zero put a 0.27 linear step in one frame right where
+                // the afterglow began, which the anti-strobe test catches.
+                env = e.gain * (0.14 + 0.86 * ease((e.rise + e.flash - age) / Math.max(0.001, e.flash * 0.65)));
+            else {
+                const d = (age - e.rise - e.flash) / Math.max(0.001, e.afterglow);
+                env = e.gain * 0.14 * Math.exp(-2.6 * d) * ease((1 - d) / 0.2);
+            }
+            exempt = ease((e.rise + e.flash + 2 - age) / 2);
+            colour = e.peakColour;
+            coreAbs = env;
+            haloAbs = 0.20 * env;
+            halo = e.core * 3.5;
+            // The beams live only while the flash does; the afterglow is a
+            // point. beamAbs travels in the ring channel, reinterpreted by the
+            // style-4 branch of radialField.
+            const beamEnv = age < e.rise + e.flash ? env / Math.max(0.001, e.gain) : 0;
+            if (beamEnv > 0) {
+                ringAbs = e.beamGain * beamEnv;
+                ringRadius = e.beam;
+                ringWidth = e.beamWidth;
+            }
         }
         // head.w is the slot's peak value; every component travels as a
         // fraction of it, so the shader's single multiply reproduces all four
@@ -1141,12 +1342,15 @@ Item {
         const peak = Math.max(coreAbs + haloAbs, ringAbs + echoAbs);
         if (peak <= 0.0004)
             return off;
-        const reach = Math.max(Math.max(ringRadius + 3 * ringWidth, echoRadius + 6 * ringWidth), Math.max(3 * halo, 6 * core));
+        const beam = e.kind === 11;
+        const reach = beam ? Math.max(ringRadius + 3 * ringWidth, Math.max(3 * halo, 6 * core)) : Math.max(Math.max(ringRadius + 3 * ringWidth, echoRadius + 6 * ringWidth), Math.max(3 * halo, 6 * core));
         return {
             head: [e.x, e.y, core, peak],
-            colour: colour.concat(3),
-            tail01: [echoRadius, echoAbs / peak, haloAbs / peak, coreAbs / peak],
-            shape: [halo, ringAbs / peak, ringWidth, ringRadius],
+            colour: colour.concat(beam ? 4 : 3),
+            // Style 4 re-reads tail01 as (haloSigmaPx, haloGain, coreGain,
+            // beamGain) and shape as (dirX, dirY, beamLengthPx, beamWidthPx).
+            tail01: beam ? [halo, haloAbs / peak, coreAbs / peak, ringAbs / peak] : [echoRadius, echoAbs / peak, haloAbs / peak, coreAbs / peak],
+            shape: beam ? [e.beamDir[0], e.beamDir[1], ringRadius, ringWidth] : [halo, ringAbs / peak, ringWidth, ringRadius],
             bounds: [e.x - reach, e.y - reach, e.x + reach, e.y + reach],
             exempt: exempt
         };
@@ -1194,11 +1398,20 @@ Item {
             gain *= (1 + e.pulseAmplitude * Math.sin(age * 2 * Math.PI / e.pulsePeriod)) / (1 + e.pulseAmplitude);
         if (e.family === "skipping")
             gain *= 0.10 + 0.90 * Math.pow(Math.sin(Math.PI * e.lobes * u), 2);
+        // Head flash, published in shape.w for styles 0 and 2: the entry bloom
+        // of a meteor and a satellite's glint both widen the halo rather than
+        // only lifting the gain, so they read as light spilling instead of a
+        // brighter dot.
+        let flash = 0;
+        if (e.kind === 0)
+            flash = clamp(ease((0.26 - u) / 0.20) * (e.fireball ? 1 : 0.55), 0, 1);
         if (e.kind === 2 && e.glintGain > 1) {
             // A Gaussian in time: smooth at both edges by construction, so the
             // brightening has no slope a blink could hide in.
             const t = (age - e.glintAt) / Math.max(0.5, e.glintWidth);
-            gain *= 1 + (e.glintGain - 1) * Math.exp(-2.8 * t * t);
+            const lift = Math.exp(-2.8 * t * t);
+            gain *= 1 + (e.glintGain - 1) * lift;
+            flash = clamp(lift, 0, 1);
         }
         if (e.family === "fragmenting") {
             const split = ease((u - e.splitU) * e.duration / e.splitSec);
@@ -1224,22 +1437,124 @@ Item {
             gain *= ease((r - e.hole[2]) / (0.18 * e.hole[2]));
         }
         const width = e.pointWidth;
-        const extent = width * (e.kind === 1 ? 14 : 6);
+        if (e.kind === 1)
+            return cometState(e, points[0], progress, branch, gain, width, age);
+        const extent = width * (e.kind === 0 ? 15 : 7);
         const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
         return {
             head: [points[0][0], points[0][1], width, gain],
-            colour: e.colour.concat(e.kind === 1 ? 1 : e.kind >= 2 ? 2 : 0),
+            colour: e.colour.concat(e.kind >= 2 ? 2 : 0),
             tail01: points[0].concat(points[1]),
             tail23: points[2].concat(points[3]),
             tail4: points[4],
-            shape: [length, e.kind === 1 ? 0.23 : 0.62, count, 0],
+            shape: [length, 0.62, count, flash],
             bounds: [Math.min(...xs) - extent, Math.min(...ys) - extent, Math.max(...xs) + extent, Math.max(...ys) + extent]
         };
     }
 
+    // Style 5. The tails are recomputed every publish because their direction
+    // is a property of WHERE the comet is, not of when it was captured: the
+    // ion tail points straight away from the light source and swings as the
+    // comet passes it, and the dust tail lags between that and anti-velocity
+    // and bends away from the ion tail. Everything else was captured at birth.
+    function cometState(e: var, head: var, progress: real, branch: int, gain: real, width: real, age: real): var {
+        let ax = head[0] - e.light[0], ay = head[1] - e.light[1];
+        const alen = Math.hypot(ax, ay);
+        if (alen > 0.0001) {
+            ax /= alen;
+            ay /= alen;
+        } else {
+            ax = 1;
+            ay = 0;
+        }
+        // The dust lags the ion tail by a fixed angle on a birth-frozen side,
+        // the way a real dust tail trails the anti-solar line. BLENDING
+        // anti-sunward with anti-velocity is the wrong model: a comet receding
+        // straight from the light has them antiparallel, the blend collapses
+        // onto the ion tail, and the two tails draw on top of each other.
+        const side = e.dustSide;
+        const turn = side * e.lagAngle;
+        const cos = Math.cos(turn), sin = Math.sin(turn);
+        const dx = ax * cos - ay * sin, dy = ax * sin + ay * cos;
+        // An outburst: the coma swells and brightens while the tails do not.
+        const breath = e.family === "pulsating" ? 1 + 0.45 * Math.max(0, Math.sin(age * 2 * Math.PI / e.pulsePeriod)) : 1;
+        // A fragment carries its own small coma and a short stub of dust.
+        const share = branch === 0 ? 1 : 0.45;
+        const coma = e.coma * breath * share;
+        const dust = e.dustLength * (branch === 0 ? 1 : 0.5);
+        const ion = e.ionLength * share;
+        // A tail reaches one way only, so the box follows the two tails rather
+        // than squaring the longer of them: the slow family's box halves.
+        const pad = Math.max(9 * e.dustWidth, 3 * coma, 6 * width);
+        const tipX = head[0] + dx * dust - dy * e.curve * side * dust;
+        const tipY = head[1] + dy * dust + dx * e.curve * side * dust;
+        const xs = [head[0], head[0] + ax * ion, tipX];
+        const ys = [head[1], head[1] + ay * ion, tipY];
+        return {
+            head: [head[0], head[1], width, gain],
+            colour: e.colour.concat(5),
+            tail01: [ax, ay, ion, e.ionWidth],
+            tail23: [dx, dy, dust, e.dustWidth],
+            tail4: [Math.abs(e.curve) * side, coma],
+            shape: [e.ionGain * share, e.dustGain * share, e.comaGain * breath, e.striae],
+            bounds: [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad]
+        };
+    }
+
+    // R6. An episode handed in from outside the interval scheduler - a physics
+    // detection (a particle merge becoming a kilonova) or any conditional
+    // arrival - waits here until its family's entry is free. It is captured at
+    // push time from the same hash stream, so it is as deterministic as a
+    // scheduled one, and it obeys exactly the same slot and cap rules.
+    function pushEvent(name: string, delaySec: real, overrides: var): bool {
+        const kind = radialNames.indexOf(name) + 5;
+        if (kind < 5 || !_state)
+            return false;
+        const s = _state;
+        if (s.pendingEvents.length >= 4)
+            s.pendingEvents.shift();
+        const at = s.clock + Math.max(0, Number(delaySec) || 0);
+        const e = captureRadial(kind, s.eventIds[kind]++, at);
+        if (!e)
+            return false;
+        if (overrides)
+            for (const key of Object.keys(overrides))
+                e[key] = overrides[key];
+        s.pendingEvents.push(e);
+        return true;
+    }
+
+    // Drained after the interval scheduler, so a pushed episode takes its
+    // family's turn rather than racing it. A pushed episode never evicts a
+    // running one; it waits, and is dropped if it is still waiting two minutes
+    // after its moment, which is what keeps a burst of detections from turning
+    // into a queue that plays out long after the cause is gone.
+    function drainPending(): void {
+        const s = _state;
+        if (!s.pendingEvents.length)
+            return;
+        const keep = [];
+        for (const e of s.pendingEvents) {
+            if (s.clock < e.start) {
+                keep.push(e);
+                continue;
+            }
+            if (s.clock > e.start + 120)
+                continue;
+            const held = s.events[e.kind];
+            if (held && s.clock >= held.start && s.clock <= held.start + held.duration) {
+                keep.push(e);
+                continue;
+            }
+            e.start = s.clock;
+            s.events[e.kind] = e;
+        }
+        s.pendingEvents = keep;
+    }
+
     function publishEvents(): void {
         const s = _state;
-        for (let kind = 0; kind < 10; ++kind) {
+        for (let kind = 0; kind < s.events.length; ++kind) {
             const e = s.events[kind];
             const radial = kind >= 5;
             if (!eventEnabled(kind) && e && s.clock < e.start)
@@ -1247,6 +1562,7 @@ Item {
             else if (!e || s.clock > e.start + e.duration + (radial ? 0 : e.offset))
                 s.events[kind] = radial ? scheduleRadial(kind) : schedule(kind);
         }
+        drainPending();
         const shower = s.events[3];
         const showerActive = shower && s.clock >= shower.start && s.clock <= shower.start + shower.duration;
         if (showerActive && s.mood[0] === 3)
@@ -1283,42 +1599,56 @@ Item {
         publishPhenomena();
     }
 
-    // Slots 3-4. Long, faint, low-gain radial events only; they never spill
+    // Slots 3-5. Long, faint, low-gain radial events only; they never spill
     // into the transient heads and the heads never spill into them.
     function publishPhenomena(): void {
         const s = _state;
-        const cap = Math.round(clamp(Number((eventFamilies || {}).phenomenonCap) || 2, 1, 2));
+        const cap = Math.round(clamp(Number((eventFamilies || {}).phenomenonCap) || phenomenonSlotCount, 1, phenomenonSlotCount));
         // Slot ownership is STICKY. An episode claims a slot only in its first
-        // quarter-second, while its envelope is still at nothing, and keeps it
-        // until it ends. A phenomenon that could take a freed slot halfway
-        // through its life would appear at whatever gain it had reached, which
-        // is the one-frame pop this whole pass exists to remove; instead that
-        // episode simply never draws. Scheduling already keeps at most `cap`
-        // overlapping, so it should not come up.
+        // second, while its envelope is still at nothing, and keeps it until it
+        // ends. A phenomenon that could take a freed slot halfway through its
+        // life would appear at whatever gain it had reached, which is the
+        // one-frame pop the v6 pass existed to remove.
+        //
+        // The slot now holds the EPISODE, not its kind. Holding the kind
+        // released nothing: publishEvents replaces s.events[kind] with the next
+        // episode the instant the current one ends, so `clock > held.start +
+        // held.duration` always read a future end and slots 3-4 stayed owned by
+        // the first star birth and the first nova for the life of the process.
+        // Measured over six hours on three seeds: red giant 0.83 scheduled/h and
+        // 0 s drawn, supernova 0.33/h and 0 s drawn - neither had ever reached
+        // the screen (his report, ledger 2283).
         const owner = s.phenomenonSlots;
-        for (let i = 0; i < 2; ++i) {
-            if (owner[i] === null)
-                continue;
-            const held = s.events[owner[i]];
-            if (!held || _state.clock > held.start + held.duration || i >= cap)
+        for (let i = 0; i < phenomenonSlotCount; ++i) {
+            const held = owner[i];
+            if (held && (s.clock > held.start + held.duration || i >= cap))
                 owner[i] = null;
         }
-        for (let kind = 5; kind < 10; ++kind) {
+        for (let kind = 5; kind < s.events.length; ++kind) {
             const e = s.events[kind];
-            if (!e || owner.indexOf(kind) >= 0)
+            if (!e || owner.indexOf(e) >= 0)
                 continue;
             const age = s.clock - e.start;
-            if (age < 0 || age > 0.25)
+            if (age < 0 || age > 1)
                 continue;
+            let free = -1;
             for (let i = 0; i < cap; ++i)
                 if (owner[i] === null) {
-                    owner[i] = kind;
+                    free = i;
                     break;
                 }
+            if (free >= 0)
+                owner[free] = e;
+            else if (age > 0.25)
+                // Every slot was busy at arrival. The episode is RETIRED rather
+                // than silently dropped, so publishEvents schedules a fresh one
+                // against the current occupants and the family arrives later
+                // instead of never.
+                s.events[kind] = null;
         }
         const live = [];
         for (let i = 0; i < cap; ++i)
-            live.push(owner[i] === null ? null : radialState(s.events[owner[i]]));
+            live.push(owner[i] === null ? null : radialState(owner[i]));
         // Combined peak-gain cap outside a supernova flash. The exemption is an
         // eased weight, not a test, so the cap takes hold without a step; the
         // scale itself is continuous in the sum for the same reason.
@@ -1326,8 +1656,9 @@ Item {
         for (const state of live)
             if (state)
                 capped += state.head[3] * (1 - state.exempt);
-        const scale = capped > 0.55 ? 0.55 / capped : 1;
-        for (let i = 0; i < 2; ++i) {
+        const ceiling = clamp(Number((eventFamilies || {}).phenomenonGainCap) || phenomenonGainCeiling, 0.3, 3);
+        const scale = capped > ceiling ? ceiling / capped : 1;
+        for (let i = 0; i < phenomenonSlotCount; ++i) {
             const state = live[i];
             const head = state ? [state.head[0], state.head[1], state.head[2], state.head[3] * (state.exempt + (1 - state.exempt) * scale)] : [0, 0, 0, 0];
             const slot = state || {
@@ -2014,6 +2345,11 @@ Item {
         property vector4d event4Tail01: Qt.vector4d(0, 0, 0, 0)
         property vector4d event4Shape: Qt.vector4d(0, 0, 0, 0)
         property vector4d event4Bounds: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event5Head: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event5Colour: Qt.vector4d(0, 0, 0, 3)
+        property vector4d event5Tail01: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event5Shape: Qt.vector4d(0, 0, 0, 0)
+        property vector4d event5Bounds: Qt.vector4d(0, 0, 0, 0)
         property vector2d activeStamp: Qt.vector2d(0, 0)
         property var bhTransfer: root._hole.bhTransfer
         property var bhNoise: root._hole["bhNoise"] || root._hole.bhTransfer
