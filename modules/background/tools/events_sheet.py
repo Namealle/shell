@@ -57,15 +57,30 @@ def main():
         m["headSigmaPx"] = round(e["head"][2], 2)
         report.append(m)
         b = e.get("bounds") or [head[0] - crop / 2, head[1] - crop / 2, head[0] + crop / 2, head[1] + crop / 2]
-        cx = min(max((b[0] + b[2]) / 2, crop / 2), W - crop / 2)
-        cy = min(max((b[1] + b[3]) / 2, crop / 2), H - crop / 2)
-        x0, y0 = int(cx - crop / 2), int(cy - crop / 2)
-        tile = np.clip(img[y0:y0 + crop, x0:x0 + crop] * 255, 0, 255).astype(np.uint8)
-        tile = Image.fromarray(tile).resize((cell, cell), Image.LANCZOS)
+        # v9 put three SCREEN-SIZED things in this catalogue - the supernova's
+        # sky lift, the storm and the nebula passage - and a fixed crop shows a
+        # corner of each. Anything wider than the crop is fitted whole instead,
+        # letterboxed into the same cell, and the header says which.
+        fit = max(b[2] - b[0], b[3] - b[1]) > crop
+        if fit:
+            whole = np.clip(img * 255, 0, 255).astype(np.uint8)
+            tile = Image.fromarray(whole)
+            tile.thumbnail((cell, cell), Image.LANCZOS)
+            pad = Image.new("RGB", (cell, cell), (0, 0, 0))
+            pad.paste(tile, ((cell - tile.width) // 2, (cell - tile.height) // 2))
+            tile = pad
+        else:
+            cx = min(max((b[0] + b[2]) / 2, crop / 2), W - crop / 2)
+            cy = min(max((b[1] + b[3]) / 2, crop / 2), H - crop / 2)
+            x0, y0 = int(cx - crop / 2), int(cy - crop / 2)
+            tile = np.clip(img[y0:y0 + crop, x0:x0 + crop] * 255, 0, 255).astype(np.uint8)
+            tile = Image.fromarray(tile).resize((cell, cell), Image.LANCZOS)
+        m["wholeFrame"] = bool(fit)
         r, c = divmod(i, cols)
         sheet.paste(tile, (c * cell, r * (cell + 18)))
         draw.text((c * cell + 4, r * (cell + 18) + cell + 4),
-                  "%s  peak %.0f/255  lit %d px  r %.0f" % (e["name"], m["peak255"], m["litPx"], m["litRadiusPx"]),
+                  "%s  peak %.0f/255  lit %d px  r %.0f%s"
+                  % (e["name"], m["peak255"], m["litPx"], m["litRadiusPx"], "  [whole frame]" if fit else ""),
                   fill=(190, 190, 190))
     star = manifest["star"]
     draw.text((4, 4), "%s  1:1 px, %dx%d source, crop %d -> %d   star ref: sigma %.2f px peak %.0f/255"

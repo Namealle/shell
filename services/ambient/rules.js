@@ -17,7 +17,7 @@ var ROLE_HUES = {
 var SIGNALS = ["cpuLoad", "cpuHeat", "gpuLoad", "gpuHeat", "vram", "ram", "network", "rain", "wind", "humidity", "temperature", "weatherNight", "night", "media", "idle", "agentProcess", "agentWindow", "load", "heat", "loadRising", "memoryPressure", "agent", "agentFalling", "cpuLoadRising", "gpuLoadRising", "notifications", "workspaceActivity"];
 // Rule-addressable schedules. A signal biases the NEXT interval of one of these
 // and never triggers an event, so nothing on screen maps 1:1 to a notification.
-var EVENT_TARGETS = ["meteors", "comet", "satellites", "shower", "slowWanderer", "starBirth", "nova", "redGiant", "supernova", "kilonova", "pulsar", "gammaBurst", "tde"];
+var EVENT_TARGETS = ["meteors", "comet", "satellites", "shower", "slowWanderer", "starBirth", "nova", "redGiant", "supernova", "kilonova", "pulsar", "gammaBurst", "tde", "nebula"];
 
 function own(obj, key) {
     return Object.prototype.hasOwnProperty.call(obj, key);
@@ -370,6 +370,27 @@ var EVENT_FAMILY_SPEC = {
         enabled: [true, "bool"],
         gain: [2.2, "num", 1, 4],
         widthSec: [[1.5, 3], "pair", 0.5, 30]
+    },
+    // The nebula passage: a cloud, not a point. sizeShortSide is its DIAMETER
+    // as a fraction of the short side, gain its peak linear emission (the
+    // renderer's own cap is what keeps the sky dark: q99 <= 0.35 linear at
+    // 0.35), dustOpacity how much of the far field its lanes take away, and
+    // `stars` the number of embedded young stars, rounded by the renderer.
+    nebula: {
+        enabled: [true, "bool"],
+        everyMinutes: [[20, 45], "minutes"],
+        durationSec: [[180, 480], "pair", 60, 1800],
+        fadeSec: [[30, 60], "pair", 5, 300],
+        sizeShortSide: [[0.40, 0.80], "pair", 0.15, 1.2],
+        gain: [0.30, "num", 0, 0.35],
+        dustOpacity: [0.55, "num", 0, 0.9],
+        stars: [[1, 3], "pair", 0, 3],
+        starGain: [0.45, "num", 0, 0.8],
+        paletteMix: [0.40, "num", 0, 0.45],
+        // A fraction of the far dust's own rate. 1 is exactly the dust's speed,
+        // which crosses from the edge to the hole in 60-200 s: a fly-past
+        // rather than a passage.
+        driftScale: [0.45, "num", 0.05, 2]
     }
 };
 

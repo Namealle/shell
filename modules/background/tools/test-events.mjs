@@ -44,7 +44,7 @@ function extract(name) {
     return "host[\"" + name + "\"] = function " + args + " " + qml.slice(open, i + 1) + ";";
 }
 
-const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "warmStart", "scheduleRadial", "mixColour", "supernovaSite", "supernovaState", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena", "stormValue", "stormTrailAngle", "captureStorm", "stormRate", "stormPhase", "stormRadiant", "stormState", "stormOff", "stormFireballState"];
+const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "warmStart", "scheduleRadial", "mixColour", "supernovaSite", "supernovaState", "radialState", "eventPath", "eventState", "cometState", "pushEvent", "drainPending", "publishEvents", "publishPhenomena", "stormValue", "stormTrailAngle", "captureStorm", "stormRate", "stormPhase", "stormRadiant", "stormState", "stormOff", "stormFireballState", "farBoost", "nebulaConfig", "nebulaEnabled", "nebulaFlowRate", "nebulaDrift", "nebulaBoundary", "nebulaDriftPerSec", "nebulaReach", "nebulaSink", "captureNebula", "scheduleNebula", "nebulaState", "pushNebula", "publishNebula"];
 
 // Readonly root constants the scheduler reads by bare name, taken from the
 // same source rather than restated here.
@@ -85,7 +85,19 @@ export function makeHost(document, options) {
     const holeRadius = o.holeRadius === undefined ? holeSize * Math.min(w, h) : o.holeRadius;
     const shader = {
         centreOffset: { x: 0, y: 0 },
-        mood: Qt.vector4d(0, 0, 0, 0)
+        dustParallax: { x: 0, y: 0 },
+        flowZoom: { x: 1, y: 1, z: 1 },
+        mood: Qt.vector4d(0, 0, 0, 0),
+        // The nebula block's QML defaults. publishNebula reads the published
+        // gain back to skip a redundant write, so the host has to start where
+        // the ShaderEffect's properties start.
+        nebulaHead: Qt.vector4d(0, 0, 0, 0),
+        nebulaShape: Qt.vector4d(1, 0, 1, 0),
+        nebulaTone0: Qt.vector4d(0, 0, 0, 0),
+        nebulaTone1: Qt.vector4d(0, 0, 0, 0),
+        nebulaStars: Qt.vector4d(-1000000, -1000000, -1000000, -1000000),
+        nebulaStars2: Qt.vector4d(-1000000, -1000000, 1, 1),
+        nebulaBounds: Qt.vector4d(0, 0, 0, 0)
     };
     const host = {
         Qt, Math, Number, Array, Object, JSON, console, ParticlePhysics,
@@ -105,6 +117,15 @@ export function makeHost(document, options) {
         fireballChance: document.meteors.fireballChance,
         eventHeadCap: document.events.headCap,
         paletteColors: o.paletteColors || [],
+        // The nebula reads the regime directly: 0 is the inward stream, 1 the
+        // camera flying out. Both are live properties in QML, so a test sets
+        // them the way the shell would rather than through a config key.
+        _cameraBlend: o.cameraBlend === undefined ? 0 : o.cameraBlend,
+        _cameraOutward: o.cameraOutward === undefined ? 0 : o.cameraOutward,
+        cameraDustFlow: o.cameraDustFlow === undefined ? 3 : o.cameraDustFlow,
+        radialSpeed: o.radialSpeed === undefined ? 6 : o.radialSpeed,
+        particlesEnabled: o.particlesEnabled !== false,
+        _particles: o.particles === undefined ? { config: { dust: { farFlow: 24 }, mass: 1 } } : o.particles,
         eventFamilies: {
             comet: document.comet,
             meteors: document.meteors,
@@ -118,6 +139,7 @@ export function makeHost(document, options) {
             pulsar: document.events.pulsar,
             gammaBurst: document.events.gammaBurst,
             satelliteGlint: document.events.satelliteGlint,
+            nebula: document.events.nebula,
             phenomena: document.phenomena,
             phenomenonCap: document.events.phenomenonCap,
             dramaCooldownSec: document.events.dramaCooldownSec,
@@ -129,6 +151,7 @@ export function makeHost(document, options) {
             enabled: o.hole !== false,
             bhCentre: { x: w / 2, y: h / 2 },
             bhGeometry: { x: holeRadius, y: holeRadius * 8, z: 0, w: 0 },
+            bhHalo: { x: 0, y: 0, z: 0, w: o.hole === false ? 0 : 1 },
             bhDisk: { x: 3, y: 11, z: 0, w: 1 },
             bhArcs: { x: 0, y: 1.75, z: 0.6, w: 0 }
         },
@@ -146,23 +169,47 @@ export function makeHost(document, options) {
         mood: [0, 0, 0, 0],
         phenomenonSlots: [null, null, null],
         firstEpisode: new Array(12).fill(false),
-        pendingEvents: []
+        pendingEvents: [],
+        geo: [0, 0, 0],
+        nebula: null,
+        nebulaPending: null,
+        nebulaId: 0,
+        nebulaLast: null
     };
     return scheduler(host);
 }
 
 // ---------------------------------------------------------------- simulation
 const KINDS = ["meteors", "comet", "satellites", "shower", "slowWanderer", "starBirth", "nova", "redGiant", "supernova", "pulsar", "kilonova", "gammaBurst"];
+// The nebula passage has no slot and no place in s.events, so it is counted
+// beside the table rather than in it.
+const NEBULA = "nebula";
 
 export function simulate(host, seconds, step) {
     const dt = step === undefined ? 1 / 30 : step;
     const frames = Math.round(seconds / dt);
     const stat = KINDS.map(name => ({ name, scheduled: 0, drawnFrames: 0, peakGain: 0, peakSigma: 0, peakReach: 0, starved: 0 }));
     const seen = KINDS.map(() => new Set());
+    const nebula = { name: NEBULA, scheduled: 0, drawnFrames: 0, peakGain: 0, peakSigma: 0, peakReach: 0, starved: 0 };
+    const nebulaSeen = new Set();
     for (let f = 0; f < frames; ++f) {
         host._state.clock = f * dt;
         host._state.moodClock = f * dt;
+        // One flow second per active second at the shipped radialSpeed: the
+        // passage reads the same accumulator advance() writes.
+        host._state.geo[0] = f * dt;
         host.publishEvents();
+        host.publishNebula();
+        const head = host.shader.nebulaHead;
+        if (head && head.w > 0) {
+            nebula.drawnFrames++;
+            nebula.peakGain = Math.max(nebula.peakGain, head.w);
+            nebula.peakSigma = Math.max(nebula.peakSigma, head.z);
+            const nb = host.shader.nebulaBounds;
+            nebula.peakReach = Math.max(nebula.peakReach, Math.max(nb.z - nb.x, nb.w - nb.y) / 2);
+        }
+        const live = host._state.nebula;
+        if (live && !nebulaSeen.has(live.index)) { nebulaSeen.add(live.index); nebula.scheduled++; }
         // Slot occupancy, read back off the uniforms the shader would see.
         const drawn = new Set();
         for (let i = 0; i < 6; ++i) {
@@ -181,6 +228,19 @@ export function simulate(host, seconds, step) {
                 s.peakReach = Math.max(s.peakReach, Math.max(b.z - b.x, b.w - b.y) / 2);
             }
         }
+        // v9: the storm draws through its OWN block, not through a slot, so
+        // slot occupancy cannot see it and the shower's row read 0 s/h for a
+        // family that is on screen for a minute and a half at a time. Its
+        // fireballs still take slots and are still counted there.
+        const stormShape = host.shader.stormShape;
+        if (stormShape && stormShape.w > 0) {
+            const s = stat[3];
+            s.drawnFrames++;
+            const sh = host.shader.stormHead;
+            s.peakGain = Math.max(s.peakGain, stormShape.w);
+            s.peakSigma = Math.max(s.peakSigma, stormShape.x);
+            if (sh) s.peakReach = Math.max(s.peakReach, Math.max(host.width, host.height) / 2);
+        }
         for (let k = 0; k < KINDS.length; ++k) {
             const e = host._state.events[k];
             if (e && !seen[k].has(e.index)) { seen[k].add(e.index); stat[k].scheduled++; }
@@ -193,6 +253,11 @@ export function simulate(host, seconds, step) {
         stat[k].perHour = stat[k].scheduled * 3600 / seconds;
         stat[k].drawnSec = stat[k].drawnFrames * dt;
     }
+    const pending = host._state.nebula;
+    if (pending && pending.start > seconds) { nebula.scheduled--; nebula.nextAt = pending.start; }
+    nebula.perHour = nebula.scheduled * 3600 / seconds;
+    nebula.drawnSec = nebula.drawnFrames * dt;
+    stat.push(nebula);
     return stat;
 }
 
@@ -240,7 +305,11 @@ function table(stat, title) {
     console.log("kind            sched/h   drawn s/h   peak gain   peak sigma px   peak reach px");
     for (const s of stat) {
         if (s.scheduled === 0 && s.drawnFrames === 0) {
-            console.log(s.name.padEnd(15) + "    0.00        —          off / never");
+            // A family can be off, or simply slower than the window: the
+            // nebula's 20-45 min interval starts behind the shared dramatic
+            // cooldown, so the first passage can land past the hour.
+            const late = s.nextAt !== undefined ? "due at " + (s.nextAt / 60).toFixed(1) + " min" : "off / never";
+            console.log(s.name.padEnd(15) + "    0.00        —          " + late);
             continue;
         }
         console.log(s.name.padEnd(15) +
@@ -619,8 +688,218 @@ function tests() {
         check("the supernova ends at nothing", last.head[3] * (last.tail01[1] + last.tail01[2] + last.tail01[3]) < 0.004,
             "final published gain " + (last.head[3] * (last.tail01[1] + last.tail01[2] + last.tail01[3])).toFixed(5));
     }
+    nebulaTests();
     console.log("\n" + (failures ? failures + " failures" : "all " + checks + " checks passed"));
     return failures;
+}
+
+// ---------------------------------------------------------------- nebula
+// The passage has no slot and no place in s.events, so simulate() cannot see
+// it: it is driven here through the same publishNebula() the renderer calls,
+// with the geometric accumulator advanced the way advance() advances it.
+function nebulaHost(options) {
+    const o = Object.assign({ width: 2880, height: 1800, dpr: 1, holeSize: 0.11 }, options || {});
+    const document = validateDocument(o.config || null);
+    const host = makeHost(document, o);
+    host.paletteColors = document.palette.rgb;
+    host._state.palette = new Array(document.palette.rgb.length).fill(1 / document.palette.rgb.length);
+    return host;
+}
+
+// One second of publishes, with geo advancing exactly as advance() does: the
+// nebula's drift is expressed against the same accumulator, so this is the
+// renderer's own clock and not a second model of it.
+function nebulaRun(host, seconds, step) {
+    const dt = step === undefined ? 1 : step;
+    const perSec = -host.nebulaDriftPerSec() / host.nebulaFlowRate();
+    const seen = [];
+    for (let t = 0; t <= seconds; t += dt) {
+        host._state.clock = t;
+        host._state.geo[0] = perSec * t;
+        host.publishNebula();
+        const head = host.shader.nebulaHead;
+        if (head && head.w > 0)
+            seen.push({ t: t, x: head.x, y: head.y, semi: head.z, gain: head.w,
+                bounds: host.shader.nebulaBounds, shape: host.shader.nebulaShape,
+                episode: host._state.nebula });
+    }
+    return seen;
+}
+
+function nebulaTests() {
+    console.log("\n-- nebula passage");
+    const frag = readFileSync(join(root, "modules", "background", "shaders", "starfield.frag"), "utf8");
+    // Composite order, read off the shader rather than asserted: the cloud
+    // joins the far field BEFORE the shadow is subtracted from it and before
+    // the disk and the particles composite over it, which is the whole of
+    // "behind the disk, in front of the far dust, never over the shadow".
+    // v9-merged: the same statement also carries the storm's linear delta,
+    // which is added OUTSIDE the (1-nebula.a) factor - a passage dims the
+    // stars behind it and can never dim a meteor in front of it.
+    const decode = frag.indexOf("vec3 farLinear = decodeDisplay(far);");
+    const composite = frag.indexOf("far = farLinear*(1.0-nebula.a)+nebula.rgb+stormLinear;", decode);
+    const storm = frag.indexOf("stormLinear = decodeDisplay(far+meteorStorm(skySource)*ubuf.brightness)-farLinear;", decode);
+    const shadow = frag.indexOf("if (hole) far *= 1.0-bhShadowMask(pixel);", composite);
+    const particles = frag.indexOf("vec3 linearColour = disk.rgb+(1.0-disk.a)*far", composite);
+    check("the cloud joins the far field", composite > 0);
+    check("the storm rides in beside it, unextincted", storm > decode && storm < composite);
+    check("the shadow is subtracted after it", shadow > composite);
+    check("the disk and the particles composite over it", particles > shadow);
+
+    // Rate and spacing, one day of scheduling on the tablet.
+    {
+        const host = nebulaHost();
+        const starts = [];
+        for (let t = 0; t < 86400; t += 5) {
+            host._state.clock = t;
+            host._state.geo[0] = t;
+            host.publishNebula();
+            const e = host._state.nebula;
+            if (e && starts[starts.length - 1] !== e.start) starts.push(e.start);
+        }
+        const gaps = starts.slice(1).map((s, i) => s - starts[i]).filter(g => g > 0);
+        const mean = gaps.reduce((a, b) => a + b, 0) / Math.max(1, gaps.length);
+        check("one passage every 20-45 min at rateScale 1",
+            gaps.length > 20 && Math.min(...gaps) >= 1200 - 1 && mean >= 1500 && mean <= 2900,
+            gaps.length + " passages, mean " + (mean / 60).toFixed(1) + " min, min " + (Math.min(...gaps) / 60).toFixed(1) + " min");
+    }
+    // The first passage of a session is inside the documented interval, not
+    // behind the whole first round of dramatic schedules.
+    {
+        const firsts = [];
+        for (const seed of [7, 12345, 20260913]) {
+            const host = nebulaHost({ screenSeed: seed });
+            for (let t = 0; t < 900; t += 5) {
+                host._state.clock = t;
+                host._state.geo[0] = t;
+                host.publishEvents();
+                host.publishNebula();
+            }
+            firsts.push(host._state.nebula.start / 60);
+        }
+        check("the first passage of a session is inside 20-50 min",
+            firsts.every(x => x >= 20 && x <= 50),
+            firsts.map(x => x.toFixed(1)).join(", ") + " min on three seeds");
+    }
+    // Never beside a supernova: both families write the same familyLast.drama.
+    {
+        const host = nebulaHost();
+        let worst = 1e9, pairs = 0;
+        for (let t = 0; t < 6 * 3600; t += 5) {
+            host._state.clock = t;
+            host._state.geo[0] = t;
+            host.publishEvents();
+            host.publishNebula();
+            const n = host._state.nebula, s = host._state.events[8];
+            if (n && s) {
+                const overlap = Math.min(n.start + n.duration, s.start + s.duration) - Math.max(n.start, s.start);
+                if (overlap > -1e9) { worst = Math.min(worst, -overlap); ++pairs; }
+            }
+        }
+        check("a passage and a supernova never overlap", pairs > 0 && worst > 0,
+            "closest approach " + worst.toFixed(0) + " s apart over 6 h");
+    }
+    // Geometry and both regimes.
+    for (const out of [
+        { name: "tablet 2880x1800", width: 2880, height: 1800 },
+        { name: "DP-3 2160x3840", width: 2160, height: 3840 }
+    ]) {
+        const short = Math.min(out.width, out.height);
+        for (const regime of ["hole", "camera"]) {
+            const camera = regime === "camera";
+            const host = nebulaHost(Object.assign({}, out, camera
+                ? { hole: false, cameraBlend: 1, cameraOutward: 1 }
+                : {}));
+            const e = host.captureNebula(11, 0);
+            host._state.nebula = e;
+            const frames = nebulaRun(host, e.duration, 1);
+            const label = out.name + " " + regime;
+            check("a passage lasts 3-8 minutes on " + label,
+                e.duration >= 150 && e.duration <= 500, e.duration.toFixed(0) + " s");
+            check("it is drawn for most of it on " + label,
+                frames.length > e.duration * 0.55, frames.length + " of " + e.duration.toFixed(0) + " s");
+            const peak = frames.reduce((a, b) => a.gain > b.gain ? a : b);
+            check("its size is 40-110 % of the short side on " + label,
+                2 * peak.semi >= 0.40 * short && 2 * peak.semi <= 1.10 * short,
+                (200 * peak.semi / short).toFixed(0) + " % at peak gain");
+            check("its peak linear gain is capped on " + label,
+                peak.gain <= 0.35 + 1e-6, peak.gain.toFixed(3));
+            // Entry and exit: it starts and ends at nothing, with no step.
+            let worstStep = 0;
+            for (let i = 1; i < frames.length; ++i)
+                if (frames[i].t - frames[i - 1].t <= 1.001)
+                    worstStep = Math.max(worstStep, Math.abs(frames[i].gain - frames[i - 1].gain));
+            check("the envelope never steps on " + label,
+                worstStep <= 0.02, worstStep.toFixed(4) + " per second");
+            // Motion: it travels with the far layer, in the regime's direction.
+            const first = frames[0], last = frames[frames.length - 1];
+            const r0 = Math.hypot(first.x - out.width / 2, first.y - out.height / 2);
+            const r1 = Math.hypot(last.x - out.width / 2, last.y - out.height / 2);
+            check("it drifts " + (camera ? "outward" : "inward") + " on " + label,
+                camera ? r1 > r0 + 0.1 * short : r1 < r0 - 0.1 * short,
+                "r " + r0.toFixed(0) + " -> " + r1.toFixed(0) + " px");
+            if (camera)
+                check("and grows with its depth on " + label,
+                    last.semi > first.semi * 1.5, first.semi.toFixed(0) + " -> " + last.semi.toFixed(0) + " px");
+            else
+                check("and shears as the tide takes hold on " + label,
+                    last.shape.z < first.shape.z - 0.02, "aspect " + first.shape.z.toFixed(2) + " -> " + last.shape.z.toFixed(2));
+            // Bounds contain the drawn ellipse exactly.
+            const bad = frames.filter(f => {
+                const a = f.semi, b = f.semi * f.shape.z;
+                const bx = Math.sqrt(a * a * f.shape.x * f.shape.x + b * b * f.shape.y * f.shape.y);
+                const by = Math.sqrt(a * a * f.shape.y * f.shape.y + b * b * f.shape.x * f.shape.x);
+                return Math.abs((f.bounds.z - f.bounds.x) / 2 - bx) > 0.5 || Math.abs((f.bounds.w - f.bounds.y) / 2 - by) > 0.5;
+            });
+            check("the CPU bounds are the exact ellipse on " + label, bad.length === 0, bad.length + " frames off");
+            // Under infall it dissolves before its centre reaches the disk.
+            if (!camera) {
+                const reach = host.holeReach();
+                const inside = frames.filter(f => Math.hypot(f.x - out.width / 2, f.y - out.height / 2) < 0.55 * reach);
+                check("it has dissolved before the disk rim on " + label,
+                    inside.length === 0, inside.length + " frames inside " + (0.55 * reach).toFixed(0) + " px");
+            }
+        }
+    }
+    // The reversal: the same episode, walked forward and then backward.
+    {
+        const host = nebulaHost({ hole: false, cameraBlend: 1, cameraOutward: 1 });
+        const e = host.captureNebula(11, 0);
+        e.geo = 0;
+        host._state.nebula = e;
+        const perSec = -host.nebulaDriftPerSec() / host.nebulaFlowRate();
+        host._state.clock = 60;
+        host._state.geo[0] = perSec * 60;
+        const out = host.nebulaState(e);
+        // The camera flips: geo runs the other way from here, and the cloud
+        // walks back in the way it came out rather than continuing. Same
+        // episode, same state function, one accumulator.
+        host._state.clock = 120;
+        host._state.geo[0] = perSec * 20;
+        const back = host.nebulaState(e);
+        const centre = host.width * host.devicePixelRatio / 2;
+        check("a camera reversal walks the cloud back",
+            Math.abs(back.head[0] - centre) < Math.abs(out.head[0] - centre) - 1,
+            "x " + out.head[0].toFixed(0) + " -> " + back.head[0].toFixed(0) + ", centre " + centre.toFixed(0));
+    }
+    // Force-fire, and the switch.
+    {
+        const host = nebulaHost();
+        check("fire nebula queues a passage", host.pushEvent("nebula", 0, null) === true);
+        host._state.clock = 1;
+        host.publishNebula();
+        check("and it is the running episode", host._state.nebula !== null && host._state.nebulaPending === null);
+        const off = nebulaHost({ config: { events: { nebula: { enabled: false } } } });
+        off._state.clock = 4000;
+        off._state.geo[0] = 4000;
+        off.publishNebula();
+        check("enabled:false draws nothing", off.shader.nebulaHead.w === 0);
+        const zero = nebulaHost({ config: { events: { rateScale: 0 } } });
+        zero._state.clock = 8000;
+        zero._state.geo[0] = 8000;
+        zero.publishNebula();
+        check("rateScale 0 draws nothing", zero.shader.nebulaHead.w === 0);
+    }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

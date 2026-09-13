@@ -12,6 +12,8 @@
 // tex*.raw: "W H\n" ASCII header then W*H*4 RGBA8 bytes. tex1 -> binding 1
 // (nearest), tex2 -> binding 2 (linear). Binding 4 gets a 1x1 black dummy.
 // out.f32: W*H*4 little-endian float32 RGBA, row 0 = top.
+// BHRENDER_LAYOUT=1: print the driver's reflected std140 layout for block `buf`
+//   (byte size + every member's offset) and exit 0 without drawing.
 #define _GNU_SOURCE
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -42,6 +44,7 @@ GLFN(void, glBufferData, (GLenum, GLsizeiptr, const void *, GLenum))
 GLFN(void, glBindBufferBase, (GLenum, GLuint, GLuint))
 GLFN(void, glGetUniformIndices, (GLuint, GLsizei, const char *const *, GLuint *))
 GLFN(void, glGetActiveUniformsiv, (GLuint, GLsizei, const GLuint *, GLenum, GLint *))
+GLFN(void, glGetActiveUniformName, (GLuint, GLuint, GLsizei, GLsizei *, char *))
 GLFN(void, glGenFramebuffers, (GLsizei, GLuint *))
 GLFN(void, glBindFramebuffer, (GLenum, GLuint))
 GLFN(void, glFramebufferTexture2D, (GLenum, GLenum, GLenum, GLuint, GLint))
@@ -55,6 +58,7 @@ static void loadgl(void) {
     L(glGetProgramiv); L(glGetProgramInfoLog); L(glUseProgram); L(glGenVertexArrays);
     L(glBindVertexArray); L(glGenBuffers); L(glBindBuffer); L(glBufferData);
     L(glBindBufferBase); L(glGetUniformIndices); L(glGetActiveUniformsiv);
+    L(glGetActiveUniformName);
     L(glGenFramebuffers); L(glBindFramebuffer); L(glFramebufferTexture2D);
     L(glCheckFramebufferStatus); L(glActiveTexture);
 #undef L
@@ -154,6 +158,31 @@ int main(int argc, char **argv) {
         idx = gubi(prog, "buf");
         if (idx == GL_INVALID_INDEX) { fprintf(stderr, "no uniform block 'buf'\n"); return 3; }
         gaubiv(prog, idx, GL_UNIFORM_BLOCK_DATA_SIZE, &blockSize);
+        // BHRENDER_LAYOUT=1 prints the std140 layout the DRIVER reflected --
+        // the block's byte size and every active member's offset -- and exits
+        // before the draw. This is how the UBO budget is checked (v9's three
+        // features share one block), instead of adding the vec4s up by hand.
+        if (getenv("BHRENDER_LAYOUT")) {
+            GLint count = 0;
+            gaubiv(prog, idx, GL_UNIFORM_BLOCK_ACTIVE_UNIFORMS, &count);
+            printf("block buf %d bytes, %d active members\n", blockSize, count);
+            if (count > 0) {
+                GLint *ids = calloc(count, sizeof(GLint));
+                gaubiv(prog, idx, GL_UNIFORM_BLOCK_ACTIVE_UNIFORM_INDICES, ids);
+                for (int i = 0; i < count; i++) {
+                    GLuint u = (GLuint)ids[i];
+                    GLint off = -1, size = 0, type = 0;
+                    p_glGetActiveUniformsiv(prog, 1, &u, GL_UNIFORM_OFFSET, &off);
+                    p_glGetActiveUniformsiv(prog, 1, &u, GL_UNIFORM_SIZE, &size);
+                    p_glGetActiveUniformsiv(prog, 1, &u, GL_UNIFORM_TYPE, &type);
+                    char nm[192]; GLsizei len = 0;
+                    p_glGetActiveUniformName(prog, u, sizeof nm, &len, nm);
+                    printf("  %6d  %s[%d] type 0x%x\n", off, nm, size, type);
+                }
+                free(ids);
+            }
+            return 0;
+        }
     }
     unsigned char *ubo = calloc(1, blockSize);
 

@@ -39,7 +39,15 @@ function fragFunction(src, name) {
 
 export function previewShader() {
     const src = readFileSync(FRAG, "utf8");
-    const kernels = ["hash4", "tailSegment", "cometField", "snPolar", "supernovaField", "radialField", "eventSlot"]
+    // eventSlot dispatches style 6 (through radialField) and style 7, so both
+    // v9 kernels and their helpers come along or the lifted slice will not
+    // compile. meteorStorm and nebulaField are here so ONE sheet can carry the
+    // whole v9 catalogue -- every family, the storm and the passage -- through
+    // one shader in main()'s own composite order. The filter keeps this list
+    // valid against an older frag.
+    const kernels = ["hash4", "tailSegment", "cometField", "snPolar", "supernovaField", "radialField",
+        "stormHash", "stormTrainSegment", "stormFireball", "meteorStorm", "nebulaTap", "nebulaStar",
+        "nebulaField", "eventSlot"]
         .filter(n => src.indexOf(n + "(") >= 0)
         .map(n => fragFunction(src, n)).join("\n\n");
     return `#version 450 core
@@ -57,8 +65,12 @@ layout(std140, binding = 0) uniform buf {
     vec4 event4Head; vec4 event4Colour; vec4 event4Tail01; vec4 event4Shape; vec4 event4Bounds;
     vec4 event5Head; vec4 event5Colour; vec4 event5Tail01; vec4 event5Shape; vec4 event5Bounds;
     vec4 snFlash; vec4 snTone; vec4 snShell; vec4 snExtra;
+    vec4 stormHead; vec4 stormShape; vec4 stormColour; vec4 stormSpan;
+    vec4 nebulaHead; vec4 nebulaShape; vec4 nebulaTone0; vec4 nebulaTone1;
+    vec4 nebulaStars; vec4 nebulaStars2; vec4 nebulaBounds;
     float qt_Opacity;
 } ubuf;
+layout(binding = 2) uniform sampler2D bhNoise;
 
 ${kernels}
 
@@ -72,6 +84,21 @@ vec3 decodeDisplay(vec3 c) {
 }
 void main() {
     vec2 pixel = qt_TexCoord0 * ubuf.resolution;
+    // main()'s own v9 composite order on a #000000 sky: far dust (nothing here)
+    // -> the cloud's extinction and emission -> the storm's streaks, which the
+    // cloud must NOT dim -> the sky lift, which scales the sky the events are
+    // then added to. The multiplicative half of the lift has nothing to scale
+    // on a black sky, so what shows is the flat haze -- the term that has to
+    // return to #000000.
+    vec3 sky = vec3(0.0);
+    vec4 nebula = nebulaField(pixel);
+    sky = sky * (1.0 - nebula.a) + nebula.rgb;
+    if (ubuf.stormShape.w > 0.0) sky += decodeDisplay(meteorStorm(pixel));
+    if (ubuf.snFlash.z > 0.0) {
+        vec2 q = pixel - ubuf.snFlash.xy;
+        float lift = ubuf.snFlash.z * exp2(-0.7213475 * dot(q, q) / (ubuf.snFlash.w * ubuf.snFlash.w));
+        sky = sky * (1.0 + 2.5 * lift) + lift * 0.09 * vec3(0.72, 0.84, 1.0);
+    }
     vec3 events = eventSlot(pixel, ubuf.event0Head, ubuf.event0Colour, ubuf.event0Tail01, ubuf.event0Tail23, ubuf.event0Tail4, ubuf.event0Shape, ubuf.event0Bounds);
     events += eventSlot(pixel, ubuf.event1Head, ubuf.event1Colour, ubuf.event1Tail01, ubuf.event1Tail23, ubuf.event1Tail4, ubuf.event1Shape, ubuf.event1Bounds);
     events += eventSlot(pixel, ubuf.event2Head, ubuf.event2Colour, ubuf.event2Tail01, ubuf.event2Tail23, ubuf.event2Tail4, ubuf.event2Shape, ubuf.event2Bounds);
@@ -80,16 +107,6 @@ void main() {
     events += radialField(pixel, ubuf.event5Head, ubuf.event5Colour, ubuf.event5Tail01, ubuf.event5Shape, ubuf.event5Bounds);
     // main() treats the event sum as display-encoded before adding it to the
     // linear sky, which on a #000000 sky is exactly this.
-    // v9's supernova sky lift, in main()'s own order: the lift scales the SKY,
-    // the events are added to it afterwards. On this harness's #000000 sky the
-    // multiplicative half has nothing to scale, so what shows is the flat haze
-    // alone -- which is the term that has to return to #000000.
-    vec3 sky = vec3(0.0);
-    if (ubuf.snFlash.z > 0.0) {
-        vec2 q = pixel - ubuf.snFlash.xy;
-        float lift = ubuf.snFlash.z * exp2(-0.7213475 * dot(q, q) / (ubuf.snFlash.w * ubuf.snFlash.w));
-        sky = sky * (1.0 + 2.5 * lift) + lift * 0.09 * vec3(0.72, 0.84, 1.0);
-    }
     fragColor = vec4(clamp(encodeDisplay(sky + decodeDisplay(events)), 0.0, 1.0), 1.0);
 }
 `;
@@ -161,6 +178,54 @@ export function families(width, height, configPath) {
         place(e, w / 2, hh / 2);
         out.push({ name: name, slot: 3, best: peakFrame(h, e, x => h.radialState(x)) });
     }
+    // v9's two block events. Neither is a slot, so both are rendered through
+    // their own uniform block and land in the same catalogue: this is the one
+    // sheet where every family the sky can show is beside every other.
+    {
+        // The storm at the top of its hump, with its fireballs on the slots.
+        h._state.clock = 0;
+        h.pushEvent("storm", 0, null);
+        h._state.clock = 0.001;
+        h.publishEvents();
+        const e = h._state.events[3];
+        if (e) {
+            let best = null;
+            for (let i = 0; i <= 240; ++i) {
+                h._state.clock = e.start + e.duration * i / 240;
+                const storm = h.stormState() || h.stormOff();
+                const slots = [];
+                for (const c of e.children) {
+                    const slot = h.stormFireballState(e, c);
+                    if (slot && slots.length < 3) slots.push(slot);
+                }
+                while (slots.length < 3) slots.push({ head: [0, 0, 1, 0], colour: [0, 0, 0, 0], tail01: [0, 0, 0, 0], tail23: [0, 0, 0, 0], tail4: [0, 0], shape: [0, 0, 0, 0], bounds: [0, 0, 0, 0] });
+                // Rate first, fireballs as the tie-break: the busiest frame of
+                // the hump is the honest "peak" for a shower.
+                const score = storm.head[3] + slots.filter(x => x.head[3] > 0).length;
+                if (!best || score > best.score)
+                    best = { score, gain: storm.shape[3], state: storm, slots, age: h._state.clock - e.start };
+            }
+            out.push({ name: "storm", slot: 0, block: "storm", slots: best.slots, best: best });
+        }
+    }
+    {
+        // The passage at its densest, geometry advancing as advance() does.
+        const e = h.captureNebula(3, 0);
+        if (e) {
+            e.geo = 0;
+            h._state.nebula = e;
+            const perSec = -h.nebulaDriftPerSec() / h.nebulaFlowRate();
+            let best = null;
+            for (let i = 0; i <= 240; ++i) {
+                const t = e.duration * i / 240;
+                h._state.clock = t;
+                h._state.geo[0] = perSec * t;
+                const state = h.nebulaState(e);
+                if (!best || state.head[3] > best.gain) best = { gain: state.head[3], state, age: t };
+            }
+            out.push({ name: "nebula", slot: 0, block: "nebula", best: best });
+        }
+    }
     return { h, out, optics: Math.max(1, Math.sqrt(w * hh / (1024 * 576))) };
 }
 
@@ -169,6 +234,26 @@ export function uniformText(width, height, entry) {
     const s = entry.best.state;
     const slot = entry.slot;
     const lines = ["resolution " + width + " " + height, "qt_Opacity 1"];
+    // The storm and the passage are not slot events: they own their own block,
+    // so they are written whole and nothing else in the file is touched.
+    if (entry.block === "storm") {
+        for (const [name, vec] of [["stormHead", s.head], ["stormShape", s.shape], ["stormColour", s.colour], ["stormSpan", s.span]])
+            lines.push(name + " " + vec.map(y => y.toFixed(6)).join(" "));
+        for (const [i, slotState] of (entry.slots || []).entries()) {
+            const w = (name, a) => lines.push("event" + i + name + " " + a.map(x => x.toFixed(6)).join(" "));
+            w("Head", slotState.head); w("Colour", slotState.colour); w("Tail01", slotState.tail01);
+            w("Tail23", slotState.tail23);
+            lines.push("event" + i + "Tail4 " + slotState.tail4.map(x => x.toFixed(6)).join(" "));
+            w("Shape", slotState.shape); w("Bounds", slotState.bounds);
+        }
+        return lines.join("\n") + "\n";
+    }
+    if (entry.block === "nebula") {
+        for (const [name, vec] of [["nebulaHead", s.head], ["nebulaShape", s.shape], ["nebulaTone0", s.tone0],
+            ["nebulaTone1", s.tone1], ["nebulaStars", s.stars], ["nebulaStars2", s.stars2], ["nebulaBounds", s.bounds]])
+            lines.push(name + " " + vec.map(y => y.toFixed(6)).join(" "));
+        return lines.join("\n") + "\n";
+    }
     const v = (name, a) => lines.push("event" + slot + name + " " + a.map(x => x.toFixed(6)).join(" "));
     v("Head", s.head);
     v("Colour", s.colour);
@@ -199,12 +284,22 @@ function main() {
     writeFileSync(frag, previewShader());
     const { out, optics } = families(W, H, configPath);
     const star = starReference(optics);
+    // The nebula samples blackhole-noise.png on binding 2, exactly as the live
+    // ShaderEffect binds it. bh_probe owns the PNG -> .raw conversion, so there
+    // is one copy of that and not a second one here.
+    const shaders = join(repo, "modules", "background", "shaders");
+    const t1 = join(outDir, "t1.raw"), t2 = join(outDir, "t2.raw");
+    execFileSync("python3", ["-c",
+        "import sys; sys.path.insert(0, sys.argv[1]); import bh_probe;" +
+        " bh_probe._rawtex(sys.argv[2], sys.argv[3]); bh_probe._rawtex(sys.argv[4], sys.argv[5])",
+        here, join(shaders, "blackhole-lut.png"), t1, join(shaders, "blackhole-noise.png"), t2],
+        { stdio: ["ignore", "ignore", "pipe"] });
     const manifest = [];
     for (const entry of out) {
         const u = join(outDir, entry.name + ".uniforms");
         const raw = join(outDir, label + "-" + entry.name + ".f32");
         writeFileSync(u, uniformText(W, H, entry));
-        execFileSync(bhrender, [frag, String(W), String(H), u, raw], { stdio: ["ignore", "ignore", "pipe"] });
+        execFileSync(bhrender, [frag, String(W), String(H), u, raw, t1, t2], { stdio: ["ignore", "ignore", "pipe"] });
         manifest.push({ name: entry.name, raw, gain: entry.best.gain, age: entry.best.age, head: entry.best.state.head, bounds: entry.best.state.bounds });
     }
     writeFileSync(join(outDir, label + "-manifest.json"), JSON.stringify({ width: W, height: H, optics, star, label, entries: manifest }, null, 2));

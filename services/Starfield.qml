@@ -12,9 +12,10 @@ Singleton {
 
     // Testing: `caelestia shell starfield fire <family> [screen] [overrides]`
     // queues one episode of a phenomenon family (starBirth, nova, redGiant,
-    // supernova, pulsar, kilonova, gammaBurst) on one screen, or on every
-    // screen when the name is empty. It goes through pushEvent, so it obeys
-    // the same slot and cap rules as a scheduled one.
+    // supernova, pulsar, kilonova, gammaBurst), a transient (meteors, comet,
+    // satellites, shower/storm, slowWanderer) or `nebula` on one screen, or on
+    // every screen when the name is empty. It goes through pushEvent, so it
+    // obeys the same slot and cap rules as a scheduled one.
     //
     // `overrides` is a JSON object written straight onto the captured episode,
     // which is how a phase is addressed: a v9 supernova's whole life cycle is
@@ -85,6 +86,7 @@ Singleton {
             pulsar: document.events.pulsar,
             gammaBurst: document.events.gammaBurst,
             satelliteGlint: document.events.satelliteGlint,
+            nebula: document.events.nebula,
             phenomena: document.phenomena,
             phenomenonCap: document.events.phenomenonCap,
             phenomenonGainCap: document.events.phenomenonGainCap,
