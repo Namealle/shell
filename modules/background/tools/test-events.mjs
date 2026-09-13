@@ -169,16 +169,35 @@ export function makeHost(document, options) {
 
 // ---------------------------------------------------------------- simulation
 const KINDS = ["meteors", "comet", "satellites", "shower", "slowWanderer", "starBirth", "nova", "redGiant", "supernova", "pulsar", "kilonova", "gammaBurst"];
+// The nebula passage has no slot and no place in s.events, so it is counted
+// beside the table rather than in it.
+const NEBULA = "nebula";
 
 export function simulate(host, seconds, step) {
     const dt = step === undefined ? 1 / 30 : step;
     const frames = Math.round(seconds / dt);
     const stat = KINDS.map(name => ({ name, scheduled: 0, drawnFrames: 0, peakGain: 0, peakSigma: 0, peakReach: 0, starved: 0 }));
     const seen = KINDS.map(() => new Set());
+    const nebula = { name: NEBULA, scheduled: 0, drawnFrames: 0, peakGain: 0, peakSigma: 0, peakReach: 0, starved: 0 };
+    const nebulaSeen = new Set();
     for (let f = 0; f < frames; ++f) {
         host._state.clock = f * dt;
         host._state.moodClock = f * dt;
+        // One flow second per active second at the shipped radialSpeed: the
+        // passage reads the same accumulator advance() writes.
+        host._state.geo[0] = f * dt;
         host.publishEvents();
+        host.publishNebula();
+        const head = host.shader.nebulaHead;
+        if (head && head.w > 0) {
+            nebula.drawnFrames++;
+            nebula.peakGain = Math.max(nebula.peakGain, head.w);
+            nebula.peakSigma = Math.max(nebula.peakSigma, head.z);
+            const nb = host.shader.nebulaBounds;
+            nebula.peakReach = Math.max(nebula.peakReach, Math.max(nb.z - nb.x, nb.w - nb.y) / 2);
+        }
+        const live = host._state.nebula;
+        if (live && !nebulaSeen.has(live.index)) { nebulaSeen.add(live.index); nebula.scheduled++; }
         // Slot occupancy, read back off the uniforms the shader would see.
         const drawn = new Set();
         for (let i = 0; i < 6; ++i) {
@@ -209,6 +228,11 @@ export function simulate(host, seconds, step) {
         stat[k].perHour = stat[k].scheduled * 3600 / seconds;
         stat[k].drawnSec = stat[k].drawnFrames * dt;
     }
+    const pending = host._state.nebula;
+    if (pending && pending.start > seconds) { nebula.scheduled--; nebula.nextAt = pending.start; }
+    nebula.perHour = nebula.scheduled * 3600 / seconds;
+    nebula.drawnSec = nebula.drawnFrames * dt;
+    stat.push(nebula);
     return stat;
 }
 
@@ -256,7 +280,11 @@ function table(stat, title) {
     console.log("kind            sched/h   drawn s/h   peak gain   peak sigma px   peak reach px");
     for (const s of stat) {
         if (s.scheduled === 0 && s.drawnFrames === 0) {
-            console.log(s.name.padEnd(15) + "    0.00        —          off / never");
+            // A family can be off, or simply slower than the window: the
+            // nebula's 20-45 min interval starts behind the shared dramatic
+            // cooldown, so the first passage can land past the hour.
+            const late = s.nextAt !== undefined ? "due at " + (s.nextAt / 60).toFixed(1) + " min" : "off / never";
+            console.log(s.name.padEnd(15) + "    0.00        —          " + late);
             continue;
         }
         console.log(s.name.padEnd(15) +

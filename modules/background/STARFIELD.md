@@ -75,6 +75,9 @@ Measured on DP-3 (1440x2560), three seeds, six hours each: 39 meteors, 5.7 comet
 0.8 supernovae, 1.2 pulsars, 0.8 kilonovae, 0.7 gamma-ray bursts, 0.7 showers and 0.6 slow wanderers **per hour** - a notable non-meteor event every
 ~2.7 min and something dramatic every ~26 min. `modules/background/tools/test-events.mjs --audit [config.json]` reprints that table for any config
 on all three of his outputs; it runs the shipped scheduler, not a copy of it.
+The table gained a `nebula` row in v9 (its `peak sigma` column is the cloud's semi-major axis, not a point's sigma); a family slower than the window prints when
+it is next due rather than `off / never`. The passage takes its turn in the shared dramatic cooldown, so on a cold start it lands behind the first round of
+supernova/kilonova/gamma-ray burst schedules — 92 min in on the default catalogue, ~32 min apart thereafter.
 **`events.rateScale` (0-4, default 1) is the one dial for all of it.** It divides every interval in the catalogue - meteors, comets, satellites,
 showers, wanderers and the seven phenomena. 2 is twice as many events, 0.5 half as many, **0 turns every scheduled event off** (nothing is captured,
 so it costs nothing). Everything else stays as documented; per-family keys still override on top of it. Calm, for a quieter sky:
