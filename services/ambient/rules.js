@@ -1137,6 +1137,26 @@ function validateReactive(value) {
     };
 }
 
+// The camera fly-through. `enabled` is "auto" by default, which ties the whole
+// regime to the black hole: a hole that is off has no mass to fall into, so the
+// field stops being an infall and becomes a camera moving forward through a
+// nearly static sky. true/false force it on or off regardless of the hole.
+// `direction` "out" is the camera flying toward the centre (stars stream out of
+// it and leave at the edges); "in" is the same playback reversed.
+function validateCamera(value) {
+    var c = object(value);
+    return {
+        enabled: c.enabled === true || c.enabled === false ? c.enabled : "auto",
+        direction: c.direction === "in" ? "in" : "out",
+        speed: number(c.speed, 6, 0, 30),
+        depth: number(c.depth, 16, 2, 64),
+        dustFlow: number(c.dustFlow, 3, 0, 64),
+        roll: number(c.roll, 0.15, 0, 2),
+        wander: number(c.wander, 0.35, 0, 1),
+        sizeGain: number(c.sizeGain, 0.55, 0, 1)
+    };
+}
+
 function validateDocument(value, warn) {
     var d = object(value), m = object(d.motion), v = object(d.variety), variables = object(d.variables);
     var mode = m.mode === "drift" ? "drift" : "radial";
@@ -1167,7 +1187,8 @@ function validateDocument(value, warn) {
             zoom: number(m.zoom, mode === "drift" ? 0.025 : 0.003, 0, 0.15),
             reversals: boolean(m.reversals, false),
             wander: number(m.wander, 0.8, 0, 2),
-            rotation: number(m.rotation, 0.5, 0, 3)
+            rotation: number(m.rotation, 0.5, 0, 3),
+            camera: validateCamera(m.camera)
         },
         variety: {
             enabled: boolean(v.enabled, true),

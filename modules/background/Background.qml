@@ -91,6 +91,14 @@ Variants {
                     centreWander: Services.Starfield.motion.centreWander
                     zoomBreath: Services.Starfield.motion.zoom
                     reversals: Services.Starfield.motion.reversals
+                    cameraEnabled: Services.Starfield.motion.camera.enabled
+                    cameraDirection: Services.Starfield.motion.camera.direction
+                    cameraSpeed: Services.Starfield.motion.camera.speed
+                    cameraDepth: Services.Starfield.motion.camera.depth
+                    cameraDustFlow: Services.Starfield.motion.camera.dustFlow
+                    cameraRoll: Services.Starfield.motion.camera.roll
+                    cameraWander: Services.Starfield.motion.camera.wander
+                    cameraSizeGain: Services.Starfield.motion.camera.sizeGain
                     motionWander: Services.Starfield.motion.wander
                     motionZoom: Services.Starfield.motion.zoom
                     motionRotation: Services.Starfield.motion.rotation

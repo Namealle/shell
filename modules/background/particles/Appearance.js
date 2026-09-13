@@ -243,6 +243,18 @@ function render(previous, s, style) {
     // and the strength, and the hole's own enable envelope gates all of it, so a
     // disabled hole fades the deformation out over the same thirty seconds.
     var envelope = s.absorb === undefined ? 1 : clamp(s.absorb, 0, 1);
+    // Camera regime: a star's DEPTH is what its size and its light follow, so a
+    // star grows and brightens as the camera closes on it and the two of them
+    // together are the only depth cue a point of light has. Both factors are at
+    // most 1, so the atlas ceiling bounds() allocated from the configured sizes
+    // is still the ceiling. The two envelopes at the ends of the depth range are
+    // what keeps an arrival and a departure from being a switch: forward a star
+    // fades up out of the far plane and is gone before it reaches the near one,
+    // and reverse plays exactly that backwards.
+    var camBlend = clamp(s.cameraBlend === undefined ? 0 : s.cameraBlend, 0, 1);
+    var camFar = clamp(s.cameraDepth === undefined ? 12 : s.cameraDepth, 2, 64);
+    var camGain = clamp(s.cameraSizeGain === undefined ? 0.55 : s.cameraSizeGain, 0, 1);
+    var camSpan = camFar - 1, DZ = s.depthZ;
     // The reach is anchored to the DISK's rim: the tide should bite as a star
     // enters the material and tear it apart on the way down to the shadow, so
     // it scales with the disk rather than with the shadow or the arcs.
@@ -302,6 +314,17 @@ function render(previous, s, style) {
         } else if (kind === 5) { ox = P1[i] * Math.cos(oscillation); oy = P1[i] * Math.sin(oscillation); }
         var captured = RCAP[i] > 0 ? smooth(0, 4, clock - CTIME[i]) : 0;
         var core = SIZE[i] + captured * (CAPSIZE[i] - SIZE[i]);
+        var camScale = 1, camFade = 1;
+        if (camBlend > 0) {
+            var z = DZ[i];
+            if (!(z >= 1)) z = camFar;
+            else if (z > camFar) z = camFar;
+            var t = (z - 1) / camSpan;
+            // 1 at the near plane, 1/far at the far one.
+            camScale = 1 - camBlend * camGain * (1 - 1 / z);
+            camFade = 1 - camBlend * (1 - camScale * (1 - smooth(0.90, 1, t)) * smooth(0, 0.06, t));
+            core *= camScale;
+        }
         var vx = VX[i], vy = VY[i];
         var speed = Math.sqrt(vx * vx + vy * vy);
         var dx = X[i] - cx, dy = Y[i] - cy;
@@ -381,7 +404,7 @@ function render(previous, s, style) {
         var age0 = AGE[i];
         if (age0 < 0.35) { var w0 = age0 <= 0 ? 0 : age0 / 0.35; fade *= w0 * w0 * (3 - 2 * w0); }
         var shimmer = twinkle > 0 ? 1 + 0.15 * twinkle * Math.sin(cycle * SHIMMER[i] + phase) : 1;
-        var light = LUM[i] * (1 - dim * captured) * behavior * fade * shimmer;
+        var light = LUM[i] * (1 - dim * captured) * behavior * fade * shimmer * camFade;
         var mix = kind === 6 ? 0.5 - 0.5 * Math.cos(oscillation) : 0;
         // Colour is resolved once per particle rather than three times inside
         // the component writes, so the disruption's warming costs one branch.

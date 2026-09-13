@@ -424,5 +424,339 @@ for (const geometry of [undefined, TARGET_DISK]) {
         /smoothstep\(ubuf\.bhGeometry\.x,ubuf\.bhGeometry\.x\+0\.75,r\)/.test(frag));
 }
 
+// ================================================== camera fly-through (v8)
+// The other regime. blackHole.enabled:false used to fade the DRAWING of the
+// hole and nothing else: mu was untouched, so stars went on falling into an
+// invisible mass, went on circularising into an invisible ring, and - because
+// the swallow radius follows the same envelope - stopped dying at the centre
+// and piled up there until their safety life expired. Measured before this
+// change: 289 captures and 76 instances inside 1 Rh over 180 s with the hole
+// off, against 0 inside 1 Rh with it on. The camera regime replaces all of it.
+const CAM_DEPTH = 16, CAM_RATE = (CAM_DEPTH - 1) * 6 / 360;
+function flyThrough(pool, o) {
+    pool.cameraBlend = o.blend === undefined ? 1 : o.blend;
+    pool.cameraDir = o.dir === undefined ? 1 : o.dir;
+    pool.cameraDepth = CAM_DEPTH;
+    pool.cameraRate = o.rate === undefined ? CAM_RATE : o.rate;
+    pool.cameraRoll = o.roll === undefined ? 0 : o.roll;
+    pool.cameraSizeGain = 0.55;
+    // The hole's envelope and the camera's are complements: one toggle.
+    pool.absorb = 1 - (o.blend === undefined ? 1 : o.blend);
+}
+function fly(o) {
+    const options = o || {};
+    const input = birthInput();
+    const pool = Physics.create(W, H, RH, options.seed === undefined ? 7 : options.seed, options.config || {},
+        (p, i) => Appearance.birth(p, i, input), options.geometry);
+    let items = null;
+    const warm = options.warmSec === undefined ? 240 : options.warmSec;
+    const measure = options.measureSec === undefined ? 60 : options.measureSec;
+    const visit = options.visit || (() => {});
+    for (let f = 0; f < Math.round((warm + measure) / DT); ++f) {
+        flyThrough(pool, options.at ? options.at(f * DT) : options);
+        Physics.advance(pool, DT, 6, 0.5, W / 2, H / 2, 1, pool.birthCallback);
+        items = Appearance.render(items, pool, {twinkle: 0.22});
+        if (f * DT >= warm) visit(items, pool, f * DT);
+    }
+    return {pool, items};
+}
+const BINS = 12, RMAX = Math.hypot(W / 2, H / 2);
+// Screen area of each radial bin, by sampling: the outer bins are mostly off a
+// 2160x3840 rectangle, so a pi*r^2 annulus would be badly wrong.
+const BIN_AREA = new Array(BINS).fill(0);
+{
+    let seed = 12345;
+    const rnd = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
+    for (let n = 0; n < 400000; ++n)
+        ++BIN_AREA[Math.min(BINS - 1, Math.floor(BINS * Math.hypot(rnd() * W - W / 2, rnd() * H - H / 2) / RMAX))];
+}
+{
+    // ---- the hole's physics is gone, not just its picture
+    const before = {};
+    const out = fly({visit: (items, pool, t) => { if (t < DT * 1.5) Object.assign(before, pool.counters); }});
+    const pool = out.pool;
+    let core = 0, maxDrift = 0;
+    for (let k = 0; k < pool.liveCount; ++k) {
+        const i = pool.live[k];
+        const r = Math.hypot(pool.x[i] - W / 2, pool.y[i] - H / 2);
+        if (r < RH) ++core;
+        // A still star under a moving camera: speed is exactly r*rate/z.
+        const want = r * CAM_RATE / Physics.cameraDepthOf(pool, i);
+        const have = Math.hypot(pool.vx[i], pool.vy[i]);
+        maxDrift = Math.max(maxDrift, Math.abs(have - want) / Math.max(1, want));
+    }
+    check("the camera regime captures nothing and swallows nothing",
+        pool.counters.captures - (before.captures || 0) === 0
+        && pool.counters.absorbed - (before.absorbed || 0) === 0,
+        `${pool.counters.captures - (before.captures || 0)} captures, ${pool.counters.absorbed - (before.absorbed || 0)} swallowed in 60 s`);
+    // A uniform field puts pi*Rh^2/(W*H) of 600 stars - about 13 - inside 1 Rh
+    // and they are passing through, not parked. The old hole-off left 76 there,
+    // dragged in by a mass nobody could see and unable to die at the centre.
+    const uniform = 600 * Math.PI * RH * RH / (W * H);
+    check("nothing piles up in the centre the invisible hole used to hold",
+        core < 2 * uniform, `${core} instances inside 1 Rh against ${uniform.toFixed(0)} for a uniform field (the old hole-off left ~76)`);
+    // The stored velocity is the step's actual displacement rate, which is what
+    // a streak has to be drawn from; it sits half a step under the continuous
+    // law, and half a step at the near plane is 0.4 %.
+    check("every star moves at the camera's own r/z law",
+        maxDrift < 0.01, `worst relative error ${(100 * maxDrift).toFixed(2)} %`);
+    check("the population is held without the orbital birth path",
+        pool.aliveCount > 560 && pool.aliveCount <= 600, `${pool.aliveCount} alive`);
+}
+{
+    // ---- perspective: speed grows with radius, monotonically, in both directions
+    for (const dir of [1, -1]) {
+        const label = dir > 0 ? "out" : "in";
+        const n = new Array(BINS).fill(0), v = new Array(BINS).fill(0);
+        let wrongWay = 0, moving = 0;
+        fly({dir, visit: items => {
+            const d = items.data;
+            for (let j = 0; j < items.count; ++j) {
+                const b = j * S, bin = Math.min(BINS - 1, Math.floor(BINS * radiusOf(d, b) / RMAX));
+                ++n[bin];
+                v[bin] += Math.hypot(d[b + 2], d[b + 3]);
+                // Radial, and radial the right way: out is away from the centre,
+                // in is the same trajectories played backwards.
+                const radial = (d[b] - W / 2) * d[b + 2] + (d[b + 1] - H / 2) * d[b + 3];
+                if (Math.abs(radial) > 1e-6) { ++moving; if (radial * dir <= 0) ++wrongWay; }
+            }
+        }});
+        check(`every star moves ${dir > 0 ? "away from" : "toward"} the centre and nowhere else (${label})`,
+            moving > 10000 && wrongWay === 0, `${wrongWay} of ${moving} instances going the wrong way`);
+        const mean = v.map((x, i) => n[i] > 20 ? x / n[i] : NaN).filter(x => x === x);
+        let rising = true;
+        for (let i = 1; i < mean.length; ++i) if (!(mean[i] > mean[i - 1])) rising = false;
+        check(`screen speed grows with radius, every bin (${label})`,
+            rising && mean.length >= 10 && mean[mean.length - 1] / mean[0] > 10,
+            `${mean.map(x => x.toFixed(0)).join(" ")} px/s over ${mean.length} bins, ${(mean[mean.length - 1] / mean[0]).toFixed(0)}x end to end`);
+        // Uniform density is the whole reason the birth distribution is what it
+        // is: births are the time-reverse of deaths, so neither direction piles
+        // stars up anywhere. The two inner bins are the centre, which reverse
+        // deliberately empties (below), and the outer bin is mostly padding
+        // where instances live off screen.
+        const share = n.map((x, i) => x / BIN_AREA[i]);
+        const mid = share.slice(2, BINS - 1);
+        const lo = Math.min(...mid), hi = Math.max(...mid);
+        check(`the field stays uniform across the screen (${label})`, hi / lo < 1.35,
+            `bin density spread ${(hi / lo).toFixed(2)}x over bins 2-${BINS - 2}`);
+        const centre = share[0] / (share.reduce((a, b, i) => i >= 2 && i < BINS - 1 ? a + b : a, 0) / (BINS - 3));
+        check(`the centre is populated like the rest of the sky (${label})`,
+            centre > 0.5, `centre density ${centre.toFixed(2)} of the mid-field`);
+    }
+}
+{
+    // ---- births: the far plane going out, the screen edge coming in
+    const place = {out: [], in: []};
+    for (const dir of [1, -1]) {
+        const key = dir > 0 ? "out" : "in";
+        const input = birthInput();
+        const pool = Physics.create(W, H, RH, 11, {}, (p, i) => {
+            Appearance.birth(p, i, input);
+            place[key].push([Math.hypot(p.x[i] - W / 2, p.y[i] - H / 2), p.depthZ[i]]);
+        });
+        for (let f = 0; f < Math.round(120 / DT); ++f) {
+            flyThrough(pool, {dir});
+            Physics.advance(pool, DT, 6, 0.5, W / 2, H / 2, 1, pool.birthCallback);
+        }
+    }
+    const outs = place.out, ins = place.in;
+    const atFar = outs.filter(p => p[1] >= CAM_DEPTH - 1e-9).length / outs.length;
+    check("going out, every birth is at the far plane", atFar > 0.999,
+        `${(100 * atFar).toFixed(1)} % of ${outs.length} births at z = ${CAM_DEPTH}`);
+    // Uniform per unit area at the far plane is what a uniform 3-D field
+    // crossing a plane looks like, and it is what keeps the screen uniform.
+    // The reference is the padded rectangle itself, not a disc: on a 2160x3840
+    // output half the AREA is nothing like half the radius.
+    const want = BIN_AREA.reduce((a, x, i) => i >= Math.floor(BINS * 0.707) ? a + x : a, 0)
+        / BIN_AREA.reduce((a, x) => a + x, 0);
+    const outer = outs.filter(p => p[0] > 0.707 * RMAX).length / outs.length;
+    check("going out, births are uniform per unit area, not heaped at the centre",
+        Math.abs(outer - want) < 0.05,
+        `${(100 * outer).toFixed(0)} % beyond 0.707 R against ${(100 * want).toFixed(0)} % of the area`);
+    // Coming in they arrive ON the padded boundary, which is what a forward
+    // death is: the padding is max(32, Rh/4) outside the screen.
+    const pad = Math.max(32, 0.25 * RH);
+    const offEdge = ins.filter(p => {
+        const r = p[0];
+        return r >= Math.min(W, H) / 2 && r <= RMAX + 2 * pad;
+    }).length / ins.length;
+    check("coming in, births arrive at the screen edge", offEdge > 0.99,
+        `${(100 * offEdge).toFixed(1)} % of ${ins.length} births on the padded boundary`);
+    const spread = ins.filter(p => p[1] < CAM_DEPTH * 0.5).length / ins.length;
+    check("coming in, births carry the depth spread forward deaths arrive with",
+        spread > 0.15 && spread < 0.35, `${(100 * spread).toFixed(0)} % born inside half the depth`);
+}
+{
+    // ---- reverse really is the reverse: the map is exactly invertible
+    const input = birthInput();
+    const pool = Physics.create(W, H, RH, 3, {}, (p, i) => Appearance.birth(p, i, input));
+    for (let f = 0; f < Math.round(30 / DT); ++f) {
+        flyThrough(pool, {});
+        Physics.advance(pool, DT, 6, 0.5, W / 2, H / 2, 1, pool.birthCallback);
+    }
+    const ids = [], x0 = [], y0 = [], z0 = [];
+    for (let k = 0; k < pool.liveCount; ++k) {
+        const i = pool.live[k];
+        ids.push(i); x0.push(pool.x[i]); y0.push(pool.y[i]); z0.push(pool.depthZ[i]);
+    }
+    const gen = ids.map(i => pool.generation[i]);
+    // 200 steps out, then 200 back, with births and deaths off so the same
+    // stars are still there to compare.
+    const opts = {deaths: false};
+    for (let f = 0; f < 200; ++f) { flyThrough(pool, {}); Physics.step(pool, DT, opts); }
+    let moved = 0;
+    for (let k = 0; k < ids.length; ++k)
+        moved = Math.max(moved, Math.hypot(pool.x[ids[k]] - x0[k], pool.y[ids[k]] - y0[k]));
+    for (let f = 0; f < 200; ++f) { flyThrough(pool, {dir: -1}); Physics.step(pool, DT, opts); }
+    let worst = 0, worstZ = 0, alive = 0;
+    for (let k = 0; k < ids.length; ++k) {
+        const i = ids[k];
+        if (!pool.alive[i] || pool.generation[i] !== gen[k]) continue;
+        ++alive;
+        worst = Math.max(worst, Math.hypot(pool.x[i] - x0[k], pool.y[i] - y0[k]));
+        worstZ = Math.max(worstZ, Math.abs(pool.depthZ[i] - z0[k]));
+    }
+    check("the field travelled a real distance before it was reversed", moved > 200,
+        `furthest star moved ${moved.toFixed(0)} px`);
+    check("reverse returns every star to where it started", alive > 400 && worst < 1e-6 && worstZ < 1e-9,
+        `${alive} stars, worst ${worst.toExponential(2)} px, worst depth ${worstZ.toExponential(2)}`);
+}
+{
+    // ---- the crossfade is a crossfade: nothing steps when the regime changes
+    let worst = 0, worstStreak = 0;
+    const prev = new Map();
+    // Thirty seconds of orbital regime, the hole's own 30 s envelope, then the
+    // camera. `at` mirrors what BlackHole.advance does to bhHalo.w.
+    const ease = x => x * x * (3 - 2 * x);
+    fly({warmSec: 0, measureSec: 120, at: t => ({blend: ease(Math.max(0, Math.min(1, (t - 30) / 30)))}),
+        visit: items => {
+            const d = items.data;
+            for (let j = 0; j < items.count; ++j) {
+                const b = j * S, key = d[b + IID] + ":" + d[b + IGEN];
+                const p = prev.get(key);
+                if (p) {
+                    worst = Math.max(worst, Math.hypot(d[b] - p[0], d[b + 1] - p[1]));
+                    worstStreak = Math.max(worstStreak, Math.abs(d[b + ISTREAK] - p[2]));
+                }
+                prev.set(key, [d[b], d[b + 1], d[b + ISTREAK]]);
+            }
+        }});
+    // The fastest thing on screen in the orbital regime passes the shadow at a
+    // few hundred px/s, i.e. ~20 px in a frame. Nothing may teleport.
+    check("no star jumps when the regime crossfades", worst < 60,
+        `worst one-frame move ${worst.toFixed(1)} px across the 30 s change`);
+    check("no streak jumps when the regime crossfades", worstStreak < 8,
+        `worst one-frame streak change ${worstStreak.toFixed(2)} px`);
+}
+{
+    // ---- depth is the only thing that dims and shrinks a star, and it can only
+    //      dim and shrink it: the atlas ceiling bounds() allocated from the
+    //      configured sizes is still the ceiling in the camera regime.
+    let maxCore = 0, born = 0, loud = 0, deep = 0, near = 0, deepLight = 0, nearLight = 0;
+    const out = fly({visit: (items, pool) => {
+        const d = items.data;
+        for (let j = 0; j < items.count; ++j) {
+            const b = j * S, z = pool.depthZ[d[b + IID]];
+            maxCore = Math.max(maxCore, d[b + ICORE]);
+            if (z > CAM_DEPTH - 0.02) { ++born; if (d[b + 10] > 0.25) ++loud; }
+            if (z > CAM_DEPTH * 0.8) { ++deep; deepLight += d[b + 10]; }
+            else if (z < 3) { ++near; nearLight += d[b + 10]; }
+        }
+    }});
+    check("a star's core stays inside the configured size range", maxCore <= 4.8 + 1e-9,
+        `worst core ${maxCore.toFixed(2)} px against the 4.8 px near ceiling the atlas is sized for`);
+    check("a star arrives out of the far plane instead of appearing at full light",
+        born > 200 && loud / born < 0.02,
+        `${loud} of ${born} instances at the far plane over 0.25 light`);
+    check("a star brightens as the camera closes on it",
+        deep > 100 && near > 100 && nearLight / near > 1.4 * (deepLight / deep),
+        `mean light ${(deepLight / deep).toFixed(3)} deep, ${(nearLight / near).toFixed(3)} near`);
+    // The invariant, on one state rendered both ways: depth never adds light or
+    // size to a star, so nothing the camera does can overflow the atlas.
+    const pool = out.pool;
+    pool.cameraBlend = 0;
+    const offItems = Appearance.render(null, pool, {twinkle: 0});
+    const off = new Map();
+    for (let j = 0; j < offItems.count; ++j) {
+        const b = j * S;
+        off.set(offItems.data[b + IID] + ":" + j, [offItems.data[b + ICORE], offItems.data[b + 10]]);
+    }
+    pool.cameraBlend = 1;
+    const onItems = Appearance.render(null, pool, {twinkle: 0});
+    let grew = 0, compared = 0, shrank = 0;
+    for (let j = 0; j < onItems.count; ++j) {
+        const b = j * S, was = off.get(onItems.data[b + IID] + ":" + j);
+        if (!was) continue;
+        ++compared;
+        if (onItems.data[b + ICORE] > was[0] + 1e-9 || onItems.data[b + 10] > was[1] + 1e-9) ++grew;
+        if (onItems.data[b + ICORE] < was[0] - 1e-9) ++shrank;
+    }
+    check("depth only ever dims and shrinks, so the atlas ceiling still holds",
+        compared > 400 && grew === 0 && shrank > compared * 0.5,
+        `${grew} of ${compared} instances brighter or bigger with the camera on, ${shrank} smaller`);
+}
+{
+    // ---- the hole-on regime is untouched: same stream, same stars, same bytes
+    const run = camera => {
+        const input = birthInput();
+        const pool = Physics.create(W, H, RH, 7, {}, (p, i) => Appearance.birth(p, i, input), TARGET_DISK);
+        for (let f = 0; f < Math.round(90 / DT); ++f) {
+            pool.absorb = 1;
+            if (camera) flyThrough(pool, {blend: 0});
+            Physics.advance(pool, DT, 6, 0.5, W / 2, H / 2, 1, pool.birthCallback);
+        }
+        const out = [];
+        for (let k = 0; k < pool.liveCount; ++k) {
+            const i = pool.live[k];
+            out.push([i, pool.generation[i], pool.x[i], pool.y[i], pool.vx[i], pool.vy[i]]);
+        }
+        return {out, pool};
+    };
+    const a = run(false), b = run(true);
+    let same = a.out.length === b.out.length && a.out.length > 400;
+    for (let i = 0; same && i < a.out.length; ++i)
+        for (let j = 0; j < 6; ++j) if (a.out[i][j] !== b.out[i][j]) same = false;
+    check("a camera at blend 0 does not perturb the orbital regime by one bit",
+        same, `${a.out.length} live stars compared bit for bit after 90 s`);
+    check("and it still captures and swallows exactly as v7 did",
+        a.pool.counters.captures === b.pool.counters.captures
+        && a.pool.counters.absorbed === b.pool.counters.absorbed,
+        `${a.pool.counters.captures} captures, ${a.pool.counters.absorbed} swallowed`);
+}
+{
+    // ---- the renderer half: the far field reverses with the same one toggle
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const frag = readFileSync(join(dir, "..", "shaders", "starfield.frag"), "utf8");
+    const qml = readFileSync(join(dir, "..", "Starfield.qml"), "utf8");
+    const rules = readFileSync(join(dir, "..", "..", "..", "services", "ambient", "rules.js"), "utf8");
+    check("the shader ages an outward star from the centre it was born at",
+        /float outward = clamp\(ubuf\.radialMode - 1\.0, 0\.0, 1\.0\);/.test(frag)
+        && /age = mix\(age, max\(0\.0, starU - minimumU\)/.test(frag),
+        "starfield.frag carries the blend in radialMode's fraction");
+    check("the renderer hands it that blend and only that blend",
+        /shader\.radialMode = motionMode === "drift" \? 0 : 1 \+ _cameraOutward;/.test(qml)
+        && /cameraDirection === "in" \? 0 : _cameraBlend/.test(qml));
+    check("the grid advance is signed and per layer, and the history is not",
+        /s\.geo\[layer\] \* \(6 \/ 1080\)/.test(qml) && /s\.flow \+= dFlow;/.test(qml)
+        && /const sign = 1 - 2 \* _cameraOutward;/.test(qml));
+    // The validated schema: defaults first, then that every bound rejects.
+    const Rules = new Function(rules + "\nreturn {validateDocument: validateDocument};")();
+    const base = Rules.validateDocument(null).motion.camera;
+    check("camera defaults leave a configured hole exactly as it was",
+        base.enabled === "auto" && base.direction === "out" && base.speed === 6
+        && base.depth === 16 && base.dustFlow === 3 && base.roll === 0.15
+        && base.wander === 0.35 && base.sizeGain === 0.55,
+        JSON.stringify(base));
+    const bad = Rules.validateDocument({motion: {camera: {enabled: "yes", direction: "sideways",
+        speed: 1e6, depth: -3, dustFlow: "3", roll: 99, wander: null, sizeGain: 4}}}).motion.camera;
+    check("every camera bound clamps or falls back, none of them throw",
+        bad.enabled === "auto" && bad.direction === "out" && bad.speed === 30 && bad.depth === 2
+        && bad.dustFlow === 3 && bad.roll === 2 && bad.wander === 0.35 && bad.sizeGain === 1,
+        JSON.stringify(bad));
+    const on = Rules.validateDocument({motion: {camera: {enabled: false, direction: "in", speed: 0}}}).motion.camera;
+    check("the regime and the direction are both explicit switches",
+        on.enabled === false && on.direction === "in" && on.speed === 0);
+}
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 process.exit(failures ? 1 : 0);

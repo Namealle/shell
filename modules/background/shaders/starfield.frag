@@ -362,6 +362,15 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer, float captureP
             // is a birth-time predicate, never a live palette reassignment.
             if (newAge <= ubuf.paddingAge) age = newAge;
         }
+        // The camera regime reverses this stream: a star is then born at the
+        // centre and its age is how far it has come OUT, not how far it has
+        // come in. radialMode carries the blend in its fraction (1 = the inward
+        // stream, 2 = fully reversed), and mixing the two ages rather than
+        // switching between them is what keeps a star's sealed birth cohort
+        // walking smoothly across the change instead of jumping palettes.
+        float outward = clamp(ubuf.radialMode - 1.0, 0.0, 1.0);
+        if (outward > 0.0)
+            age = mix(age, max(0.0, starU - minimumU) / ((6.0 / 1080.0) * depth), outward);
         life = centralLifetime(r, age, layer, h);
         // Defer material rejection until its immutable cohort policy is known.
         if ((capturePass < -1.5 || layer < 0.5 || capturePass == 0.0 || ubuf.captureHistory < 0.5) && life <= 0.0) return vec3(0.0);

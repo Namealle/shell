@@ -39,6 +39,31 @@ Item {
     // Reserved opt-in. Reversing the stream would resurrect expired palettes;
     // until bidirectional history is available the flow remains inward.
     property bool reversals: false
+    // ---- Camera fly-through --------------------------------------------------
+    // The regime with no hole in it. `cameraEnabled` "auto" ties it to the black
+    // hole, so ONE toggle turns off the hole, its gravity, its capture and its
+    // tide together and puts a moving camera in their place; true/false force
+    // it. The crossfade is the hole's own enable envelope run backwards, which
+    // is why nothing about the toggle is a cut. Defaults leave a configured hole
+    // exactly as it was.
+    property var cameraEnabled: "auto"
+    property string cameraDirection: "out"
+    property real cameraSpeed: 6
+    property real cameraDepth: 16
+    property real cameraDustFlow: 3
+    property real cameraRoll: 0.15
+    property real cameraWander: 0.35
+    property real cameraSizeGain: 0.55
+    property real _cameraPosition: 0
+    readonly property bool _cameraWanted: cameraEnabled === true
+        || (cameraEnabled !== false && !(_hole && _hole.enabled))
+    // ease(1-x) == 1-ease(x) for this smoothstep, so in "auto" this is exactly
+    // the complement of the hole's own envelope and the two regimes always sum
+    // to one: no frame has a hole half drawn over a camera half flying.
+    readonly property real _cameraBlend: ease(_cameraPosition)
+    // The far dust reverses only when the camera is flying FORWARD. In reverse
+    // the stream runs inward, which is the direction it already had.
+    readonly property real _cameraOutward: cameraDirection === "in" ? 0 : _cameraBlend
     property int screenSeed: 0
     property vector4d ambientBirth: Qt.vector4d(0, 0, 0, 0.5)
     property vector4d ambientLive: Qt.vector4d(0.5, 0.5, 0.5, 0.5)
@@ -142,6 +167,9 @@ Item {
         _particleAtlasHeight = 0;
         shader.particleReady = 0;
         _hole.reset();
+        // A fresh state has no continuity to protect, so the regime starts where
+        // the configuration says rather than easing in from the other one.
+        _cameraPosition = _cameraWanted ? 1 : 0;
         const history = [];
         const colors = paletteSnapshot();
         const palette = normalized(paletteWeightsTarget, colors.length, null);
@@ -155,6 +183,13 @@ Item {
         _state = {
             clock: 0,
             flow: 0,
+            // Signed per-layer geometric advance, in flow seconds. It is the
+            // SAME accumulation as `flow` (the same addend, in the same order,
+            // so bit for bit the same number) while the camera is off; the
+            // camera is what gives a layer a different rate and a sign, and a
+            // separate accumulator is what lets the far field reverse without
+            // ever running the descriptor history backwards.
+            geo: [0, 0, 0],
             birth: [0, 0, 0, 0.5],
             live: [0.5, 0.5, 0.5, 0.5],
             history: history,
@@ -230,10 +265,21 @@ Item {
         s.mix = filtered(s.mix, clamp(paletteMixTarget, 0, 0.45), dt, 60);
         s.calm = filtered(s.calm, colors.length ? calmTarget : ambientBirth.w, dt, 60);
         _hole.advance(dt);
+        _cameraPosition = clamp(_cameraPosition + (_cameraWanted ? 1 : -1) * dt / Math.max(0.001, _hole.transitionSec), 0, 1);
         // Flow seconds include the user speed. Changing it never changes an
         // inferred birth phase. Zero speed freezes the ring as well as motion.
         const flowRate = (oldRate + 0.8 + 0.4 * s.live[2]) * 0.5;
-        s.flow += dt * flowRate * clamp(radialSpeed, 0, 26) / 6;
+        const dFlow = dt * flowRate * clamp(radialSpeed, 0, 26) / 6;
+        s.flow += dFlow;
+        // +1 is the inward stream. Flying the camera forward reverses it, and
+        // it passes through zero on the way, so the far field decelerates,
+        // stops and turns instead of cutting. Reverse playback keeps the
+        // inward sign: that stream already runs the way reverse wants it.
+        const sign = 1 - 2 * _cameraOutward;
+        const dustRate = 1 + _cameraBlend * (clamp(cameraDustFlow, 0, 64) / Math.max(1e-6, farBoost()) - 1);
+        s.geo[0] += dFlow * sign * dustRate;
+        s.geo[1] += dFlow * sign;
+        s.geo[2] += dFlow * sign;
         const bucket = Math.floor((s.flow + 1e-7) / 30);
         for (let n = Math.max(s.bucket + 1, bucket - 255); n <= bucket; ++n) {
             const f = clamp((n * 30 - oldFlow) / Math.max(1e-12, s.flow - oldFlow), 0, 1);
@@ -272,6 +318,7 @@ Item {
             if (target < 0) {
                 _state.clock = target;
                 _state.flow = target * clamp(radialSpeed, 0, 26) / 6;
+                _state.geo = [_state.flow, _state.flow, _state.flow];
                 _state.bucket = Math.floor(_state.flow / 30);
             }
         }
@@ -518,6 +565,26 @@ Item {
 
     function blockSalt(block: real, layer: int, axis: int): real {
         return random(block, screenSeed + 761 + layer * 997 + axis * 347) * 97;
+    }
+
+    // The far layer's inflow multiplier. Read by both the grid advance and the
+    // camera's dust rate, which is expressed against it.
+    function farBoost(): real {
+        const dust = _particles && particlesEnabled ? _particles.config.dust : null;
+        return dust ? dust.farFlow * Math.sqrt(_particles.config.mass) : 1;
+    }
+
+    // Lateral camera drift, as a fraction of the short side. The long 2048 s
+    // swing is v3's; the camera regime borrows part of its AMPLITUDE for a
+    // livelier pair of periods instead of adding to it, so the excursion never
+    // leaves the 0.012 short sides that every birth-padding guarantee is sized
+    // for. Both extra periods are integer cycles of 4096 s, so nothing steps
+    // when the phase clock wraps.
+    function wanderOffset(clock: real, phase: real): var {
+        const a = clamp(centreWander, 0, 0.012);
+        const w = 0.5 * clamp(cameraWander, 0, 1) * _cameraBlend;
+        return [a * ((1 - w) * wave(clock, 2, phase) + w * wave(clock, 11, phase * 1.3)),
+            a * ((1 - w) * wave(clock, 2, phase + 1.7) + w * wave(clock, 17, phase * 0.7 + 2.1))];
     }
 
     function eventOff(): var {
@@ -1354,11 +1421,12 @@ Item {
                 s.nearHashes = {};
                 dirty = true;
             }
-            const cells = s.flow * (6 / 1080) * invU, advanceRows = Math.floor(cells), block = Math.floor(advanceRows / 256);
+            const cells = s.geo[2] * (6 / 1080) * invU, advanceRows = Math.floor(cells), block = Math.floor(advanceRows / 256);
             const grid = Qt.vector4d(invU, invAngle, modulo(cells, 1), modulo(advanceRows, 256));
             const seeds = Qt.vector4d(blockSalt(block, 2, 0), blockSalt(block, 2, 1), blockSalt(block + 1, 2, 0), blockSalt(block + 1, 2, 1));
             const phase = random(screenSeed, 8761) * Math.PI * 2;
-            const offset = [2 * R * clamp(centreWander, 0, 0.012) * wave(s.clock, 2, phase), 2 * R * clamp(centreWander, 0, 0.012) * wave(s.clock, 2, phase + 1.7)];
+            const wander = wanderOffset(s.clock, phase);
+            const offset = [2 * R * wander[0], 2 * R * wander[1]];
             const zoom = f(Math.exp(clamp(zoomBreath, 0, 0.003) * (0.65 * wave(s.clock, 10, 0.4) + 0.35 * wave(s.clock, 14, 2.1))));
             const maxRadius = Math.hypot(w / 2 + 42 * optics + Math.abs(offset[0]), h / 2 + 42 * optics + Math.abs(offset[1])) / (R * zoom);
             const maxRow = Math.ceil(0.5 * maxRadius * maxRadius * grid.x + 1);
@@ -1499,7 +1567,11 @@ Item {
         const scale = displayScale / Math.sqrt(Math.max(0.0001, clamp(density, 0, 3)));
         const tauPhase = random(screenSeed, 8761) * Math.PI * 2;
         shader.resolution = Qt.vector2d(w, h);
-        shader.radialMode = motionMode === "drift" ? 0 : 1;
+        // 0 drift, 1 the inward radial stream, 1..2 the same stream reversed by
+        // the camera: the fraction above 1 IS the camera blend, so the shader
+        // gets the regime crossfade without a new uniform and without touching
+        // the UBO layout. Every existing test is `radialMode > 0.5`.
+        shader.radialMode = motionMode === "drift" ? 0 : 1 + _cameraOutward;
         shader.phaseTime = modulo(s.clock, 4096);
         shader.activeStamp = Qt.vector2d(Math.floor(s.clock / 86400), modulo(s.clock, 86400));
         shader.flowPhaseLocal = modulo(s.flow, 7680);
@@ -1514,7 +1586,8 @@ Item {
         shader.camera = Qt.vector4d(0, 0, motionZoom * (0.7 * wave(s.clock, 102, 0) + 0.3 * wave(s.clock, 54, 0)), motionRotation * Math.PI / 180 * (0.75 * wave(s.clock, 126, 0) + 0.25 * wave(s.clock, 46, 0)));
         // Depth-scaled wander stays subordinate even for the farthest stars.
         // 2048 s is the only 4096-compatible period in [1800,2700].
-        shader.centreOffset = Qt.vector2d(shortSide * clamp(centreWander, 0, 0.012) * wave(s.clock, 2, tauPhase), shortSide * clamp(centreWander, 0, 0.012) * wave(s.clock, 2, tauPhase + 1.7));
+        const wander = wanderOffset(s.clock, tauPhase);
+        shader.centreOffset = Qt.vector2d(shortSide * wander[0], shortSide * wander[1]);
         // Bounded, 4096-safe parallax of the far field. The 1/r inflow leaves the
         // corners nearly still; this is the floor that keeps every region moving.
         const parallax = _particles && particlesEnabled ? _particles.config.dust.parallaxPx : 0;
@@ -1531,7 +1604,7 @@ Item {
         // speed is already proportional to 1/r; the multiplier just makes it
         // visible, and sqrt(mass) ties it to the same mass the particles feel.
         const dust = _particles ? _particles.config.dust : null;
-        const farBoost = particlesEnabled && dust ? dust.farFlow * Math.sqrt(_particles.config.mass) : 1;
+        const boost = farBoost();
         const farCellScale = particlesEnabled && dust ? dust.cellScale : 1;
         for (let layer = 0; layer < 3; ++layer) {
             const depth = [0.10, 0.42, 1][layer];
@@ -1539,7 +1612,7 @@ Item {
             const sectors = Math.max(4, Math.round(2 * Math.PI * radius / cellSize));
             const invAngle = sectors / (2 * Math.PI);
             const invU = radius * radius / (cellSize * cellSize * invAngle);
-            const advanceCells = s.flow * (6 / 1080) * depth * invU * (layer === 0 ? farBoost : 1);
+            const advanceCells = s.geo[layer] * (6 / 1080) * depth * invU * (layer === 0 ? boost : 1);
             const row = Math.floor(advanceCells);
             const block = Math.floor(row / 256);
             shader["flowGrid" + layer] = Qt.vector4d(invU, invAngle, modulo(advanceCells, 1), modulo(row, 256));
@@ -1713,8 +1786,9 @@ Item {
             return;
         const s = _state, phase = random(screenSeed, 8761) * Math.PI * 2;
         const m = Math.min(_particles.width, _particles.height);
-        const cx = _particles.width / 2 + m * clamp(centreWander, 0, 0.012) * wave(s.clock, 2, phase);
-        const cy = _particles.height / 2 + m * clamp(centreWander, 0, 0.012) * wave(s.clock, 2, phase + 1.7);
+        const wander = wanderOffset(s.clock, phase);
+        const cx = _particles.width / 2 + m * wander[0];
+        const cy = _particles.height / 2 + m * wander[1];
         // The birth input and its callback are retained: rebuilding the palette
         // snapshot and the closure every frame allocated for roughly one birth.
         // Only the resolved colours are re-snapshotted, and only when they move.
@@ -1747,6 +1821,20 @@ Item {
         // radius and the central render fade follow it, so particles keep moving
         // through the centre instead of vanishing into an invisible point.
         _particles.absorb = _hole.bhHalo.w;
+        // The camera regime. `cameraRate` is depth units per active second: one
+        // traversal of the whole depth range takes 120 s at speed 6, so a star
+        // at the far plane crawls and the same star at the near plane streaks
+        // past at `depth` times that. Zero speed freezes the camera with the
+        // rest of the motion. The roll is a bounded sinusoid in RATE, so its
+        // integral is a +-4 degree sway that can never wind up.
+        const depthRange = clamp(cameraDepth, 2, 64);
+        const pace = clamp(cameraSpeed, 0, 30);
+        _particles.cameraBlend = _cameraBlend;
+        _particles.cameraDir = cameraDirection === "in" ? -1 : 1;
+        _particles.cameraDepth = depthRange;
+        _particles.cameraRate = pace > 0 ? (depthRange - 1) * pace / 360 : 0;
+        _particles.cameraRoll = clamp(cameraRoll, 0, 2) * (Math.PI / 180) * wave(s.clock, 23, phase + 0.9);
+        _particles.cameraSizeGain = clamp(cameraSizeGain, 0, 1);
         scheduleTde();
         ParticlePhysics.advance(_particles, dt, radialSpeed, s.live[2], cx, cy, blackHole && blackHole.disk && blackHole.disk.rotationSign < 0 ? -1 : 1, _particleBirth);
     }

@@ -144,6 +144,45 @@ function visibleRadius(rh, geom) {
     if (!isFinite(material) || !(material > rh)) material = rh;
     return {shadow: rh, disk: material, arcs: Math.max(arcs, material)};
 }
+// ---- Camera fly-through -----------------------------------------------------
+// The other regime. With the black hole off there is no mass to fall into, so
+// the stars hold still in space and the CAMERA moves: forward along its own
+// axis, toward the centre of the screen. A star at 3-D depth `z` and screen
+// radius `r` projects at r = f*rho/z, so moving the camera by dz scales every
+// screen position about the centre by z/(z-dz) and nothing else. That one
+// multiplication IS the whole regime: it is exact, it needs no integration, it
+// is exactly invertible (which is what makes reverse playback reverse), and it
+// reproduces perspective for free -- dr/dt = r*w/z grows with radius, and two
+// stars at the same radius separate by depth, which is the parallax.
+//
+// `z` is dimensionless, 1 at the near plane and `camera.depth` at the far one.
+// Forward, a star is born at the far plane and leaves at a screen edge; reverse
+// runs the same trajectories backwards, so a star arrives at an edge and
+// dissolves at the far plane. Densities come out uniform in both directions
+// because births are the time-reverse of deaths (see cameraLaunch).
+var CAMERA_NEAR = 1;
+function cameraOn(s) {
+    var b = s.cameraBlend;
+    return b > 0 && isFinite(b) ? (b < 1 ? b : 1) : 0;
+}
+function cameraFar(s) {
+    var d = s.cameraDepth;
+    return d >= 2 && isFinite(d) ? (d > 64 ? 64 : d) : 12;
+}
+// A depth for a star that has none yet: every particle alive when the camera
+// engages needs one, and drawing it from the simulation's RNG would shift the
+// stream and change the orbital regime's stars. This is a pure hash of the slot
+// and its generation, so the orbital path is byte-identical to before.
+function cameraDepthOf(s, i) {
+    var z = s.depthZ[i];
+    var far = cameraFar(s);
+    if (z >= CAMERA_NEAR && z <= far) return z;
+    var n = (Math.imul(i + 1, 374761393) + Math.imul(s.generation[i] + 1, 2654435761)) >>> 0;
+    n ^= n >>> 15; n = Math.imul(n, 2246822519) >>> 0; n ^= n >>> 13;
+    z = CAMERA_NEAR + (far - CAMERA_NEAR) * ((n >>> 8) / 16777216);
+    s.depthZ[i] = z;
+    return z;
+}
 function configure(s, width, height, rh, raw, geom) {
     s.config = validate(raw); s.width = Math.max(1, width); s.height = Math.max(1, height);
     s.rh = Math.max(0.1, rh); s.padding = Math.max(32, 0.25 * s.rh);
@@ -182,16 +221,20 @@ function create(width, height, rh, seed, raw, birthCallback, geom) {
     var s = {capacity: BOUNDS.capacity, aliveCount: 0, randomState: (seed >>> 0) || 1,
         clock: 0, accumulator: 0, birthAccumulator: 0, nextSlot: 0, k: 1,
         centreX: width / 2, centreY: height / 2, rotationSign: 1, absorb: 1,
+        // Camera regime, all runtime state like `absorb`: the renderer writes
+        // them every frame. blend 0 is the pure orbital regime.
+        cameraBlend: 0, cameraDir: 1, cameraDepth: 12, cameraRate: 0, cameraRoll: 0,
         meanLifetime: 30, lifetimeSamples: 0, lifetimeSum: 0, burstPhase: ((seed >>> 0) % 6283)/1000,
         birthCallback: birthCallback, counters: {births: 0, deaths: 0, absorbed: 0,
-            escapes: 0, safety: 0, captures: 0, steps: 0}};
+            escapes: 0, safety: 0, captures: 0, passed: 0, steps: 0}};
     s.alive = new Uint8Array(s.capacity); s.generation = new Uint32Array(s.capacity);
     // Dense list of occupied slots. step() compacts it, launch() appends to it,
     // so no consumer ever walks the 3200 capacity slots to find 600 particles.
     s.live = new Int32Array(s.capacity); s.liveCount = 0;
     var fields = ['x','y','vx','vy','age','entryTime','circularSince','captureExposure','spiralRate',
         'radiusAtCapture','captureTime','launchClass','pericentre','safetyLife','spiralSec','depth',
-        'r','g','b','size','capturedSize','luminosity','archetype','p0','p1','p2','p3','phase','seed'];
+        'r','g','b','size','capturedSize','luminosity','archetype','p0','p1','p2','p3','phase','seed',
+        'depthZ'];
     for (var j = 0; j < fields.length; ++j) s[fields[j]] = new Float64Array(s.capacity);
     configure(s, width, height, rh, raw, geom); s.mu = s.muBase;
     return s;
@@ -227,8 +270,77 @@ function pericentre(s, cls, f) {
     var q = f * (LAUNCH_ANCHOR[cls] ? s.diskRim : s.shadow);
     return q > s.qCap ? s.qCap : q;
 }
+// Everything a birth owns that is not its position, its velocity or its depth,
+// in the exact draw order the orbital launch has always used: the camera birth
+// shares it so the two regimes cannot drift apart. Position and velocity must
+// already be written.
+function finishBirth(s, i, cls, q, depthOverride) {
+    if (!s.alive[i]) { ++s.aliveCount; s.live[s.liveCount++]=i; }
+    s.alive[i]=1; ++s.generation[i]; ++s.counters.births;
+    s.age[i]=0; s.circularSince[i]=-1; s.captureExposure[i]=0;
+    var x=s.x[i], y=s.y[i];
+    s.entryTime[i]=x>=0 && x<=s.width && y>=0 && y<=s.height ? s.clock : -1;
+    s.spiralRate[i]=0; s.radiusAtCapture[i]=0; s.captureTime[i]=-1;
+    s.launchClass[i]=cls; s.pericentre[i]=q;
+    s.safetyLife[i]=between(s,s.config.safetyLifeSec); s.spiralSec[i]=between(s,s.config.capture.spiralSec);
+    s.depth[i]=depthOverride === undefined ? (random(s)*s.targetPopulation < s.config.population.near ? 1 : 0) : depthOverride;
+    s.seed[i]=random(s); s.phase[i]=random(s)*Math.PI*2;
+    s.size[i]=between(s,s.depth[i] ? s.config.sizes.nearPx : s.config.sizes.middlePx);
+    s.capturedSize[i]=between(s,s.config.sizes.capturedPx);
+    s.r[i]=1; s.g[i]=1; s.b[i]=1; s.luminosity[i]=1;
+    s.archetype[i]=0; s.p0[i]=0; s.p1[i]=0; s.p2[i]=0; s.p3[i]=0;
+    return true;
+}
+// A camera birth and a camera death are time-reverses of each other, which is
+// the whole reason the density stays uniform in both directions.
+//
+//   forward  born at the FAR plane, anywhere on the padded screen (uniform per
+//            unit area -- a uniform 3-D field crossing a plane is uniform on
+//            the screen), dies where its magnified radius leaves the screen.
+//   reverse  born at a screen EDGE with z drawn as far*sqrt(U), which is the
+//            distribution forward deaths arrive at that edge with, and dies at
+//            the far plane, anywhere on screen.
+function cameraLaunch(s, i) {
+    var far = cameraFar(s), rate = s.cameraRate > 0 ? s.cameraRate : 0;
+    var dir = s.cameraDir < 0 ? -1 : 1;
+    var hx = 0.5*s.width+s.padding, hy = 0.5*s.height+s.padding;
+    // Where the star sits at the FAR plane: uniform over the padded rectangle
+    // around the camera's own axis. Forward that is its birth; in reverse it is
+    // where it will dissolve, and the two draws are the same draw.
+    var px = (2*random(s)-1)*hx, py = (2*random(s)-1)*hy, z = far;
+    if (dir < 0) {
+        // Exact time-reverse of a forward life rather than a guess at the
+        // distribution deaths arrive with: run that far-plane point back out
+        // along its own ray to the edge it came in through, and take the depth
+        // it crossed at. Arc-length or flux weighting of the perimeter both
+        // measured a thinner field than forward; this one cannot, because it is
+        // the forward construction read backwards.
+        var reach = Math.max(Math.abs(px)/hx, Math.abs(py)/hy);
+        z = far*reach;
+        if (!(z > CAMERA_NEAR)) z = CAMERA_NEAR;
+        else if (z > far) z = far;
+        var m = far/z;
+        px *= m; py *= m;
+    }
+    var x = s.centreX+px, y = s.centreY+py;
+    s.x[i]=x; s.y[i]=y;
+    // The screen velocity of a still star under a moving camera: radial, and
+    // proportional to the radius over the depth. Everything the star does for
+    // the rest of its life follows from these three numbers.
+    var scale = dir*rate/z;
+    s.vx[i]=(x-s.centreX)*scale; s.vy[i]=(y-s.centreY)*scale;
+    s.depthZ[i]=z;
+    return finishBirth(s, i, 1, s.qCap);
+}
 function launch(s, i, options) {
-    var o = options || {}, l = s.config.launch, draw = random(s);
+    var o = options || {};
+    // Guarded so that with the camera off not one draw is taken from the stream
+    // and the orbital regime is byte-identical to v7.
+    var blend = cameraOn(s);
+    if (blend > 0 && o.q === undefined && o.x === undefined && o.y === undefined
+        && o.edge === undefined && o.launchClass === undefined && random(s) < blend)
+        return cameraLaunch(s, i);
+    var l = s.config.launch, draw = random(s);
     var cls = o.launchClass === undefined ? (draw < l.plunge ? 0 : draw < l.plunge+l.miss ? 1 : 2) : o.launchClass;
     var q = o.q === undefined ? pericentre(s, cls, between(s, LAUNCH_Q[cls])) : o.q;
     var beta = o.beta === undefined ? between(s, cls === 1 && random(s) < l.unboundShare ? l.betaUnbound : l.betaBound) : o.beta;
@@ -268,20 +380,8 @@ function launch(s, i, options) {
     var sign = o.handedness === undefined ? (random(s) < l.handedness ? s.rotationSign : -s.rotationSign) : o.handedness;
     var vt = sign*Math.sqrt(h2)/r, vr = -Math.sqrt(Math.max(0,v2-vt*vt));
     s.x[i]=x; s.y[i]=y; s.vx[i]=(vr*dx-vt*dy)/r; s.vy[i]=(vr*dy+vt*dx)/r;
-    if (!s.alive[i]) { ++s.aliveCount; s.live[s.liveCount++]=i; }
-    s.alive[i]=1; ++s.generation[i]; ++s.counters.births;
-    s.age[i]=0; s.circularSince[i]=-1; s.captureExposure[i]=0;
-    s.entryTime[i]=x>=0 && x<=s.width && y>=0 && y<=s.height ? s.clock : -1;
-    s.spiralRate[i]=0; s.radiusAtCapture[i]=0; s.captureTime[i]=-1;
-    s.launchClass[i]=cls; s.pericentre[i]=q;
-    s.safetyLife[i]=between(s,s.config.safetyLifeSec); s.spiralSec[i]=between(s,s.config.capture.spiralSec);
-    s.depth[i]=o.depth === undefined ? (random(s)*s.targetPopulation < s.config.population.near ? 1 : 0) : o.depth;
-    s.seed[i]=random(s); s.phase[i]=random(s)*Math.PI*2;
-    s.size[i]=between(s,s.depth[i] ? s.config.sizes.nearPx : s.config.sizes.middlePx);
-    s.capturedSize[i]=between(s,s.config.sizes.capturedPx);
-    s.r[i]=1; s.g[i]=1; s.b[i]=1; s.luminosity[i]=1;
-    s.archetype[i]=0; s.p0[i]=0; s.p1[i]=0; s.p2[i]=0; s.p3[i]=0;
-    return true;
+    s.depthZ[i]=0;
+    return finishBirth(s, i, cls, q, o.depth);
 }
 // ---- Tidal disruption (phenomena.tde) ---------------------------------------
 // One doomed particle is stretched into a long stream as it falls through
@@ -300,7 +400,7 @@ function freeSlot(s) {
 function inject(s, x, y, vx, vy, depth, birthCallback) {
     var i = freeSlot(s);
     if (i < 0) return -1;
-    s.x[i] = x; s.y[i] = y; s.vx[i] = vx; s.vy[i] = vy;
+    s.x[i] = x; s.y[i] = y; s.vx[i] = vx; s.vy[i] = vy; s.depthZ[i] = 0;
     if (!s.alive[i]) { ++s.aliveCount; s.live[s.liveCount++] = i; }
     s.alive[i] = 1; ++s.generation[i]; ++s.counters.births;
     s.age[i] = 0; s.circularSince[i] = -1; s.captureExposure[i] = 0;
@@ -480,6 +580,19 @@ function step(s, dt, options) {
     var shadow=s.shadow, deathR=shadow*(s.absorb === undefined ? 1 : s.absorb);
     var inner=s.captureInner, outer=s.captureOuter, outer2=outer*outer, drag=c.gamma;
     var floor=s.captureFloor;
+    // The camera regime crossfades against the orbital one over the hole's own
+    // enable envelope: gravity and the capture drag fade out as the camera's
+    // magnification fades in, so the toggle is a thirty-second change of regime
+    // and never a cut. At blend 1 the stored velocity IS the camera velocity,
+    // so streaks, the tidal direction term and the tests all read the truth.
+    var blend=cameraOn(s), gravity=1-blend, DZ=s.depthZ;
+    var camRate=0, camDir=1, camFar=cameraFar(s), camRoll=0;
+    if (blend>0) {
+        mu*=gravity; drag*=gravity;
+        camRate=s.cameraRate>0 && isFinite(s.cameraRate) ? s.cameraRate : 0;
+        camDir=s.cameraDir<0 ? -1 : 1;
+        camRoll=isFinite(s.cameraRoll) ? s.cameraRoll : 0;
+    }
     var doDrag=o.drag !== false, doTorque=o.torque !== false, doDeaths=o.deaths !== false;
     // Per-particle subdivision. The design criterion is dt*sqrt(mu/r^3) < 0.03;
     // it binds only near the hole, so a particle out in the field integrates the
@@ -502,7 +615,7 @@ function step(s, dt, options) {
             if (count<subs && (vx*vx+vy*vy)*travel2>0.0064*s2) count=subs;
             if (count>subs) count=subs;
         }
-        var h=dt/count, half=h/2, t=clock, dead=false;
+        var h=dt/count, half=h/2, invH=count/dt, t=clock, dead=false, zn=0;
         for (var m=0;m<count;++m) {
             var r2=x*x+y*y, g=0, r=0;
             if (r2<outer2) { r=Math.sqrt(r2); g=smooth(floor,inner,r)*(1-smooth(inner,outer,r)); }
@@ -520,6 +633,23 @@ function step(s, dt, options) {
             var f=-mu/(softened*Math.sqrt(softened));
             vx+=half*f*x; vy+=half*f*y;
             var nx=x+h*vx, ny=y+h*vy;
+            if (blend>0) {
+                // The camera advances rate*h in depth and every screen position
+                // scales about the centre by z/z'. Exact, exactly invertible --
+                // which is what makes reverse playback an exact reverse -- and
+                // one multiply. A slow roll rides along in the same 2x2.
+                var z=cameraDepthOf(s,i);
+                zn=z-camDir*camRate*h;
+                if (zn<CAMERA_NEAR) zn=CAMERA_NEAR; else if (zn>camFar) zn=camFar;
+                DZ[i]=zn;
+                var mag=zn>0 ? z/zn : 1, mx=mag*x, my=mag*y;
+                if (camRoll!==0) {
+                    var ra=camRoll*h, rc=1-0.5*ra*ra;
+                    var rx=mx*rc-my*ra; my=mx*ra+my*rc; mx=rx;
+                }
+                nx+=blend*(mx-nx); ny+=blend*(my-ny);
+                vx+=blend*((nx-x)*invH-vx); vy+=blend*((ny-y)*invH-vy);
+            }
             if (ENTRY[i]<0) {
                 var entry=viewportEntry(cx+x,cy+y,cx+nx,cy+ny,width,height);
                 if (entry>=0) ENTRY[i]=t+h*entry;
@@ -563,6 +693,12 @@ function step(s, dt, options) {
             } else if (RCAP[i] === 0 && doTorque) SINCE[i]=-1;
             x=nx; y=ny; t+=h;
             if (doDeaths) {
+                // The camera's own boundary: forward a star passes the near
+                // plane, in reverse it dissolves back through the far one. Both
+                // happen at the far end of the depth fade, so nothing pops.
+                if (blend>0.5 && (camDir>0 ? zn<=CAMERA_NEAR : zn>=camFar)) {
+                    VX[i]=vx; VY[i]=vy; kill(s,i,'passed'); dead=true; break;
+                }
                 if (AGE[i]>=LIFE[i]) { VX[i]=vx; VY[i]=vy; kill(s,i,'safety'); dead=true; break; }
                 // The cheap rectangle test gates the energy root, not the reverse.
                 var px=cx+nx, py=cy+ny;
@@ -609,7 +745,11 @@ function advance(s, dt, radialSpeed, filteredFlow, centreX, centreY, rotationSig
     // per particle. 0.029 provides strict headroom under the specified 0.03
     // stability limit, and the outer step is still capped so that even the
     // finest subdivision satisfies it at the innermost surviving radius.
-    var finest=0.029/Math.sqrt(Math.max(s.mu,muTarget)/Math.pow(s.rh,3));
+    // The stability limits are gravity's, and the camera has none: a blend of 1
+    // relaxes every particle back to a single kick-drift-kick, so the regime
+    // that has no hole does not pay for the hole's innermost orbit.
+    var gravity=1-cameraOn(s);
+    var finest=0.029/Math.sqrt(Math.max(s.mu,muTarget)*gravity/Math.pow(s.rh,3));
     var fixed=Math.min(nominal,finest*subs);
     var accumulator=s.accumulator+dt;
     if (!(fixed>0) || !isFinite(fixed) || !isFinite(accumulator)) return 0;
@@ -623,7 +763,7 @@ function advance(s, dt, radialSpeed, filteredFlow, centreX, centreY, rotationSig
     // fixed/j * sqrt(mu/r^3) < 0.0145 (half the stability limit). Recomputed
     // per call because mu tracks the reactive target.
     var options=s.stepOptions || (s.stepOptions={limits:[0,0,0],substeps:subs});
-    var base=Math.pow(Math.max(s.mu,muTarget)*fixed*fixed/(0.0145*0.0145),1/3);
+    var base=Math.pow(Math.max(s.mu,muTarget)*gravity*fixed*fixed/(0.0145*0.0145),1/3);
     options.substeps=subs;
     options.limits[0]=base*base;
     options.limits[1]=Math.pow(base/Math.pow(2,2/3),2);
@@ -644,5 +784,6 @@ if (typeof module !== 'undefined' && module.exports) module.exports = {
     advance: advance, step: step, launch: launch, energy: energy, angularMomentum: angularMomentum,
     damp: damp, random: random, swept: swept, viewportEntry: viewportEntry, rescale: rescale,
     doom: doom, doomed: doomed, tdeStep: tdeStep, inject: inject,
-    visibleRadius: visibleRadius, screenRadius: screenRadius
+    visibleRadius: visibleRadius, screenRadius: screenRadius,
+    cameraLaunch: cameraLaunch, cameraDepthOf: cameraDepthOf, CAMERA_NEAR: CAMERA_NEAR
 };
