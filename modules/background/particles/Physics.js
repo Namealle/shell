@@ -223,7 +223,7 @@ function create(width, height, rh, seed, raw, birthCallback, geom) {
         centreX: width / 2, centreY: height / 2, rotationSign: 1, absorb: 1,
         // Camera regime, all runtime state like `absorb`: the renderer writes
         // them every frame. blend 0 is the pure orbital regime.
-        cameraBlend: 0, cameraDir: 1, cameraDepth: 16, cameraRate: 0, cameraRoll: 0,
+        cameraBlend: 0, cameraDir: 1, cameraDepth: 16, cameraRate: 0, cameraRoll: 0, cameraRegime: 0, refillFor: 0,
         meanLifetime: 30, lifetimeSamples: 0, lifetimeSum: 0, burstPhase: ((seed >>> 0) % 6283)/1000,
         birthCallback: birthCallback, counters: {births: 0, deaths: 0, absorbed: 0,
             escapes: 0, safety: 0, captures: 0, passed: 0, steps: 0}};
@@ -381,7 +381,19 @@ function launch(s, i, options) {
     var vt = sign*Math.sqrt(h2)/r, vr = -Math.sqrt(Math.max(0,v2-vt*vt));
     s.x[i]=x; s.y[i]=y; s.vx[i]=(vr*dx-vt*dy)/r; s.vy[i]=(vr*dy+vt*dx)/r;
     s.depthZ[i]=0;
-    return finishBirth(s, i, cls, q, o.depth);
+    var ok = finishBirth(s, i, cls, q, o.depth);
+    // Mid-crossfade, a share of births still arrives on an orbit. Give it the
+    // velocity the crossfade is about to give it anyway, instead of a pure
+    // orbital one it loses on its first step: at blend 0.88 that snap was a
+    // 264 -> 38 px/s change in one frame and an 8 px jump in the rendered
+    // streak, on a star the 0.35 s entrance fade still had at 3 % light.
+    if (ok && blend > 0) {
+        var z = cameraDepthOf(s, i);
+        var scale = (s.cameraDir < 0 ? -1 : 1)*(s.cameraRate > 0 ? s.cameraRate : 0)/z;
+        s.vx[i] += blend*((x-s.centreX)*scale-s.vx[i]);
+        s.vy[i] += blend*((y-s.centreY)*scale-s.vy[i]);
+    }
+    return ok;
 }
 // ---- Tidal disruption (phenomena.tde) ---------------------------------------
 // One doomed particle is stretched into a long stream as it falls through
@@ -736,7 +748,24 @@ function replenish(s, dt, callback) {
     var burst = depth > 0
         ? 1+depth*0.5*(Math.sin(s.clock*(2*Math.PI/23)+s.burstPhase)+Math.sin(s.clock*(2*Math.PI/71)+s.burstPhase*1.7))
         : 1;
-    s.birthAccumulator+=dt*s.birthRate*(burst>0 ? burst : 0);
+    // The rate is a feed-forward guess (population over the measured mean life)
+    // and nothing corrects it, which is fine for a regime that never changes:
+    // the orbital field sits at its target because the guess is right. A change
+    // of regime breaks the guess twice over - the old population is not a camera
+    // population and a chunk of it leaves at once, and the lives recorded across
+    // the change began under gravity - and the field measured 600 -> 314 stars
+    // with a recovery over minutes. While the camera is on, a proportional term
+    // closes the gap on its own: zero at the target, and a 300-star deficit adds
+    // fifteen births a second, so the field refills in about twenty seconds.
+    // Off, this is exactly the v7 expression.
+    var camera = cameraOn(s);
+    if (s.refillFor > 0) s.refillFor -= dt;
+    var push = s.refillFor > 0 ? Math.min(1, s.refillFor/30) : 0;
+    if (camera > push) push = camera;
+    var rate = push > 0
+        ? s.birthRate + push*(s.targetPopulation-s.aliveCount)/10
+        : s.birthRate;
+    s.birthAccumulator+=dt*rate*(burst>0 ? burst : 0);
     while (s.birthAccumulator>=1-1e-12 && s.aliveCount<s.targetPopulation) {
         var searched=0;
         while (s.alive[s.nextSlot] && searched<s.capacity) { s.nextSlot=(s.nextSlot+1)%s.capacity;++searched; }
@@ -761,6 +790,34 @@ function advance(s, dt, radialSpeed, filteredFlow, centreX, centreY, rotationSig
     // relaxes every particle back to a single kick-drift-kick, so the regime
     // that has no hole does not pay for the hole's innermost orbit.
     var camera=cameraOn(s), gravity=(1-camera)*(1-camera);
+    // The lifetime estimator is regime-specific and it has unbounded memory: an
+    // orbital life averages 97 s and a camera life 21, so carrying the old
+    // number across the toggle sets the birth rate four times too low and the
+    // field drains. Measured in the QML harness: 289 of 600 stars a minute after
+    // the hole went off. Clearing it on the crossing puts it back on its own
+    // 30 s prior, which re-converges in a hundred deaths - four seconds of
+    // camera. A run that never changes regime never touches this.
+    var regime = camera > 0.5 ? 1 : 0;
+    if (s.cameraRegime !== regime) {
+        s.cameraRegime = regime;
+        s.lifetimeSamples = 0; s.lifetimeSum = 0;
+        s.meanLifetime = 30; s.birthRate = s.targetPopulation / 30;
+        // Ninety seconds of active refill, which outlives the thirty-second
+        // envelope: the change back to the hole ends at camera 0, where a term
+        // scaled by the blend would already be gone.
+        s.refillFor = 90;
+    }
+    // The estimator's memory is unbounded, which is right for a regime that
+    // never changes and wrong for one that does: the change itself records
+    // lives that began under gravity and ended under the camera, and those
+    // inflated samples then hold the birth rate down long after. While the
+    // camera is on, halve the accumulators every 800 samples so the estimate
+    // follows the regime it is actually in.
+    if (camera > 0 && s.lifetimeSamples > 800) {
+        s.lifetimeSamples *= 0.5; s.lifetimeSum *= 0.5;
+        s.meanLifetime = (3000+s.lifetimeSum)/(100+s.lifetimeSamples);
+        s.birthRate = s.targetPopulation/s.meanLifetime;
+    }
     var finest=0.029/Math.sqrt(Math.max(s.mu,muTarget)*gravity/Math.pow(s.rh,3));
     var fixed=Math.min(nominal,finest*subs);
     var accumulator=s.accumulator+dt;

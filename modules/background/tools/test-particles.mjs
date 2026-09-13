@@ -645,10 +645,13 @@ const BIN_AREA = new Array(BINS).fill(0);
     // few hundred px/s, i.e. ~20 px in a frame. Nothing may teleport.
     check("no star jumps when the regime crossfades", worst < 60,
         `worst one-frame move ${worst.toFixed(1)} px across the 30 s change`);
-    // The same 120 s with no crossfade measures 2.8 px. The residue is a star
-    // diving at the fading mass while its swallow radius is already small;
-    // gravity leaving as the SQUARE of the envelope took it from 8.0 to 6.6.
-    check("no streak jumps when the regime crossfades", worstStreak < 8,
+    // The change of regime holds the SAME contract the orbital regime has had
+    // since v6: no one-frame streak jump over 5 px. Two things had to be true
+    // for that - gravity leaving as the square of the envelope, and a birth
+    // mid-crossfade arriving with the velocity the crossfade is about to give
+    // it - and with both, 1.73 M instance-frames across the change have none
+    // over 5 px and the same p99.9 (0.94 px) as the orbital regime alone.
+    check("no streak jumps when the regime crossfades", worstStreak < 5,
         `worst one-frame streak change ${worstStreak.toFixed(2)} px against 2.8 px with no change of regime`);
     // Population stability: the infall's burst modulation is a gust in the
     // arriving stream, and a gust lands inside one camera generation (21 s mean

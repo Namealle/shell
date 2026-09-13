@@ -220,13 +220,52 @@ things about it are not linear in the envelope, both measured:
   pull behind a 14 px event horizon, and a star diving into that gap whips
   round it — worst one-frame streak change 8.0 px against a 2.8 px baseline
   with no change of regime. Squaring takes the peak speed at a given radius
-  down by four, and 8.0 px to 6.6. It is the right way round anyway: the mass
-  should be gone before its horizon is.
+  down by four. It is the right way round anyway: the mass should be gone
+  before its horizon is.
+- **a birth mid-crossfade arrives with the velocity the crossfade is about to
+  give it.** A share `1 - blend` of births still comes off an orbit, and a pure
+  orbital velocity at blend 0.88 was a 264 -> 38 px/s change on the star's first
+  step: an 8 px jump in the rendered streak, on a star the 0.35 s entrance fade
+  still had at 3 % light. Blending the launch velocity by the same number takes
+  the change of regime to the SAME contract the orbital regime has held since
+  v6 — 1.73 M instance-frames across it, none over 5 px, and the same p99.9
+  (0.94 px) as the orbital regime alone.
+
+Three things keep the population steady, all of them off at blend 0:
+
 - **`clustering.burstDepth` fades out with the regime.** Arrival gusts are an
   INFALL idea, and a gust lands inside one camera generation (21 s mean life
   against the orbital 97) instead of averaging out: twenty minutes measured a
-  467-600 population swing against the orbital 577-600. With it off the camera
-  holds 545-600, and `clustering.share` never reached `cameraLaunch` at all.
+  467-600 swing against the orbital 577-600. With it off the camera holds
+  545-600, and `clustering.share` never reached `cameraLaunch` at all.
+- **the lifetime estimator is cleared at the crossing and bounded after it.**
+  It is a feed-forward guess with unbounded memory, which is right for a regime
+  that never changes and wrong for one that does: the change itself records
+  lives that began under gravity and ended under the camera. Cleared, it goes
+  back to its own 30 s prior; halved every 800 samples, it then follows the
+  regime it is in instead of the one it came from.
+- **a proportional term closes the rest.** Nothing ever corrected the guess,
+  because nothing had to. A change of regime breaks it twice over — the old
+  population is not a camera population and a chunk of it leaves at once — and
+  the field measured 600 -> 314 stars recovering over minutes. A term that is
+  zero at the target and adds `(target - alive)/10` births a second otherwise
+  holds the bottom of the change at ~410 and has it back at 550 within twenty
+  seconds. It stays live for 90 s after a crossing, because the change BACK to
+  the hole ends at blend 0 where a term scaled by the blend would already be
+  gone (measured 465 stars without that window, 595 with it).
+
+Verification is three-legged, because no one tool covers it: `node
+tools/test-particles.mjs` for the particle modules (80 checks), `python3
+tools/camera_flow.py` for the far field (it renders `starfield.frag` itself
+through bhrender.c on surfaceless EGL and cross-correlates two frames in the
+shader's own u = r^2/2), and `tools/camera_harness.qml` for the part only QML
+runs — the bindings, the envelope and the uniforms `publish()` writes:
+
+    cd modules/background && QT_ASSUME_STDERR_HAS_CONSOLE=1 QT_QPA_PLATFORM=offscreen \
+      /usr/lib/qt6/bin/qml tools/camera_harness.qml
+
+Without `QT_ASSUME_STDERR_HAS_CONSOLE` every line it prints is dropped and the
+run looks like it printed nothing.
 
 Cost, measured on 2160x3840 with 600 stars (simulation + render + binning, one
 core, per frame): 0.164 ms camera against 0.187 ms orbital. The camera regime is
