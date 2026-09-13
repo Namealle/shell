@@ -1,4 +1,4 @@
-# Starfield v6
+# Starfield v8
 `~/.config/caelestia/starfield.json` is watched with 150 ms debounce (XDG_CONFIG_HOME respected).
 Missing/invalid JSON, a non-object document or missing screens disables every output; deleted keys restore defaults.
 One validated snapshot owns configuration; the shell never writes it. Full schema and defaults:
@@ -16,21 +16,21 @@ One validated snapshot owns configuration; the shell never writes it. Full schem
     "decayer": {"lifeSec":[20,90],"fadeInSec":[3,8]}, "glint": {"everySec":[18,65],"widthSec":[0.8,2],"gain":0.18},
     "wanderer": {"periodSec":[30,100],"offsetPx":8}, "binary": {"periodSec":[12,45],"separationPx":[1.5,5]},
     "colorShifter": {"enabled":false,"share":0.005,"periodSec":[120,360]}},
-  "comet": {"enabled":true,"interval":[900,1800],"paletteMix":0.35,"families":{
-    "fast":{"weight":0.15,"durationSec":[4,9],"gain":0.55,"tailShortSide":[0.04,0.08],"bendShortSide":[0,0]},
-    "slow":{"weight":0.50,"durationSec":[30,65],"gain":0.26,"tailShortSide":[0.20,0.32],"bendShortSide":[0,0]},
-    "bent":{"weight":0.30,"durationSec":[12,28],"gain":0.38,"tailShortSide":[0.08,0.18],"bendShortSide":[0.02,0.06]},
-    "pulsating":{"weight":0.05,"durationSec":[20,40],"gain":0.32,"tailShortSide":[0.12,0.22],"bendShortSide":[0.02,0.06]},
-    "fragmenting":{"weight":0,"durationSec":[8,16],"gain":0.38,"tailShortSide":[0.08,0.16],"bendShortSide":[0.02,0.06],"cooldownSec":7200},
-    "spiral":{"weight":0,"durationSec":[18,35],"gain":0.25,"tailShortSide":[0.08,0.16],"bendShortSide":[0,0.06],"cooldownSec":14400}}},
+  "comet": {"enabled":true,"interval":[300,900],"paletteMix":0.35,"families":{
+    "fast":{"weight":0.18,"durationSec":[4,9],"gain":0.95,"tailShortSide":[0.06,0.11],"bendShortSide":[0,0]},
+    "slow":{"weight":0.34,"durationSec":[30,65],"gain":0.70,"tailShortSide":[0.20,0.32],"bendShortSide":[0,0]},
+    "bent":{"weight":0.28,"durationSec":[12,28],"gain":0.80,"tailShortSide":[0.12,0.20],"bendShortSide":[0.02,0.06]},
+    "pulsating":{"weight":0.08,"durationSec":[20,40],"gain":0.75,"tailShortSide":[0.14,0.24],"bendShortSide":[0.02,0.06]},
+    "fragmenting":{"weight":0.02,"durationSec":[8,16],"gain":0.80,"tailShortSide":[0.08,0.16],"bendShortSide":[0.02,0.06],"cooldownSec":7200},
+    "spiral":{"weight":0.10,"durationSec":[18,35],"gain":0.65,"tailShortSide":[0.08,0.18],"bendShortSide":[0,0.06],"cooldownSec":14400}}},
   "meteors": {"enabled":true,"interval":[45,120],"companionChance":0.04,"fireballChance":0.01,"paletteMix":0.25,"families":{
-    "straight":{"weight":0.75,"durationSec":[0.7,1.3],"gain":0.85,"tailShortSide":[0.08,0.14],"bendShortSide":[0,0]},
+    "straight":{"weight":0.72,"durationSec":[0.7,1.3],"gain":0.85,"tailShortSide":[0.08,0.14],"bendShortSide":[0,0]},
     "curved":{"weight":0.20,"durationSec":[0.9,1.7],"gain":0.80,"tailShortSide":[0.04,0.10],"bendShortSide":[0.005,0.02]},
-    "skipping":{"weight":0.05,"durationSec":[1.2,2.2],"gain":0.70,"tailShortSide":[0.08,0.14],"bendShortSide":[0,0]}}},
-  "satellites": {"enabled":true,"interval":[240,480]},
-  "events": {"headCap":3,"phenomenonCap":2,"dramaCooldownSec":4500,
-    "shower":{"enabled":true,"everyHours":[2,5],"durationSec":[30,60],"gain":0.60},
-    "slowWanderer":{"enabled":true,"everyHours":[2,6],"durationSec":[180,360],"gain":0.40}},
+    "skipping":{"weight":0.08,"durationSec":[1.2,2.2],"gain":0.70,"tailShortSide":[0.08,0.14],"bendShortSide":[0,0]}}},
+  "satellites": {"enabled":true,"interval":[150,330]},
+  "events": {"headCap":3,"phenomenonCap":3,"phenomenonGainCap":1.6,"dramaCooldownSec":900,"rateScale":1,
+    "shower":{"enabled":true,"everyHours":[0.75,2],"durationSec":[30,60],"gain":0.60},
+    "slowWanderer":{"enabled":true,"everyHours":[0.75,2],"durationSec":[180,360],"gain":0.75}},
   "phenomena": {}, "blackHole": {}, "particles": {}, "particlesEnabled": true,
   "reactive": {"enabled":true,"contextScope":"perScreen","processPresenceWeight":0.35,"paletteBudget":0.45,
     "birthTauSec":60,"liveTauSec":90,"maxChangePerSec":0.005,
@@ -54,27 +54,30 @@ One validated snapshot owns configuration; the shell never writes it. Full schem
       {"signal":"gpuLoad","enabled":false,"add":{"events":{"tde":0.3}}}, {"signal":"night","enabled":false,"add":{"events":{"starBirth":0.3,"supernova":-0.3}}}]}
 }
 ```
-The eight v6 event families are omitted above only for length: each defaults exactly to the calm block below, so an absent family *is* that block. `phenomena` is
-FORWARDED like `blackHole`/`particles` (an absent key keeps the renderer's default); `events` families are defaulted here. Calm defaults, written out to paste:
+The eight event families are omitted above only for length: each defaults exactly to the block below, so an absent family *is* that block. `phenomena` is
+FORWARDED like `blackHole`/`particles` (an absent key keeps the renderer's default); `events` families are defaulted here. Defaults, written out to paste:
 ```json
-"events": {"headCap":3,"phenomenonCap":2,"dramaCooldownSec":4500,
-  "starBirth":{"enabled":true,"everyMinutes":[20,45],"durationSec":[180,360],"gain":0.22,"condenseSec":[40,90],"haloPx":[18,4],"paletteMix":0.30},
-  "nova":{"enabled":true,"everyMinutes":[25,50],"riseSec":[1.5,3],"holdSec":[0.5,1.5],"decaySec":[25,60],"gain":0.45,"shellShortSide":[0.02,0.04],"shellGain":0.12,"paletteMix":0.30},
-  "redGiant":{"enabled":true,"everyMinutes":[45,90],"durationSec":[240,480],"gain":0.28,"swellSec":[90,150],"collapseSec":[45,75],"nebulaShortSide":0.015,"nebulaGain":0.06},
-  "supernova":{"enabled":true,"everyHours":[1.5,3],"riseSec":[0.8,1.5],"holdSec":[0.5,1.5],"decaySec":[90,240],"gain":0.70,"remnantSec":[180,360],"shellShortSide":[0.06,0.11],"shellGain":0.10,"echoGain":0.04,"echoDelaySec":[60,120],"hypernovaShare":0.15,"hypernovaGain":0.78,"hypernovaCooldownSec":21600,"paletteMix":0.35},
-  "kilonova":{"enabled":false,"minSpacingSec":3600,"maxPerHour":1,"flashSec":0.4,"gain":0.55,"ringShortSide":0.03,"ringSec":[8,15]},
-  "pulsar":{"enabled":false,"everyHours":[2,4],"durationSec":[240,600],"periodSec":[0.8,2],"gain":0.30,"floorFraction":0.60,"edgeSec":0.12},
-  "gammaBurst":{"enabled":false,"everyHours":[4,12],"flashSec":[0.5,0.8],"gain":0.45,"beamShortSide":[0.10,0.18],"afterglowSec":[30,90],"cooldownSec":14400},
+"events": {"headCap":3,"phenomenonCap":3,"phenomenonGainCap":1.6,"dramaCooldownSec":900,"rateScale":1,
+  "starBirth":{"enabled":true,"everyMinutes":[8,16],"durationSec":[80,170],"gain":0.60,"condenseSec":[25,55],"haloPx":[40,9],"paletteMix":0.30},
+  "nova":{"enabled":true,"everyMinutes":[6,13],"riseSec":[1.2,2.4],"holdSec":[0.6,1.6],"decaySec":[20,45],"gain":0.90,"shellShortSide":[0.035,0.06],"shellGain":0.26,"paletteMix":0.30},
+  "redGiant":{"enabled":true,"everyMinutes":[18,34],"durationSec":[140,280],"gain":0.60,"swellSec":[45,80],"collapseSec":[30,55],"nebulaShortSide":0.030,"nebulaGain":0.16},
+  "supernova":{"enabled":true,"everyHours":[0.35,0.8],"riseSec":[0.8,1.5],"holdSec":[0.6,1.6],"decaySec":[50,130],"gain":1.35,"remnantSec":[90,200],"shellShortSide":[0.09,0.15],"shellGain":0.24,"echoGain":0.10,"echoDelaySec":[40,90],"hypernovaShare":0.15,"hypernovaGain":1.60,"hypernovaCooldownSec":10800,"paletteMix":0.35},
+  "kilonova":{"enabled":true,"everyHours":[0.6,1.4],"flashSec":0.6,"gain":1.10,"ringShortSide":0.05,"ringGain":0.34,"ringSec":[8,15]},
+  "pulsar":{"enabled":true,"everyHours":[0.5,1.1],"durationSec":[120,260],"periodSec":[0.9,2.2],"gain":0.70,"floorFraction":0.55,"edgeSec":0.14},
+  "gammaBurst":{"enabled":true,"everyHours":[0.7,1.8],"riseSec":[0.4,0.7],"flashSec":[0.5,0.8],"gain":1.00,"beamShortSide":[0.10,0.18],"beamGain":0.42,"afterglowSec":[30,90]},
   "satelliteGlint":{"enabled":true,"gain":2.2,"widthSec":[1.5,3]}},
 "phenomena": {"tde":{"enabled":true,"everyMinutes":[40,90],"streakPx":[60,140],"stretchSec":[6,12],"fragments":[4,8],"diskFlash":0.15},
   "microlensing":{"enabled":true,"gainCap":2.5}, "moods":{"clearing":0.15,"nebular":0.15}}
 ```
-Lively (notable every ~3 min, dramatic every ~35 min). Same blocks with these keys replaced; everything else keeps the calm value:
+Measured on DP-3 (1440x2560), three seeds, six hours each: 39 meteors, 5.7 comets, 14 satellite passes, 4.9 star births, 6.2 novae, 2.3 red giants,
+0.8 supernovae, 1.2 pulsars, 0.8 kilonovae, 0.7 gamma-ray bursts, 0.7 showers and 0.6 slow wanderers **per hour** - a notable non-meteor event every
+~2.7 min and something dramatic every ~26 min. `modules/background/tools/test-events.mjs --audit [config.json]` reprints that table for any config
+on all three of his outputs; it runs the shipped scheduler, not a copy of it.
+**`events.rateScale` (0-4, default 1) is the one dial for all of it.** It divides every interval in the catalogue - meteors, comets, satellites,
+showers, wanderers and the seven phenomena. 2 is twice as many events, 0.5 half as many, **0 turns every scheduled event off** (nothing is captured,
+so it costs nothing). Everything else stays as documented; per-family keys still override on top of it. Calm, for a quieter sky:
 ```json
-"events": {"dramaCooldownSec":2100, "starBirth":{"everyMinutes":[10,20]}, "nova":{"everyMinutes":[8,18]},
-  "redGiant":{"everyMinutes":[20,35]}, "supernova":{"everyHours":[0.67,1.33]},
-  "pulsar":{"enabled":true,"everyHours":[0.75,1.5]}, "gammaBurst":{"enabled":true,"everyHours":[6,6]}},
-"phenomena": {"tde":{"everyMinutes":[15,30]}}
+"events": {"rateScale": 0.45, "phenomenonGainCap": 1.0, "pulsar":{"enabled":false}, "gammaBurst":{"enabled":false}}
 ```
 `blackHole` and `particles` are FORWARDED, not defaulted: only keys the file carries reach the renderer, so an absent
 key keeps the renderer's own default and a `preset` keeps supplying its fallbacks. Recommended for this machine:
@@ -108,28 +111,64 @@ Targets neutral: calm/live/hole 0.5; mix comes from palette, capped by legacy pa
 Archetype bounds: pulsator period 6–360 s/amplitude 0–0.22; decayer life 20–600 s/entrance 3–20 s; glint every 18–3600 s/width 0.8–2 s/gain ≤0.18.
 Wanderer period 30–600 s/offset ≤8 px; binary period 12–360 s/separation 0–5 px; shifter period 120–3600 s/share ≤0.005, disabled initially.
 Family weights 0–1 divide scheduled starts; duration stays within the listed range, gain/tail/bend within 0–listed maximum; ranges are ordered two-number arrays.
-Fragmenting share ≤2%, cooldown ≥7200 s; spiral cooldown ≥14400 s (both ≤604800). Event headCap 1–3; hourly spacing 2–168 h; episode duration/gain bounded as shown.
+Fragmenting share ≤2%, cooldown ≥7200 s; spiral cooldown ≥14400 s (both ≤604800). Event headCap 1–3; hourly spacing 0.25–168 h; episode duration/gain bounded as shown.
 Event intervals allow up to 86400 s; minima: meteor 3, comet 60, satellite 45. Companions/fireballs 0–1; three is the hard head cap, normally two (renderer).
-v6 adds phenomenonCap 1–2 (long faint slots, separate from headCap and never spilling into it) and dramaCooldownSec 600–86400 across all dramatic families.
-Schedules: `everyMinutes` ordered pair 1–1440, `everyHours` ordered 0.25–168. Every `gain` is 0–the value listed in the calm block; shells/rings/nebulae ≤0.15 short
+phenomenonCap 1–3 (long faint slots, separate from headCap and never spilling into it), phenomenonGainCap 0.3–3, dramaCooldownSec 300–86400 across all dramatic
+families (supernova, kilonova, gamma-ray burst), rateScale 0–4 dividing every interval.
+Schedules: `everyMinutes` ordered pair 1–1440, `everyHours` ordered 0.25–168. Every `gain` is 0–the value listed in the defaults block; shells/rings/nebulae ≤0.25 short
 sides, GRB beams ≤0.25, satelliteGlint gain is a 1–4 multiplier on an existing pass; durations 10–1800 s, sub-envelopes (rise/hold/decay/swell/collapse/echo/afterglow)
-0–600 s, remnant ≤1800 s, cooldowns 600–604800 s, hypernovaShare 0–1, kilonova maxPerHour 0–4, `haloPx` is a from–to span 0.5–64 px and may descend.
-Anti-strobe floors are VALIDATOR-ENFORCED, not advice: `riseSec` ≥0.8 s (nova and supernova), pulsar `periodSec` ≥0.8 s, `floorFraction` ≥0.5 (the trough never drops below half the peak, so a pulsar modulates instead of blinking), `edgeSec` ≥0.10 s, glint `widthSec` ≥0.5 s. A value under a floor is rejected, not raised.
-Every v6 key REJECTS instead of repairing — a bad type, an out-of-range number, an inverted pair or an unknown key inside a family drops with an index-only warning and that key's documented default applies — while the v4 keys beside them (headCap, shower, slowWanderer) keep their v4 clamping, unchanged.
+0–600 s, remnant ≤1800 s, cooldowns 600–604800 s, hypernovaShare 0–1, `haloPx` is a from–to span 0.5–96 px and may descend.
+Anti-strobe floors are VALIDATOR-ENFORCED, not advice: `riseSec` ≥0.8 s (nova and supernova), ≥0.35 s (gamma-ray burst, which is sub-second by nature — ten frames at
+30 fps, eased); kilonova `flashSec` ≥0.35 s; pulsar `periodSec` ≥0.8 s, `floorFraction` ≥0.5 (the trough never drops below half the peak, so a pulsar modulates instead
+of blinking), `edgeSec` ≥0.10 s; glint `widthSec` ≥0.5 s. A value under a floor is rejected, not raised. The floors are PROVEN by sampling every published frame at
+30 Hz over three simulated hours, per family, against its own eased-rise bound of 0.05·peak/floor per frame (`test-events.mjs`), not asserted.
+Every event-family key REJECTS instead of repairing — a bad type, an out-of-range number, an inverted pair or an unknown key inside a family drops with an index-only warning and that key's documented default applies — while the v4 keys beside them (headCap, shower, slowWanderer) keep their v4 clamping, unchanged.
+v8 key changes: kilonova drops `minSpacingSec`/`maxPerHour` (it is interval-scheduled now and `dramaCooldownSec` spaces it) and gains `everyHours`/`ringGain`;
+gammaBurst drops `cooldownSec` (same reason) and gains `riseSec`/`beamGain`. A file carrying a dropped key warns with its index and is otherwise unaffected.
 `phenomena` is a closed sparse object like `particles`: tde{enabled, everyMinutes 1–1440, streakPx [0,160] — the maximum feeds the one-time particle atlas ceiling, see PARTICLES.md — stretchSec [1,120], fragments [1,16] (renderer rounds), diskFlash 0–0.5}, microlensing{enabled, gainCap 1–3}, moods{clearing, nebular 0–1}.
-RENDERER, v6 so far: `microlensing` multiplies far-layer stars by clamp(1/|det J|, 1, gainCap) wherever the shader already filters them through the lens Jacobian — inside `bhGeometry.y` only, no scheduler, no slot, ~4 ALU. A background star drifting past the
+RENDERER: `microlensing` multiplies far-layer stars by clamp(1/|det J|, 1, gainCap) wherever the shader already filters them through the lens Jacobian — inside `bhGeometry.y` only, no scheduler, no slot, ~4 ALU. A background star drifting past the
 hole brightens and returns over the tens of seconds the drift takes. It applies whatever `particlesEnabled` is (the far field is shared); `"microlensing": {"enabled": false}` restores the v5 far field exactly. `moods.clearing`/`moods.nebular` add mood kinds 4 and 5
 to the existing 900 s slots, taking their share off the top so the four v5 kinds keep their proportions and a zero share reproduces v5's distribution: clearing thins far dust by 0.07 acceptance and warms the middle layer, nebular doubles the tinted middle-layer
 share. Both interpolate the two outcomes by the eased weight rather than moving a threshold, so no star switches on a frame. `events.satelliteGlint` modulates the existing satellite slot's gain by a birth-frozen Gaussian in time (gain 1–4, width 0.5–10 s, placed in
-the middle half of the pass) — no new slot, no new uniform, no shader change. `starBirth`, `nova`, `redGiant`, `supernova` and `pulsar` are DRAWN, as kinds 5–9 on two phenomenon slots. They share one shader kernel (style 3, radial: core + halo + ring + echo ring), so they differ only in envelope, colour, size and schedule:
-head=(x, y, coreSigmaPx, peak), shape=(haloSigmaPx, ringGain, ringWidthPx, ringRadiusPx), tail01=(echoRadiusPx, echoGain, haloGain, coreGain). Each component's gain is absolute and is divided by the slot peak, so a nova's shell outlives the core that threw it and a
-light echo outlives the shell. Placement is REJECTED, never clamped, inside 1.6×the lensing reach (events composite after the disk and are not shadow-masked) or within 0.05 short sides of an edge; eight attempts, then the episode is skipped. Slots 3–4 carry five
-vectors rather than a transient slot's seven (160 B, UBO reflection 1360 → 1520 B of 16384); two idle slots measured no cost at all (19.8 % of a core against 20.6 % for v5 on the same output, GPU 17.8 % against 18.4 %), so the brainstorm's optional `phenomenaActive`
-gate is not needed. Slot ownership is STICKY: an episode claims a slot only in its first 0.25 s and keeps it until it ends, so nothing can appear mid-life at whatever gain it had reached; scheduling already keeps at most `phenomenonCap` overlapping. The two classes
-never spill into each other — transient heads reserve only against transients, phenomena only against phenomena. Combined phenomenon gain is capped at 0.55 outside a supernova flash, the exemption easing away over three seconds rather than switching.
+the middle half of the pass), and now also drives the head flash so the glint blooms. A satellite and a slow wanderer used a FIXED 0.65 px sigma whatever the buffer —
+14 lit pixels against a bright star's 1.55 px sigma and 243/255, smaller AND dimmer than an ordinary star; both scale with the near-layer optics now (0.62 and 0.56 of
+it) and their gain cap is 0.55 and 0.75 rather than 0.33 and 0.40. All seven phenomena are DRAWN, as kinds 5–11 on **three** phenomenon slots (event3/4/5, 80 B each; UBO reflection 1520 → 1600 B of 16384). `starBirth`, `nova`, `redGiant`,
+`supernova`, `pulsar` and `kilonova` share one kernel (style 3, radial: core + halo + ring + echo ring) and differ only in envelope, colour, size and schedule:
+head=(x, y, coreSigmaPx, peak), shape=(haloSigmaPx, ringGain, ringWidthPx, ringRadiusPx), tail01=(echoRadiusPx, echoGain, haloGain, coreGain). Each component's gain is
+absolute and is divided by the slot peak, so a nova's shell outlives the core that threw it, a light echo outlives the shell, and a kilonova's ring reddens through the
+r-process colour after the flash that threw it has gone. `gammaBurst` is **style 4**: core + halo + two OPPOSED cones, no rings, so the ring channel is re-read as the
+beam — tail01=(haloSigmaPx, haloGain, coreGain, beamGain), shape=(dirX, dirY, beamLengthPx, beamWidthPx). Placement is REJECTED, never clamped, inside 1.6×the lensing
+reach (events composite after the disk and are not shadow-masked) or within 0.05 short sides of an edge; eight attempts, then the episode is skipped.
+Slot ownership is STICKY: an episode claims a slot in its first second and keeps it until it ends, so nothing can appear mid-life at whatever gain it had reached.
+**v6 held the KIND in the slot, and publishEvents replaces `s.events[kind]` with the next episode the instant the current one ends: the release test always read a future
+end time, so slots 3–4 stayed owned by the first star birth and the first nova for the life of the process. Measured over six hours on three seeds, red giant was
+scheduled 0.83/h and drawn 0 s, supernova 0.33/h and drawn 0 s — neither had ever reached the screen.** The slot holds the EPISODE now, and a phenomenon that finds every
+slot busy at its moment is retired and rescheduled rather than silently dropped. The two classes never spill into each other — transient heads reserve only against
+transients, phenomena only against phenomena. Combined phenomenon gain is capped at `phenomenonGainCap` (1.6) outside a supernova or burst flash, the exemption easing
+away over two to three seconds rather than switching.
+**`pendingEvents`** is the queue for an episode that arrives from outside the interval scheduler: `pushEvent(family, delaySec, overrides)` captures it from the same hash
+stream and `drainPending()` lands it on that family's entry once the entry is free, in order, bounded to four and dropped if it is still waiting two minutes after its
+moment. It never evicts a running episode and obeys exactly the same slot and cap rules. This is the hook a particle merge (kilonova) or any other detection calls.
 `phenomena.tde` is DRAWN, by the particles alone — no slot, no uniform, no shader change; PARTICLES.md owns it. One doomed particle's packed streak is ramped to `streakPx` over `stretchSec` while its core dims and reddens, it splits into `fragments` siblings
 along its own orbit, and its head's trail then eases back over six seconds. `streakPx` is clamped to 120 px by the renderer whatever the service validates up to 160: 120 is what the packed streak byte carries. `diskFlash` rides the hole's brightness channel for 20 s.
-`kilonova` and `gammaBurst` are validated and forwarded but NOT yet drawn (they need the pending-event queue and a beam style).
+
+**A comet is style 5 (`cometField`), not a wider meteor.** v6 drew it as one Gaussian polyline behind the nucleus: measured on DP-3, a slow comet peaked at 116/255 with
+2566 lit pixels — the same shape as a meteor, only slower (his report, ledger 2283). It is now a nucleus inside a two-stage coma, a straight narrow bluish **ion tail**
+pointing directly away from the only light source on the sky (the hole; the radial centre when the hole is off) with rays across it, and a broader warmer **dust tail**
+lagging the ion tail by a fixed birth-frozen angle, parabolically curved and striated. Both tails brighten toward the nucleus. The parabola is applied to the SAMPLE
+point, so a curved tail costs six ops instead of a curve solve. The lag is an ANGLE, never a blend of anti-sunward with anti-velocity: a comet receding straight from the
+light has those antiparallel and the blend collapses the dust tail onto the ion tail. Everything travels in the slot's existing seven vectors — head=(x, y,
+nucleusSigmaPx, gain), tail01=(ionDirX, ionDirY, ionLengthPx, ionWidthPx), tail23=(dustDirX, dustDirY, dustLengthPx, dustWidth0Px), tail4=(dustCurve, comaSigmaPx),
+shape=(ionGain, dustGain, comaGain, striationAmp) — so no uniform was added. `cometLook()` in Starfield.qml is the whole of the per-family difference: **fast** is a
+bright blue spike with a stub of dust, **slow** a broad curved fan, **bent** nearly all dust, **pulsating** breathes its coma, **fragmenting** gives each branch its own
+coma and half-tail, **spiral** sweeps its tail around the hole. The direction is recomputed every publish because it is a property of where the comet *is*.
+**Meteors** keep their streak and gain an entry flash (`shape.w` widens the halo and the taper together, so it blooms rather than brightening) and an ionisation train
+(a wide, dim tail component with a shallower `(1-u)` falloff): 420 → 2517 lit pixels at the same 255/255 head.
+Measured v7 → v8 at 1:1 on 1440x2560, peak/255 · lit px · lit radius px, against a near-layer star at 243/255 and 1.55 px sigma
+(`starfield-v2/evidence/v8-events-sheet.png`, `v8-events-before-after.png`, rendered offscreen through the real kernels by `tools/events-sheet.mjs`):
+comet-slow 116·2566·86 → 255·29238·383; comet-bent 170·3441·102 → 255·36623·365; satellite 130·**14**·2 → 255·462·15; starBirth 46·216·9 → 131·1936·26;
+nova 125·840·17 → 255·5488·42; redGiant 74·7472·49 → 163·39760·113; supernova 222·1468·22 → 255·15308·70; kilonova and gammaBurst not drawn at all → 255·6676·47 and
+255·12282·178. Worst-case cost, six busy slots (three wide comets and three phenomena) at 3440x1440 on llvmpipe: below this harness's ~0.5 ms measurement floor.
 Black hole: `modules/background/BLACKHOLE.md` owns every default, the taste caps and the shader's own limiters; missing blackHole is disabled.
 Flat bounds: size 0.01–0.2 short sides, tilt 1–35° (the renderer accepts 80, only 35 is silhouette-verified), intensity/warmth/halos 0–1,
 spin 0–2 (pattern speed), inner 3–6 rs, outer max(inner+0.5, 3.5)–12 rs, beam 0–0.2, photonWidth 0.001–0.02 shadow radii,
@@ -176,7 +215,8 @@ Gradualness: source smoothing/freshness remains; stale inputs fade over 120 s, w
 The frozen renderer contract keeps filter metadata at these constants; hole filtering is 120 s, max change 0.002/s. Enabling/disabling the hole takes ≥30 active seconds.
 New births freeze palette, archetype and parameters (including colour-shifter trajectory); event edits affect future schedules. Renderer owns descriptor history and phase continuity.
 Glue passes archetypes/farWeights plus `archetypeParams.palette.{variationWhite,foregroundWhite}`. `eventFamilies` is the single object Background.qml forwards: comet,
-meteors, shower, slowWanderer, the eight v6 families, `phenomena`, `phenomenonCap` and `dramaCooldownSec`. Only headCap travels separately, as `eventHeadCap`.
+meteors, shower, slowWanderer, the eight event families, `phenomena`, `phenomenonCap`, `phenomenonGainCap`, `dramaCooldownSec` and `rateScale`. Only headCap travels
+separately, as `eventHeadCap`.
 Privacy: match class first, read at most 512 title chars locally; retain only category strengths, never titles/URLs/history/media metadata/notification content. No title hashing or transmission.
 Context: mapped active/open-special/pinned windows on that output; focused weight 1, other visible 0.6, hidden/minimized 0. Visibility is approximate, not pixel occlusion.
 `ambient dump` includes rounded birth/live, paletteWeights[16], archetypeWeights[6], mix/calm/hole[4], eventBias{family:multiplier}, numeric signals and availability; no titles.
