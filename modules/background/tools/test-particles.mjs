@@ -215,7 +215,7 @@ const radiusOf = (d, b) => Math.hypot(d[b] - W / 2, d[b + 1] - H / 2);
         visit: (items, bins, pool) => {
             if (!ceiling) {
                 const c = Appearance.bounds(pool);
-                ceiling = Packing.capacity(bins, c.maxItems, c.maxSupport, c.maxFlares, c.flareSupport, c.maxBends, c.bendSupport);
+                ceiling = Packing.capacity(bins, c.maxItems, c.maxSupport, c.maxFlares, c.flareSupport, c.maxBends, c.bendSupport, c.maxTde, c.tdeSupport);
             }
             const layout = Packing.layout(null, bins, items.count, 0);
             if (layout.height > worst) worst = layout.height;
@@ -226,6 +226,73 @@ const radiusOf = (d, b) => Math.hypot(d[b] - W / 2, d[b + 1] - H / 2);
     check("the stretch budget stays inside its configured instance count",
         sim.pool.stretchBudget > 0 && sim.pool.stretchBudget <= 1,
         `budget ${sim.pool.stretchBudget.toFixed(3)}`);
+}
+
+// -------------------------------------------------- tidal disruption (R7)
+// Particles only: no slot, no uniform, no shader change. The victim's packed
+// streak is ramped to the configured length and it then splits into siblings.
+{
+    const input = birthInput();
+    const pool = Physics.create(W, H, RH, 11, {}, (p, i) => Appearance.birth(p, i, input));
+    pool.absorb = 1;
+    let items = null;
+    for (let f = 0; f < 30 * 90; ++f) {
+        Physics.advance(pool, DT, 6, 0.5, W / 2, H / 2, 1, pool.birthCallback);
+        items = Appearance.render(items, pool, {twinkle: 0.22});
+    }
+    const before = pool.aliveCount;
+    const fired = Physics.doom(pool, {streakPx: 140, stretchSec: 8, fragments: 6});
+    check("a victim is found on a deep inbound orbit", fired && pool.tde.index >= 0,
+        fired ? `particle ${pool.tde.index}, pericentre ${(pool.pericentre[pool.tde.index] / RH).toFixed(2)} Rh` : "none");
+    const victim = pool.tde.index;
+    // The ramp must be gradual, and the rendered streak must actually reach it.
+    let prev = 0, worstStep = 0, peak = 0, split = 0;
+    for (let f = 0; f < 30 * 14; ++f) {
+        Physics.advance(pool, DT, 6, 0.5, W / 2, H / 2, 1, pool.birthCallback);
+        items = Appearance.render(items, pool, {twinkle: 0.22});
+        const d = items.data;
+        for (let j = 0; j < items.count; ++j) {
+            const b = j * S;
+            if (d[b + IID] !== victim) continue;
+            const v = d[b + ISTREAK];
+            if (prev) worstStep = Math.max(worstStep, Math.abs(v - prev));
+            if (v > peak) peak = v;
+            prev = v;
+        }
+        if (!split && pool.counters.tde) split = f;
+    }
+    check("the trail is drawn out to the longest the packed byte carries", peak > 110,
+        `peak rendered streak ${peak.toFixed(1)} px (140 requested, field ceiling 120)`);
+    // This is the whole point: the ramp up AND the fade back after the split
+    // are both gradual. The first version snapped 120 px -> 8 px on the frame
+    // the victim split, which is the same defect as the old bend cap.
+    check("it is drawn out and drawn back over many frames, never in one", worstStep < 6,
+        `worst single-frame change ${worstStep.toFixed(2)} px`);
+    check("the victim then splits into siblings", pool.counters.tde === 1 && pool.counters.tdeFragments >= 4,
+        `${pool.counters.tdeFragments} siblings at frame ${split} (${(split / 30).toFixed(1)} s), population ${before} -> ${pool.aliveCount}`);
+    for (let f = 0; f < 30 * 8; ++f) {
+        Physics.advance(pool, DT, 6, 0.5, W / 2, H / 2, 1, pool.birthCallback);
+        items = Appearance.render(items, pool, {twinkle: 0.22});
+    }
+    check("the descriptor is cleared once the fade is over", pool.tde === null);
+    // The whole point of the ceiling work: a 160 px trail must fit the atlas
+    // that was sized once, before any disruption existed.
+    const c = Appearance.bounds(pool);
+    const bins = Binning.build(null, items, W, H);
+    const sized = Packing.capacity(bins, c.maxItems, c.maxSupport, c.maxFlares, c.flareSupport, c.maxBends, c.bendSupport, c.maxTde, c.tdeSupport);
+    const without = Packing.capacity(bins, c.maxItems, c.maxSupport, c.maxFlares, c.flareSupport, c.maxBends, c.bendSupport, 0, 0);
+    check("the atlas ceiling covers the longest disruption trail", c.tdeSupport > c.bendSupport && sized >= without,
+        `tdeSupport ${c.tdeSupport.toFixed(1)} vs bendSupport ${c.bendSupport.toFixed(1)}; ceiling ${without} -> ${sized} rows`);
+    let worstHeight = 0;
+    Physics.doom(pool, {streakPx: 160, stretchSec: 6, fragments: 8});
+    for (let f = 0; f < 30 * 12; ++f) {
+        Physics.advance(pool, DT, 6, 0.5, W / 2, H / 2, 1, pool.birthCallback);
+        items = Appearance.render(items, pool, {twinkle: 0.22});
+        const b2 = Binning.build(null, items, W, H);
+        worstHeight = Math.max(worstHeight, Packing.layout(null, b2, items.count, 0).height);
+    }
+    check("the live atlas stays inside it through a full disruption", worstHeight <= sized,
+        `worst ${worstHeight} of ${sized} rows`);
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

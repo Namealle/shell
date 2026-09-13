@@ -26,12 +26,19 @@ function layout(previous, bins, count, minHeight) {
 // sampled texture is allocated once and never resized. A single resize of the
 // sampled texture cost 13 ms -> 6700 ms per frame of scene-graph submission on
 // llvmpipe, and it did not recover; a pre-sized texture never pays it.
-function capacity(bins, maxItems, maxSupport, maxFlares, flareSupport, maxBends, bendSupport) {
+function capacity(bins, maxItems, maxSupport, maxFlares, flareSupport, maxBends, bendSupport, maxTde, tdeSupport) {
     var perAxis = Math.floor(2 * maxSupport / 32) + 2;
     var references = maxItems * perAxis * perAxis;
     if (maxBends > 0) {
         var bendAxis = Math.floor(2 * bendSupport / 32) + 2;
         references += maxBends * (bendAxis * bendAxis - perAxis * perAxis);
+    }
+    if (maxTde > 0 && tdeSupport > 0) {
+        // A tidal-disruption victim is one instance with a far wider footprint
+        // than any other, so it is a bounded addition like the flare set.
+        var tdeAxis = Math.floor(2 * tdeSupport / 32) + 2;
+        var wideAxis = maxBends > 0 ? Math.floor(2 * bendSupport / 32) + 2 : perAxis;
+        references += maxTde * Math.max(0, tdeAxis * tdeAxis - wideAxis * wideAxis);
     }
     if (maxFlares > 0) {
         // render() caps the flared instances, so their much larger footprint is

@@ -115,6 +115,46 @@ above the budget while the relaxations catch up.
 Flags bit 6 is only a hint that the deformation is nonzero; the shader and the
 packer both weight on the scalar. Node tests: `modules/background/tools/test-particles.mjs`.
 
+## Tidal disruption (v6, `phenomena.tde`)
+
+Particles only: no event slot, no uniform, no shader change. The renderer owns
+the schedule (`Starfield.qml` `scheduleTde()`), `Physics.js` owns the victim and
+the split, `Appearance.js` owns the trail.
+
+`Physics.doom(s, {streakPx, stretchSec, fragments})` picks a victim: alive, not
+already captured, pericentre inside 6 Rh, currently between the capture radius
+and 12 Rh, inbound, and nearest to its own pericentre so the stretch and the
+closest approach coincide. It returns false when no particle qualifies; the
+renderer retries in five seconds rather than losing the episode.
+
+`Appearance.render()` then ramps that particle's packed streak to `streakPx`
+over `stretchSec` on a smoothstep, dimming its core by up to 55 % and reddening
+it (green -10 %, blue -26 %) as the same light spreads over a far longer trail.
+`streakPx` is clamped to **120 px, not the service's 160**: 120/255 per code is
+what the packed streak byte carries, and `Physics.doom` clamps to the same
+number so the atlas and the renderer agree.
+
+`tdeStep()` runs once per outer step, outside `step()`, so the hot loop pays
+nothing. At `stretchSec` it injects `fragments` siblings spread ALONG the orbit
+(a spread in specific energy, not a spray of directions) through `inject()`,
+which places them on the victim's own state rather than launching them from an
+edge. The descriptor is then held for a six-second fade so the head's own trail
+eases back to its natural length: clearing it at the split snapped the rendered
+streak from 120 px to 8 px on one frame, the same defect as the old bend cap.
+
+`diskFlash` rides the hole's brightness channel (`ambientHole.z`, which
+`bhLook.x` reads) for twenty seconds, eased in over the first quarter and out
+over the last half on top of the hole's own 30 s slew. The brainstorm called it
+`activity`, but activity is the pattern-speed channel and would not brighten
+anything.
+
+ATLAS: `bounds()` returns `maxTde`/`tdeSupport` for one instance at the 120 px
+ceiling and `capacity()` adds it as a bounded addition, like the flare set —
+about 72 extra references in total. This is unconditional and does not consult
+the live `phenomena` config, because the atlas is allocated once per
+configuration and a resize of the sampled texture cost 13 ms -> 6700 ms per
+frame on llvmpipe and never recovered.
+
 Far dust flows inward on the existing radial cell grid, which advances at a
 constant rate in u = r^2/2 and therefore moves at dr/dt proportional to 1/r:
 about 100 px/s at 1 Rh, 14 px/s at mid-screen and 7 px/s in the corner of a

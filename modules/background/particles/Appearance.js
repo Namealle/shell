@@ -129,6 +129,10 @@ function birth(s, i, input) {
 // FLARE_CORE_MAX keeps
 // the bin radius inside the support byte.
 var FLARE_SUPPORT = 30.0, FLARE_OPTICS = 0.55, FLARE_CORE_MAX = 4.8;
+// The longest trail that exists: the packed streak byte carries 120/255 per
+// code, so a service request above 120 px is met with 120. Physics.doom()
+// clamps to the same number.
+var TDE_MAX_STREAK_PX = 120.0;
 // Bin radius of an already-quantized core/streak pair, in 0.5 px steps. The
 // quantization and the packed position's reconstruction error are inside the
 // 0.20 px margin.
@@ -159,10 +163,17 @@ function bounds(s) {
     var plain = (supportFor(core, streak, false) + minor) * Math.SQRT1_2;
     var bent = (supportFor(core, s.config.streak.bendMaxPx, false) + minor) * Math.SQRT1_2;
     var items = s.targetPopulation + s.config.depth.binaryMaxAlive;
+    // One tidal-disruption victim may be stretched to the longest trail the
+    // packed streak byte carries. That ceiling is a phenomena bound the
+    // particle config never sees, so the atlas is sized for it
+    // unconditionally: the alternative is a resize of the sampled texture,
+    // which cost 13 ms -> 6700 ms per frame on llvmpipe and never recovered.
+    var tde = (supportFor(core, TDE_MAX_STREAK_PX, false) + minor) * Math.SQRT1_2;
     return {maxItems: items,
         maxSupport: Math.max(plain, minor),
         maxFlares: s.config.flare.maxAlive, flareSupport: supportFor(nearCore, streak, true),
-        maxBends: items, bendSupport: Math.max(bent, minor)};
+        maxBends: items, bendSupport: Math.max(bent, minor),
+        maxTde: 1, tdeSupport: Math.max(tde, minor)};
 }
 // Render instances are one flat Float64Array, not an array of objects: writing
 // eighteen properties per instance per frame is the single most expensive thing
@@ -241,6 +252,26 @@ function render(previous, s, style) {
     // together, slowly, and no single star's trail can ever jump.
     var budget = s.stretchBudget === undefined ? 1 : s.stretchBudget;
     var bendCap = st.bendMaxAlive, demand = 0;
+    // Tidal disruption. One doomed particle's trail is drawn out to the
+    // configured length over stretchSec while its core dims and warms; the
+    // physics splits it into siblings at the end. Resolved once per frame, so
+    // the loop pays one integer compare.
+    var tde = s.tde, tdeIndex = -1, tdeWeight = 0, tdeStreak = 0;
+    if (tde && s.alive[tde.index] && s.generation[tde.index] === tde.generation) {
+        var tu;
+        if (!tde.split) {
+            var tdeAge = clock - tde.start;
+            tu = tdeAge <= 0 ? 0 : (tdeAge >= tde.stretchSec ? 1 : tdeAge / tde.stretchSec);
+        } else {
+            // After the split the material has left: the head's own trail eases
+            // back down over fadeSec rather than snapping.
+            var fade = (clock - tde.splitAt) / Math.max(0.001, tde.fadeSec);
+            tu = fade >= 1 ? 0 : 1 - fade;
+        }
+        tdeIndex = tde.index;
+        tdeWeight = tu * tu * (3 - 2 * tu);
+        tdeStreak = tde.streakPx;
+    }
     for (var k = 0; k < n; ++k) {
         var i = live[k];
         var kind = KIND[i], phase = PHASE[i];
@@ -302,6 +333,11 @@ function render(previous, s, style) {
         var exposure = EXPOSURE[i] + stretch * (bendExposure - EXPOSURE[i]);
         var cap = MAXSTREAK[i] + stretch * (bendMaxPx - MAXSTREAK[i]);
         var streak = Math.min(cap, speed * exposure);
+        var doomed = i === tdeIndex ? tdeWeight : 0;
+        if (doomed > 0) {
+            var drawn = doomed * tdeStreak;
+            if (drawn > streak) streak = drawn;
+        }
         // Round the rendered geometry first; the bin radius includes its
         // quantization and position reconstruction error, not just source math.
         core = (((core > 12 ? 12 : (core > 0.25 ? core : 0.25)) * 16 + 0.5) | 0) / 16;
@@ -334,6 +370,18 @@ function render(previous, s, style) {
         var shimmer = twinkle > 0 ? 1 + 0.15 * twinkle * Math.sin(cycle * SHIMMER[i] + phase) : 1;
         var light = LUM[i] * (1 - dim * captured) * behavior * fade * shimmer;
         var mix = kind === 6 ? 0.5 - 0.5 * Math.cos(oscillation) : 0;
+        // Colour is resolved once per particle rather than three times inside
+        // the component writes, so the disruption's warming costs one branch.
+        var cr = R[i] + mix * (ALTR[i] - R[i]);
+        var cg = G[i] + mix * (ALTG[i] - G[i]);
+        var cb = B[i] + mix * (ALTB[i] - B[i]);
+        if (doomed > 0) {
+            // Spreading the same light over a far longer trail dims the core;
+            // the material also reddens as it is torn out.
+            light *= 1 - 0.55 * doomed;
+            cg -= cg * 0.10 * doomed;
+            cb -= cb * 0.26 * doomed;
+        }
         // kind 0..6 low three bits, bit 3 flare, bit 4 near layer (saturating
         // core), bit 5 in front of the disk, bit 6 a nonzero tidal deformation.
         // Bit 6 is only a hint: the shader and the packer both weight the curved
@@ -352,9 +400,7 @@ function render(previous, s, style) {
             out[b] = X[i] + sign * ox; out[b + 1] = Y[i] + sign * oy;
             out[b + 2] = vx; out[b + 3] = vy; out[b + 4] = core;
             out[b + 5] = support; out[b + 6] = streak;
-            out[b + 7] = R[i] + mix * (ALTR[i] - R[i]);
-            out[b + 8] = G[i] + mix * (ALTG[i] - G[i]);
-            out[b + 9] = B[i] + mix * (ALTB[i] - B[i]);
+            out[b + 7] = cr; out[b + 8] = cg; out[b + 9] = cb;
             out[b + 10] = light / components; out[b + 11] = flags;
             out[b + 12] = phase; out[b + 13] = P0[i]; out[b + 14] = AGE[i];
             out[b + 15] = captured; out[b + 16] = i; out[b + 17] = GEN[i];

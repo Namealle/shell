@@ -127,7 +127,9 @@ light echo outlives the shell. Placement is REJECTED, never clamped, inside 1.6�
 vectors rather than a transient slot's seven (160 B, UBO reflection 1360 → 1520 B of 16384); two idle slots measured no cost at all (19.8 % of a core against 20.6 % for v5 on the same output, GPU 17.8 % against 18.4 %), so the brainstorm's optional `phenomenaActive`
 gate is not needed. Slot ownership is STICKY: an episode claims a slot only in its first 0.25 s and keeps it until it ends, so nothing can appear mid-life at whatever gain it had reached; scheduling already keeps at most `phenomenonCap` overlapping. The two classes
 never spill into each other — transient heads reserve only against transients, phenomena only against phenomena. Combined phenomenon gain is capped at 0.55 outside a supernova flash, the exemption easing away over three seconds rather than switching.
-`kilonova` and `gammaBurst` are validated and forwarded but NOT yet drawn (they need the pending-event queue and a beam style); `phenomena.tde` is not yet drawn either.
+`phenomena.tde` is DRAWN, by the particles alone — no slot, no uniform, no shader change; PARTICLES.md owns it. One doomed particle's packed streak is ramped to `streakPx` over `stretchSec` while its core dims and reddens, it splits into `fragments` siblings
+along its own orbit, and its head's trail then eases back over six seconds. `streakPx` is clamped to 120 px by the renderer whatever the service validates up to 160: 120 is what the packed streak byte carries. `diskFlash` rides the hole's brightness channel for 20 s.
+`kilonova` and `gammaBurst` are validated and forwarded but NOT yet drawn (they need the pending-event queue and a beam style).
 Black hole: `modules/background/BLACKHOLE.md` owns every default, the taste caps and the shader's own limiters; missing blackHole is disabled.
 Flat bounds: size 0.01–0.2 short sides, tilt 1–35° (the renderer accepts 80, only 35 is silhouette-verified), intensity/warmth/halos 0–1,
 spin 0–2 (pattern speed), inner 3–6 rs, outer max(inner+0.5, 3.5)–12 rs, beam 0–0.2, photonWidth 0.001–0.02 shadow radii,

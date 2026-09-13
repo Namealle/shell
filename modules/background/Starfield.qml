@@ -87,8 +87,17 @@ Item {
         photon: root.blackHole && root.blackHole.photon !== undefined ? root.blackHole.photon : (_preset.photon !== undefined ? _preset.photon : ({}))
         resolution: Qt.vector2d(root.width * root.devicePixelRatio, root.height * root.devicePixelRatio)
         centre: Qt.vector2d(resolution.x / 2 + shader.centreOffset.x, resolution.y / 2 + shader.centreOffset.y)
-        ambientHole: root.ambientHole
+        // A disruption's stream landing on the disk brightens it for twenty
+        // seconds. It rides the hole's own ambient activity channel, which
+        // already slews with tau 30 s, so the flash arrives and leaves at the
+        // same rate every other activity change does.
+        // z is the brightness channel (bhLook.x reads _ambient.z); the
+        // brainstorm called it activity, but activity is the pattern-speed
+        // channel and would not brighten anything.
+        ambientHole: Qt.vector4d(root.ambientHole.x, root.ambientHole.y, Math.min(1, root.ambientHole.z + root._tdeFlash), root.ambientHole.w)
     }
+
+    property real _tdeFlash: 0
 
     // Mutable JS numbers stay doubles; only publish() converts bounded values
     // to GPU floats. No target has a direct binding to the ShaderEffect.
@@ -1577,6 +1586,18 @@ Item {
         // Microlensing needs no scheduler and no slot: the shader already has
         // the lens Jacobian in hand wherever it filters a far star, and this is
         // only the flux ceiling. 1 disables the term entirely.
+        // The disruption flash: eased in over the first quarter of its twenty
+        // seconds and out over the last half, on top of whatever the hole's own
+        // slew is doing, so it never steps.
+        const flash = phenomenon("tde").diskFlash;
+        const depth = clamp(flash === undefined ? 0.15 : flash, 0, 0.5);
+        if (_particles && s.tdeFlashUntil !== undefined && _particles.clock < s.tdeFlashUntil) {
+            const span = s.tdeFlashUntil - s.tdeFlashFrom;
+            const at = _particles.clock - s.tdeFlashFrom;
+            _tdeFlash = depth * ease(at / (span * 0.25)) * ease((s.tdeFlashUntil - _particles.clock) / (span * 0.5));
+        } else if (_tdeFlash !== 0) {
+            _tdeFlash = 0;
+        }
         const lensing = phenomenon("microlensing");
         shader.lensFlux = lensing.enabled === false ? 1 : clamp(lensing.gainCap === undefined ? 2.5 : lensing.gainCap, 1, 3);
         const moodTwinkle = [0.18, 0.16, 0.24, 0.22, 0.20, 0.19][s.mood[0]];
@@ -1713,7 +1734,46 @@ Item {
         // radius and the central render fade follow it, so particles keep moving
         // through the centre instead of vanishing into an invisible point.
         _particles.absorb = _hole.bhHalo.w;
+        scheduleTde();
         ParticlePhysics.advance(_particles, dt, radialSpeed, s.live[2], cx, cy, blackHole && blackHole.disk && blackHole.disk.rotationSign < 0 ? -1 : 1, _particleBirth);
+    }
+
+    // Tidal disruption: particles only, so it costs no slot, no uniform and no
+    // shader change. The renderer owns the schedule and the physics owns the
+    // stretch and the split. A firing that finds no suitable victim is retried
+    // shortly rather than skipped, because a victim has to be inbound on a
+    // deep orbit and that is a matter of seconds either way.
+    function scheduleTde(): void {
+        const s = _state;
+        const cfg = phenomenon("tde");
+        if (cfg.enabled === false || !_hole.enabled) {
+            s.tdeNext = -1;
+            return;
+        }
+        const pool = _particles;
+        if (s.tdeNext === undefined || s.tdeNext < 0) {
+            s.tdeNext = pool.clock + parameterRange(cfg, "everyMinutes", [40, 90], 1, 1440)[0] * 60;
+            s.tdeIndex = 0;
+        }
+        if (pool.clock < s.tdeNext)
+            return;
+        const index = s.tdeIndex++;
+        const streak = parameterRange(cfg, "streakPx", [60, 140], 0, 160);
+        const stretch = parameterRange(cfg, "stretchSec", [6, 12], 1, 120);
+        const pieces = parameterRange(cfg, "fragments", [4, 8], 1, 16);
+        const fired = ParticlePhysics.doom(pool, {
+            streakPx: streak[0] + (streak[1] - streak[0]) * random(index, screenSeed + 7717),
+            stretchSec: stretch[0] + (stretch[1] - stretch[0]) * random(index, screenSeed + 7719),
+            fragments: Math.round(pieces[0] + (pieces[1] - pieces[0]) * random(index, screenSeed + 7721))
+        });
+        if (!fired) {
+            s.tdeNext = pool.clock + 5;
+            return;
+        }
+        s.tdeFlashFrom = pool.clock;
+        s.tdeFlashUntil = pool.clock + 20;
+        const range = parameterRange(cfg, "everyMinutes", [40, 90], 1, 1440);
+        s.tdeNext = pool.clock + (range[0] + (range[1] - range[0]) * random(index, screenSeed + 7723)) * 60;
     }
 
     function publishParticles(): void {
@@ -1744,7 +1804,7 @@ Item {
         // scene-graph submission on llvmpipe and did not recover.
         if (!_particleAtlasHeight) {
             const ceiling = ParticleAppearance.bounds(pool);
-            _particleAtlasHeight = ParticlePacking.capacity(_particleBins, ceiling.maxItems, ceiling.maxSupport, ceiling.maxFlares, ceiling.flareSupport, ceiling.maxBends, ceiling.bendSupport);
+            _particleAtlasHeight = ParticlePacking.capacity(_particleBins, ceiling.maxItems, ceiling.maxSupport, ceiling.maxFlares, ceiling.flareSupport, ceiling.maxBends, ceiling.bendSupport, ceiling.maxTde, ceiling.tdeSupport);
         }
         const layout = ParticlePacking.layout(canvas.packet, _particleBins, _particleItems.count, _particleAtlasHeight);
         _particleAtlasHeight = layout.height;

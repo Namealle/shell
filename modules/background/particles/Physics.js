@@ -199,6 +199,117 @@ function launch(s, i, options) {
     s.archetype[i]=0; s.p0[i]=0; s.p1[i]=0; s.p2[i]=0; s.p3[i]=0;
     return true;
 }
+// ---- Tidal disruption (phenomena.tde) ---------------------------------------
+// One doomed particle is stretched into a long stream as it falls through
+// pericentre, then splits into siblings that spiral in on their ordinary
+// capture time and feed the disk. No slot, no uniform, no shader change: the
+// rendering is entirely the packed streak field, which particles/Appearance.js
+// ramps. The only cost is a handful of extra particles for a minute.
+function freeSlot(s) {
+    var searched = 0;
+    while (s.alive[s.nextSlot] && searched < s.capacity) { s.nextSlot = (s.nextSlot + 1) % s.capacity; ++searched; }
+    if (searched === s.capacity) return -1;
+    var i = s.nextSlot; s.nextSlot = (s.nextSlot + 1) % s.capacity; return i;
+}
+// A sibling is placed on the victim's own state, not launched from an edge, so
+// it inherits the orbit instead of arriving as a fresh infall.
+function inject(s, x, y, vx, vy, depth, birthCallback) {
+    var i = freeSlot(s);
+    if (i < 0) return -1;
+    s.x[i] = x; s.y[i] = y; s.vx[i] = vx; s.vy[i] = vy;
+    if (!s.alive[i]) { ++s.aliveCount; s.live[s.liveCount++] = i; }
+    s.alive[i] = 1; ++s.generation[i]; ++s.counters.births;
+    s.age[i] = 0; s.circularSince[i] = -1; s.captureExposure[i] = 0;
+    s.entryTime[i] = x >= 0 && x <= s.width && y >= 0 && y <= s.height ? s.clock : -1;
+    s.spiralRate[i] = 0; s.radiusAtCapture[i] = 0; s.captureTime[i] = -1;
+    var dx = x - s.centreX, dy = y - s.centreY;
+    s.launchClass[i] = 0;
+    s.pericentre[i] = Math.min(Math.sqrt(dx * dx + dy * dy), 0.6 * s.rh);
+    s.safetyLife[i] = between(s, s.config.safetyLifeSec);
+    s.spiralSec[i] = between(s, s.config.capture.spiralSec);
+    s.depth[i] = depth;
+    s.seed[i] = random(s); s.phase[i] = random(s) * Math.PI * 2;
+    s.size[i] = between(s, depth ? s.config.sizes.nearPx : s.config.sizes.middlePx);
+    s.capturedSize[i] = between(s, s.config.sizes.capturedPx);
+    s.r[i] = 1; s.g[i] = 1; s.b[i] = 1; s.luminosity[i] = 1;
+    s.archetype[i] = 0; s.p0[i] = 0; s.p1[i] = 0; s.p2[i] = 0; s.p3[i] = 0;
+    if (birthCallback) birthCallback(s, i);
+    return i;
+}
+// Choose a victim: alive, not already captured, still outside the capture
+// radius and on an orbit that actually reaches deep. Nearest to its pericentre
+// wins, so the stretch and the closest approach line up.
+function doom(s, options) {
+    var o = options || {};
+    var best = -1, bestScore = Infinity;
+    var inner = s.config.capture.radius[1] * s.rh;
+    for (var k = 0; k < s.liveCount; ++k) {
+        var i = s.live[k];
+        if (!s.alive[i] || s.radiusAtCapture[i] > 0) continue;
+        if (s.pericentre[i] > 6 * s.rh) continue;
+        var dx = s.x[i] - s.centreX, dy = s.y[i] - s.centreY;
+        var r = Math.sqrt(dx * dx + dy * dy);
+        if (r < inner || r > 12 * s.rh) continue;
+        // Inbound only: a receding particle would stretch on its way out.
+        if (dx * s.vx[i] + dy * s.vy[i] >= 0) continue;
+        var score = r - s.pericentre[i];
+        if (score < bestScore) { bestScore = score; best = i; }
+    }
+    if (best < 0) return false;
+    s.tde = {index: best, generation: s.generation[best], start: s.clock,
+        stretchSec: Math.max(0.5, o.stretchSec === undefined ? 9 : o.stretchSec),
+        // 120 px, not the service's 160: that is what the packed streak byte
+        // carries (120/255 per code), and the atlas is sized for the same
+        // number. A larger request is met with the longest trail that exists.
+        streakPx: Math.max(0, Math.min(120, o.streakPx === undefined ? 100 : o.streakPx)),
+        fragments: Math.max(1, Math.min(16, Math.round(o.fragments === undefined ? 6 : o.fragments))),
+        // After the split the victim is one head of its own stream, so its
+        // trail eases back to its natural length instead of snapping.
+        fadeSec: 6,
+        splitAt: -1,
+        split: false};
+    return true;
+}
+// Alive and still the same particle: a victim that died or was recycled leaves
+// the descriptor behind, and every consumer tests through this.
+function doomed(s, i) {
+    var t = s.tde;
+    return !!t && t.index === i && t.generation === s.generation[i] && s.alive[i] > 0;
+}
+function tdeStep(s, birthCallback) {
+    var t = s.tde;
+    if (!t) return;
+    var i = t.index;
+    if (!doomed(s, i)) { s.tde = null; return; }
+    var age = s.clock - t.start;
+    if (t.split) {
+        // Hold the descriptor through the fade so the victim's own trail eases
+        // back rather than snapping to its natural length on one frame.
+        if (s.clock - t.splitAt >= t.fadeSec) s.tde = null;
+        return;
+    }
+    if (age < t.stretchSec) return;
+    t.split = true;
+    t.splitAt = s.clock;
+    // Siblings are spread ALONG the orbit, which is what a disrupted stream
+    // looks like: a spread in specific energy, not a spray of directions.
+    var vx = s.vx[i], vy = s.vy[i];
+    var speed = Math.sqrt(vx * vx + vy * vy);
+    if (speed < 1e-6) return;
+    var ux = vx / speed, uy = vy / speed;
+    var made = 0;
+    for (var n = 0; n < t.fragments; ++n) {
+        var along = (n + 1) / (t.fragments + 1) - 0.5;
+        var lead = along * t.streakPx * 1.6;
+        var scale = 1 + along * 0.16;
+        if (inject(s, s.x[i] + ux * lead, s.y[i] + uy * lead,
+            vx * scale - uy * along * speed * 0.05,
+            vy * scale + ux * along * speed * 0.05,
+            s.depth[i], birthCallback) >= 0) ++made;
+    }
+    s.counters.tde = (s.counters.tde || 0) + 1;
+    s.counters.tdeFragments = (s.counters.tdeFragments || 0) + made;
+}
 // Stream table for clustered births. Each stream is a birth-frozen edge position
 // with its own drift and width, re-rolled on its own lifetime, so the preferred
 // directions wander over minutes instead of being fixed forever.
@@ -427,6 +538,9 @@ function advance(s, dt, radialSpeed, filteredFlow, centreX, centreY, rotationSig
     while (s.accumulator>=fixed*(1-1e-10)) {
         s.mu+=(s.muTarget-s.mu)*(1-Math.exp(-fixed/60));
         step(s,fixed,options);replenish(s,fixed,birthCallback || s.birthCallback);
+        // Outside the hot loop and outside step(): one descriptor test per
+        // outer step, nothing per particle.
+        tdeStep(s,birthCallback || s.birthCallback);
         s.accumulator=Math.max(0,s.accumulator-fixed);++count;
     }
     return count;
@@ -435,5 +549,6 @@ function advance(s, dt, radialSpeed, filteredFlow, centreX, centreY, rotationSig
 if (typeof module !== 'undefined' && module.exports) module.exports = {
     BOUNDS: BOUNDS, defaults: defaults, validate: validate, create: create, configure: configure,
     advance: advance, step: step, launch: launch, energy: energy, angularMomentum: angularMomentum,
-    damp: damp, random: random, swept: swept, viewportEntry: viewportEntry, rescale: rescale
+    damp: damp, random: random, swept: swept, viewportEntry: viewportEntry, rescale: rescale,
+    doom: doom, doomed: doomed, tdeStep: tdeStep, inject: inject
 };
