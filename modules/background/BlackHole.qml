@@ -9,32 +9,48 @@ QtObject {
     property string preset: ""
     readonly property var presets: ({
             target: {
+                // Every value below is the result of a measured fit against
+                // ~/Downloads/LocalSend/wallpaper.png, not taste: see
+                // tools/bh_ringdiff.py for the metrics and tools/bh_fit.py for
+                // the objective. Re-run them before changing any of it.
                 size: 0.11,
-                tilt: 15,
+                tilt: 13,
                 intensity: 1,
-                haloUpper: 1,
-                haloLower: 0.9,
-                diskOuterRs: 10.5,
+                // Gains on the LENSED (order-1) arcs over and under the shadow.
+                // Down from 1/0.9 now that disk.halo carries the ring hugging
+                // the shadow: it thins the disk vertically without emptying it.
+                haloUpper: 0.82,
+                haloLower: 0.51,
+                diskOuterRs: 11,
                 lensReach: 8,
                 lensStretch: 1.6,
                 footprintCap: 0.2,
-                // White level. Measured against owner-target-wallpaper.png: a
-                // render at diskCap 0.6 sat EXACTLY on its cap (q99.9 0.5974
-                // linear) while the reference reaches 0.9727, so the cap was a
-                // binding constraint. Lifting it takes q99.9 to 0.6635 for
-                // +0.32 points of footprint. It is not the ONLY constraint:
-                // disk.exposure 2 reaches 0.7331, and the rest of the gap is
-                // the disk's thickness, filament structure and hue rather than
-                // its ceiling. The film shoulder follows diskCap (knee .72*cap,
-                // span .24*cap), so a raised cap is actually reached.
+                // White level. The reference peaks at 0.962 linear and its
+                // q99.9 is 0.958; at these caps this render measures 0.989 and
+                // 0.963. Lower caps clip the band the reference is built on.
                 diskCap: 1,
                 photonCap: 1,
                 disk: {
                     exposure: 1.7,
-                    detail: 0.8,
-                    falloff: 2.4,
+                    // 0.8 measured azimuthal high-frequency energy 2.05 against
+                    // the reference's 0.655: its arms are one sheet, not
+                    // separated filaments. 0.29 lands on 0.640.
+                    detail: 0.29,
+                    falloff: 1.25,
+                    // The reference's disk plane is rolled in the image plane;
+                    // its major axis measures +14.0 deg, and bhDisk.z has
+                    // carried this angle through the shader all along at 0.
+                    roll: 11,
+                    // The photon-ring COMPLEX between the shadow edge and the
+                    // ISCO's direct image at 1.4257 Rh. Without it the 1.0-1.45
+                    // Rh annuli measured .057/.058 against the reference's
+                    // .580/.461 -- a dark moat where its brightest light is.
+                    halo: {
+                        gain: 0.76,
+                        reachRh: 1.61
+                    },
                     streaks: {
-                        octaves: 3,
+                        octaves: 2,
                         radialScale: 1.4,
                         innerPeriodSec: 12,
                         warp: 0.25,
@@ -42,26 +58,37 @@ QtObject {
                         smear: 0.85
                     },
                     hue: {
-                        innerTemperature: 7000,
-                        outerTemperature: 1700,
-                        warmth: 0.35,
-                        whiteness: 0.85
+                        innerTemperature: 10000,
+                        outerTemperature: 2800,
+                        warmth: 0,
+                        whiteness: 0.49
+                    },
+                    // The reference carries no beaming asymmetry: its mean
+                    // light left of centre over right measures 0.967. At the
+                    // v6 strength 0.22 this render measured 1.439.
+                    doppler: {
+                        strength: 0
                     },
                     glow: {
                         gain: 0.008,
                         radiusPx: 2.5
                     },
                     rim: {
-                        skirt: 0.8,
-                        fray: 0.7,
-                        clump: 0.65
+                        skirt: 1,
+                        fray: 0.92,
+                        clump: 0.3
                     },
                     depth: {
-                        foreground: 0.45,
+                        foreground: 0.09,
                         lane: 0.35
                     },
+                    // Off. Measured, the razor bands are the single largest
+                    // source of "drawn circle" energy (radial ripple in the
+                    // polar sector 1.8-3.6 Rh: 1.05 with them at ANY gain,
+                    // 0.30 without, reference 0.19), and the owner rejected
+                    // drawn rings in v5. The keys stay for anyone who wants them.
                     arcs: {
-                        gain: 0.013,
+                        gain: 0,
                         radiusRh: 1.6,
                         spacingRh: 0.55,
                         count: 4
@@ -69,8 +96,8 @@ QtObject {
                 },
                 photon: {
                     mode: "shared-field",
-                    widthPx: 0.5,
-                    gain: 1.35,
+                    widthPx: 0.75,
+                    gain: 0.9,
                     textureStrength: 0.8
                 }
             }
@@ -130,7 +157,7 @@ QtObject {
 
     readonly property vector2d bhCentre: centre
     readonly property vector4d bhGeometry: Qt.vector4d(_rh, clamp(lensReach, 4, 12) * _rh, Math.sin(_tilt), Math.cos(_tilt))
-    readonly property vector4d bhDisk: Qt.vector4d(clamp(diskInnerRs, 3, 7), Math.max(clamp(diskInnerRs, 3, 7) + 0.5, clamp(diskOuterRs, 3.5, 11)), 0, Math.max(1, clamp(photonWidth, 0.001, 0.02) * _rh))
+    readonly property vector4d bhDisk: Qt.vector4d(clamp(diskInnerRs, 3, 7), Math.max(clamp(diskInnerRs, 3, 7) + 0.5, clamp(diskOuterRs, 3.5, 11)), value(_diskAll, "roll", 0, -90, 90) * Math.PI / 180, Math.max(1, clamp(photonWidth, 0.001, 0.02) * _rh))
     // Exposure only widens the x ceiling; at the default exposure 1 it is <=1.
     readonly property vector4d bhLook: Qt.vector4d(clamp(intensity * _strengths[11] * (0.8 + 0.4 * _ambient.z), 0, 2), clamp(warmth + 0.3 * (_ambient.y - 0.5), 0, 1), clamp(beamStrength, 0, 0.2), clamp(structure * (0.8 + 0.4 * _ambient.w), 0, 0.08))
     readonly property vector4d bhHalo: Qt.vector4d(clamp(haloUpper, 0, 1), clamp(haloLower, 0, 1), 0.6, ease(_enablePosition))
@@ -142,7 +169,7 @@ QtObject {
     readonly property vector4d bhEmbers: Qt.vector4d(2 * Math.floor(value(_diskAll.embers, "count", 24, 0, 32) / 2), value(_diskAll.embers, "radiusRs", 0.012, 0.004, 0.025), value(_diskAll.embers, "trailSec", 0.35, 0, 0.6), _strengths[4])
     readonly property vector4d bhDoppler: Qt.vector4d(_physical ? 1 : 0, _strengths[5], 0, 0)
     readonly property vector4d bhHue: Qt.vector4d(Math.log(value(_diskAll.hue, "innerTemperature", 6500, 4200, 10000)), Math.log(value(_diskAll.hue, "outerTemperature", 1700, 1000, 2800)), _strengths[6], _strengths[13])
-    readonly property vector4d bhGlow: Qt.vector4d(_strengths[7], value(_diskAll.glow, "radiusPx", 1.5, 0.25, 2.5), 0, 0)
+    readonly property vector4d bhGlow: Qt.vector4d(_strengths[7], value(_diskAll.glow, "radiusPx", 1.5, 0.25, 2.5), value(_diskAll.halo, "gain", 0, 0, 1), value(_diskAll.halo, "reachRh", 1.43, 1, 2))
     readonly property vector4d bhPhoton: Qt.vector4d(_strengths[8], _strengths[9], _strengths[10], _photonAll.mode === "off" ? 0 : 1)
     readonly property vector4d bhDetailPhase: Qt.vector4d(_detailPhase, 1 / 30, 0, 0)
     readonly property vector4d bhRim: Qt.vector4d(_strengths[14], _strengths[15], _strengths[16], _strengths[17])

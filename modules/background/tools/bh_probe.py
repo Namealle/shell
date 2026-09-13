@@ -11,8 +11,10 @@ Usage as a library:
     from bh_probe import render
     img = render(width=1376, height=768, preset="target", overrides={...})
 """
+import atexit
 import json
 import os
+import shutil
 import re
 import struct
 import subprocess
@@ -37,20 +39,71 @@ INNER_MIN = 3     # matches BlackHole.qml's diskInnerRs clamp
 
 PRESETS = {
     "target": json.loads(r"""
-{"size": 0.11, "tilt": 15, "intensity": 1, "haloUpper": 1, "haloLower": 0.9,
- "diskOuterRs": 10.5, "lensReach": 8, "lensStretch": 1.6, "footprintCap": 0.2,
- "diskCap": 1, "photonCap": 1,
- "disk": {"exposure": 1.7, "detail": 0.8, "falloff": 2.4,
-   "streaks": {"octaves": 3, "radialScale": 1.4, "innerPeriodSec": 12,
-               "warp": 0.25, "grain": 0.08, "smear": 0.85},
-   "hue": {"innerTemperature": 7000, "outerTemperature": 1700, "warmth": 0.35,
-           "whiteness": 0.85},
-   "glow": {"gain": 0.008, "radiusPx": 2.5},
-   "rim": {"skirt": 0.8, "fray": 0.7, "clump": 0.65},
-   "depth": {"foreground": 0.45, "lane": 0.35},
-   "arcs": {"gain": 0.013, "radiusRh": 1.6, "spacingRh": 0.55, "count": 4}},
- "photon": {"mode": "shared-field", "widthPx": 0.5, "gain": 1.35,
-            "textureStrength": 0.8}}
+{
+ "size": 0.11,
+ "tilt": 13,
+ "intensity": 1,
+ "haloUpper": 0.82,
+ "haloLower": 0.51,
+ "diskOuterRs": 11,
+ "lensReach": 8,
+ "lensStretch": 1.6,
+ "footprintCap": 0.2,
+ "diskCap": 1,
+ "photonCap": 1,
+ "disk": {
+  "exposure": 1.7,
+  "detail": 0.29,
+  "falloff": 1.25,
+  "roll": 11,
+  "halo": {
+   "gain": 0.76,
+   "reachRh": 1.61
+  },
+  "streaks": {
+   "octaves": 2,
+   "radialScale": 1.4,
+   "innerPeriodSec": 12,
+   "warp": 0.25,
+   "grain": 0.08,
+   "smear": 0.85
+  },
+  "hue": {
+   "innerTemperature": 10000,
+   "outerTemperature": 2800,
+   "warmth": 0,
+   "whiteness": 0.49
+  },
+  "doppler": {
+   "strength": 0
+  },
+  "glow": {
+   "gain": 0.008,
+   "radiusPx": 2.5
+  },
+  "rim": {
+   "skirt": 1,
+   "fray": 0.92,
+   "clump": 0.3
+  },
+  "depth": {
+   "foreground": 0.09,
+   "lane": 0.35
+  },
+  "arcs": {
+   "gain": 0,
+   "radiusRh": 1.6,
+   "spacingRh": 0.55,
+   "count": 4
+  }
+ },
+ "photon": {
+  "mode": "shared-field",
+  "widthPx": 0.75,
+  "gain": 0.9,
+  "textureStrength": 0.8
+ }
+}
 """),
 }
 
@@ -159,7 +212,9 @@ def uniforms(width, height, preset="target", overrides=None, detail_phase=0.0,
         "bhHue": [np.log(value(g("hue"), "innerTemperature", 6500, 4200, 10000)),
                   np.log(value(g("hue"), "outerTemperature", 1700, 1000, 2800)),
                   s[6], s[13]],
-        "bhGlow": [s[7], value(g("glow"), "radiusPx", 1.5, 0.25, 2.5), 0.0, 0.0],
+        "bhGlow": [s[7], value(g("glow"), "radiusPx", 1.5, 0.25, 2.5),
+                   value(g("halo"), "gain", 0, 0, 1),
+                   value(g("halo"), "reachRh", 1.43, 1, 2)],
         "bhPhoton": [s[8], s[9], s[10], 0.0 if ph.get("mode") == "off" else 1.0],
         "bhDetailPhase": [float(detail_phase), 1.0 / 30.0, 0.0, 0.0],
         "bhArcs": [s[12], value(g("arcs"), "radiusRh", 1.75, 1.2, 2.6),
@@ -193,6 +248,17 @@ def _rawtex(png, out):
         f.write(a.tobytes())
 
 
+_SCRATCH = []
+
+
+def _scratch():
+    if not _SCRATCH:
+        d = tempfile.mkdtemp(prefix="bhprobe-")
+        _SCRATCH.append(d)
+        atexit.register(shutil.rmtree, d, True)
+    return _SCRATCH[0]
+
+
 def _build():
     src = os.path.join(HERE, "bhrender.c")
     if not os.path.exists(BIN) or os.path.getmtime(BIN) < os.path.getmtime(src):
@@ -204,7 +270,10 @@ def render(width=1376, height=768, preset="target", overrides=None,
            frag=None, tmp=None, **kw):
     """-> float32 (H, W, 3) linear-light RGB."""
     frag = frag or os.path.join(SHADERS, "blackhole-preview.frag")
-    tmp = tmp or tempfile.mkdtemp(prefix="bhprobe-")
+    # ONE scratch dir per process, reused. A fresh mkdtemp per render leaks
+    # ~17 MB (textures + the float32 readback) and a fitting run of a few
+    # hundred evaluations fills /tmp.
+    tmp = tmp or _scratch()
     os.makedirs(tmp, exist_ok=True)
     fp = os.path.join(tmp, "frag.glsl")
     open(fp, "w").write(preprocess(frag))

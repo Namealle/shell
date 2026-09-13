@@ -268,13 +268,17 @@ def measure(rgb):
         m[name + "HalfHeight"] = float(np.mean(hh))
     m["aspect"] = m["tipHalfHeight"] / max(m["extentMajor"], 1e-6)
 
-    # --- top arc: the bright band above the shadow, along +90 deg
+    # --- the bright bands over and under the shadow, along +90 / -90 deg.
+    # Both, because the UNDER side is where the near strip, the lensed lower
+    # arc and the inner halo all pile up and can bloom into a lobe.
+    for name, a0 in (("top", 90.0), ("bot", 270.0)):
+        t, v = ray(l, a0)
+        hot = np.where(v > 0.20 * peak)[0]
+        m[name + "ArcInner"] = float(t[hot[0]]) if len(hot) else 0.0
+        m[name + "ArcOuter"] = float(t[hot[-1]]) if len(hot) else 0.0
+        m[name + "ArcThickness"] = m[name + "ArcOuter"] - m[name + "ArcInner"]
+        m[name + "ArcPeak"] = float(v.max())
     t, v = ray(l, 90.0)
-    hot = np.where(v > 0.20 * peak)[0]
-    m["topArcInner"] = float(t[hot[0]]) if len(hot) else 0.0
-    m["topArcOuter"] = float(t[hot[-1]]) if len(hot) else 0.0
-    m["topArcThickness"] = m["topArcOuter"] - m["topArcInner"]
-    m["topArcPeak"] = float(v.max())
     # sharp inner light edge = steepest rise between .9 and 2 Rh
     w = (t > 0.9) & (t < 2.0)
     g = np.gradient(v)
@@ -310,15 +314,31 @@ def measure(rgb):
         m[k] = float(np.quantile(lit, q)) if lit.size else 0.0
     m["footprint"] = float((l > 0.01).mean())
 
-    # --- rim raggedness: high-frequency energy along an azimuthal ring at 2.4 Rh
+    # --- raggedness: high-frequency energy along azimuthal rings. 2.4 Rh reads
+    # the outer disk arm, 1.15 Rh the bright band hugging the shadow.
     ang = np.linspace(0, 2 * np.pi, 2048, endpoint=False)
-    rr = 2.4
-    x = np.clip(W / 2 + rr * RN * np.cos(ang), 0, W - 1).astype(int)
-    y = np.clip(H / 2 - rr * RN * np.sin(ang), 0, H - 1).astype(int)
-    s = l[y, x]
-    s = s / max(s.mean(), 1e-9)
-    sm = np.convolve(np.r_[s[-16:], s, s[:16]], np.ones(33) / 33, "same")[16:-16]
-    m["rimRagged"] = float(np.std(s - sm))
+    for name, rr in (("rimRagged", 2.4), ("ringRagged", 1.15)):
+        x = np.clip(W / 2 + rr * RN * np.cos(ang), 0, W - 1).astype(int)
+        y = np.clip(H / 2 - rr * RN * np.sin(ang), 0, H - 1).astype(int)
+        s = l[y, x]
+        s = s / max(s.mean(), 1e-9)
+        sm = np.convolve(np.r_[s[-16:], s, s[:16]], np.ones(33) / 33, "same")[16:-16]
+        m[name] = float(np.std(s - sm))
+
+    # --- "drawn circle" energy: high-frequency RADIAL structure in the polar
+    # sector out at 1.8-3.6 Rh, where a concentric band shows as a ripple on an
+    # otherwise smooth falloff. The owner rejected drawn rings in v5 ("they look
+    # like drawn"), and no other metric here can see them.
+    ce = []
+    for a0 in (70, 90, 110, 250, 270, 290):
+        t, v = ray(l, a0, rmax=3.6)
+        w2 = t > 1.8
+        seg = v[w2] / max(v[w2].mean(), 1e-9)
+        sm = np.convolve(np.r_[seg[:12][::-1], seg, seg[-12:][::-1]],
+                         np.ones(25) / 25, "same")[12:-12]
+        ce.append(float(np.std(seg - sm)))
+    m["circleEnergy"] = float(np.mean(ce))
+    m["nearFarRatio"] = m["nearStripPeak"] / max(m["topArcPeak"], 1e-9)
 
     # --- colour: light-weighted R/B ratio in a full column of the disk arm at a
     # fixed radius, both sides averaged. Only lit pixels, so it never reads sky.
@@ -365,9 +385,11 @@ def measure(rgb):
 
 KEYS = ["posAngle", "extentMajor", "extentL", "extentR", "midHalfHeight",
         "outHalfHeight", "tipHalfHeight", "aspect", "topArcInner", "topArcOuter",
-        "topArcThickness", "topArcPeak", "photonRadius", "nearStripY",
+        "topArcThickness", "topArcPeak", "botArcInner", "botArcOuter",
+        "botArcThickness", "botArcPeak", "photonRadius", "nearStripY",
         "nearStripHeight", "nearStripPeak", "shadowLit", "dopplerRatio", "peak",
-        "q50", "q90", "q99", "q999", "footprint", "rimRagged", "cctInner",
+        "q50", "q90", "q99", "q999", "footprint", "rimRagged", "ringRagged", "circleEnergy",
+        "nearFarRatio", "cctInner",
         "cctOuter", "whiteFrac"]
 
 
