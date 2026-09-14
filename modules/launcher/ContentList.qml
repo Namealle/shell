@@ -83,13 +83,29 @@ Item {
             return;
         // Mid-exit re-entry: the reader instance is still alive and its header
         // is sliding down -- reverse it in place instead of dropping the
-        // keypress until the slide lands. Same entry, so nothing needs
-        // rebuilding: cancel the staged re-insert (or re-lift if it already
-        // happened) and send the header back up from wherever it is.
+        // keypress until the slide lands: cancel the staged re-insert (or
+        // re-lift if it already happened) and send the header back up from
+        // wherever it is.
+        //
+        // NOT necessarily onto the same entry. ↑/↓ during the slide are
+        // ordinary list navigation, so by the time → lands the highlight can
+        // be on another row. Re-lifting readerEntry regardless opened the
+        // reader on the row that was LEFT, and the lift's restore index then
+        // dragged the highlight back onto it -- traced as currentIndex 3 -> 2
+        // on the ↑, then back to 3 a turn after the →.
+        //
+        // So reverse, then browse to wherever the highlight went: the same
+        // state an in-reader ↑/↓ during the open morph leaves. In that order
+        // on purpose -- reenter() latches the morph onto the entry actually
+        // in flight, and the step rides the rail as an ordinary browse.
+        // Moving the index first would re-point a half-grown morph at a
+        // different picture (see ClipReader.morphIndex).
         if (readerExiting) {
             const r = clipReader.item;
             if (!r || !readerEntry || !l)
                 return;
+            // Before anything below touches the lift or partTimer.
+            const want = exitHighlightIndex();
             partTimer.stop();
             if (l.wantLift !== readerEntry) {
                 const i = l.fullResults.indexOf(readerEntry);
@@ -104,6 +120,9 @@ Item {
             readerExiting = false;
             readerOpenedAt = Date.now();
             r.reenter();
+            const from = l.fullResults.indexOf(readerEntry);
+            if (want !== from)
+                browseReader(want - from);
             return;
         }
         if (!l?.currentEntry)
@@ -305,6 +324,24 @@ Item {
         }
     }
 
+    // Which row of the FULL list the highlight stands for while the exit is in
+    // flight -- what a re-entry has to open on.
+    //
+    // currentIndex alone is not that. While the re-insert is still staged the
+    // entry is lifted, so the index counts the filtered list (and is clamped to
+    // length-2 on the last row) -- the delta reinsert() carries. Once the
+    // re-insert is issued but not yet applied, the list is about to land on
+    // wantIndex. Only after it lands is currentIndex a full-list index.
+    function exitHighlightIndex(): int {
+        const l = appList.item;
+        let i = l.currentIndex;
+        if (l.wantLift)
+            i = partTimer.index + l.currentIndex - partTimer.fromIndex;
+        else if (l.liftedEntry)
+            i = l.wantIndex;
+        return Math.max(0, Math.min(i, l.fullResults.length - 1));
+    }
+
     // Put the lifted entry back. Normally on partTimer, so the neighbours are
     // seen parting mid-slide; early if a keypress needs the model settled first.
     function reinsert(): void {
@@ -348,10 +385,22 @@ Item {
     // an animation the user has just overtaken, and leaves the highlight one
     // stable target. Deliberately BEFORE the step: reinsert() reads currentIndex
     // to carry the delta, so it has to see the pre-step value.
+    //
+    // And the step then goes INTO that re-insert rather than onto the list. The
+    // re-insert lands a turn later (AppList's coalesce) and puts currentIndex on
+    // the index it was handed, so a step taken on the still-filtered list in
+    // between was simply overwritten: traced as currentIndex 3 -> 2 on the ↑
+    // and back to 3 a few milliseconds later, the highlight returning to the
+    // row that was left and a → then opening the reader on it.
     function listStep(step: int): void {
         if (readerExiting && partTimer.running) {
             partTimer.stop();
             reinsert();
+            const pending = appList.item;
+            if (pending?.liftedEntry && !pending.wantLift) {
+                pending.clearLift(Math.max(0, Math.min(pending.wantIndex + step, pending.fullResults.length - 1)));
+                return;
+            }
         }
         const l = currentList;
         if (!l)
