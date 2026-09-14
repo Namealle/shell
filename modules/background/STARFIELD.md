@@ -591,9 +591,10 @@ the sky's QML — hot reload is off), `status` (pid, nice, both namespaces per o
 
 **IPC moved with it.** `starfield fire` and `ambient dump` now answer on the SKY's socket: `qs -p …/starfield.qml ipc call starfield fire nebula tablet ''`, which is
 what `starfield-shell fire` wraps. `caelestia shell starfield fire …` still reaches the shell's idle copy of the service and draws nothing while `process` is
-`"separate"`; `caelestia shell ipc call ambient dump` answers **"Target not found"**, because naming `Ambient` only on the in-shell branch of `shell.qml`'s lock
+`"separate"`; `caelestia shell ambient dump` answers **"Target not found"**, because naming `Ambient` only on the in-shell branch of `shell.qml`'s lock
 binding is what keeps the whole reactive poller — a 250 ms timer, `/proc` reads, `nvidia-smi` — out of the shell. That "Target not found" is the positive proof the
-shell is no longer doing the sky's work.
+shell is no longer doing the sky's work. Use that positional form: `caelestia shell ipc call …` answers "Target not found" for every target, `drawers` included
+(checked 2026-09-14), so it proves nothing.
 
 **starfield.json is unchanged and still hot-reloaded**, now by whichever process is drawing. Proved 2026-09-13 with no restart: `fps` 30 → 2 dropped the sky's main
 thread 34.2 % → 0.2 %, and back to 34.2 % on restore. `starfield-hole` and `starfield-camera` edit that file and need nothing restarted.
