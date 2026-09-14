@@ -587,7 +587,7 @@ v10 in-process path (Background.qml mounts the layer, its window goes back to Ba
 
 **`~/namealle/scripts/starfield-shell`** is the whole interface: `start` (idempotent, and what `execs.lua` runs at login), `kill`, `restart` (needed after ANY edit to
 the sky's QML — hot reload is off), `status` (pid, nice, both namespaces per output), `fire <family> [screen] [overrides]`. Binds: `CTRL+SUPER+SHIFT+R` kills both,
-`CTRL+SUPER+ALT+R` restarts both, `CTRL+SUPER+ALT+K` restarts the sky alone.
+`CTRL+SUPER+ALT+R` toggles both (shell up → kill both, shell down → start both; `~/namealle/scripts/shell-toggle`), `CTRL+SUPER+ALT+K` restarts the sky alone.
 
 **IPC moved with it.** `starfield fire` and `ambient dump` now answer on the SKY's socket: `qs -p …/starfield.qml ipc call starfield fire nebula tablet ''`, which is
 what `starfield-shell fire` wraps. `caelestia shell starfield fire …` still reaches the shell's idle copy of the service and draws nothing while `process` is
