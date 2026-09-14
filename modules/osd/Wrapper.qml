@@ -24,6 +24,7 @@ Item {
     property real sourceVolume
     property bool sourceMuted
     property real brightness
+    property real dim: 1
 
     function show(): void {
         screenState.osd = true;
@@ -36,6 +37,7 @@ Item {
         sourceVolume = Audio.sourceVolume;
         sourceMuted = Audio.sourceMuted;
         brightness = root.monitor?.brightness ?? 0;
+        dim = root.monitor?.dim ?? 1;
     }
 
     visible: offsetScale < 1
@@ -78,10 +80,11 @@ Item {
             root.brightness = root.monitor?.brightness ?? 0;
         }
 
-        // Below 0 the brightness stays put while the picture dims; still show
-        // the OSD so the step is acknowledged.
+        // Below 0 the brightness stays put while the picture dims; the slider
+        // switches over to the dim (see Content).
         function onDimChanged(): void {
             root.show();
+            root.dim = root.monitor?.dim ?? 1;
         }
 
         target: root.monitor
@@ -114,6 +117,7 @@ Item {
             sourceVolume: root.sourceVolume
             sourceMuted: root.sourceMuted
             brightness: root.brightness
+            dim: root.dim
         }
     }
 }

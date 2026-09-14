@@ -306,7 +306,11 @@ Singleton {
         // Takes a level from minDim - 1 to 1: 0..1 is the panel's brightness,
         // below 0 keeps the panel at 0 and dims the picture instead.
         function setBrightness(value: real): void {
-            value = Math.max(minDim - 1, Math.min(1, value));
+            // Whole percents. Stepping by 0.1 leaves float residue (0.3 - 3 *
+            // 0.1 is 2.8e-17, not 0), and a level a hair below 0 would count
+            // as dimming at 100 %: the OSD stuck in dim mode, and every step up
+            // recomputed from that near-0 level instead of climbing.
+            value = Math.round(Math.max(minDim - 1, Math.min(1, value)) * 100) / 100;
             if (Math.round(pendingLevel * 100) === Math.round(value * 100))
                 return;
 
@@ -353,7 +357,8 @@ Singleton {
         // Instant, unlike DDC: no throttle. Without ctm-dim the level simply
         // stops at 0, as it did before.
         function setDim(factor: real): void {
-            if (Math.round(factor * 100) === Math.round(dim * 100))
+            factor = Math.round(factor * 100) / 100; // so "not dimming" is exactly 1
+            if (factor === dim)
                 return;
             if (root.setOutputDim(modelData.name, factor))
                 dim = factor;

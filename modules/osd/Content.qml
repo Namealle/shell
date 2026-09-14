@@ -20,6 +20,7 @@ Item {
     required property real sourceVolume
     required property bool sourceMuted
     required property real brightness
+    required property real dim
 
     implicitWidth: layout.implicitWidth + Tokens.padding.large + layout.anchors.horizontalCenterOffset * 2
     implicitHeight: layout.implicitHeight + Tokens.padding.large * 2
@@ -97,12 +98,17 @@ Item {
                 implicitWidth: Tokens.sizes.osd.sliderWidth
                 implicitHeight: Tokens.sizes.osd.sliderHeight
 
+                // Past brightness 0 the slider switches to the picture dim: it
+                // fills back up (dim 100 %), follows the dim down to its floor
+                // and hands back to brightness once raised to full again.
                 FilledSlider {
+                    readonly property bool dimming: root.dim < 1
+
                     anchors.fill: parent
 
-                    icon: `brightness_${(Math.round(value * 6) + 1)}`
-                    value: root.brightness
-                    onMoved: root.monitor?.setBrightness(value)
+                    icon: dimming ? "contrast" : `brightness_${(Math.round(value * 6) + 1)}`
+                    value: dimming ? root.dim : root.brightness
+                    onMoved: root.monitor?.setBrightness(dimming ? value - 1 : value)
                 }
             }
         }
