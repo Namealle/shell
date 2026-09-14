@@ -50,13 +50,41 @@ Singleton {
     function increaseBrightness(): void {
         const monitor = getMonitor("active");
         if (monitor)
-            monitor.setBrightness(monitor.pendingBrightness + GlobalConfig.services.brightnessIncrement);
+            monitor.setBrightness(monitor.pendingLevel + GlobalConfig.services.brightnessIncrement);
     }
 
     function decreaseBrightness(): void {
         const monitor = getMonitor("active");
         if (monitor)
-            monitor.setBrightness(monitor.pendingBrightness - GlobalConfig.services.brightnessIncrement);
+            monitor.setBrightness(monitor.pendingLevel - GlobalConfig.services.brightnessIncrement);
+    }
+
+    // Past brightness 0 the panel has nothing darker to give, so the picture
+    // itself is dimmed: ctm-dim, a small helper on PATH kept outside this
+    // repo, holds Hyprland's CTM manager (hyprland-ctm-control-v1) and
+    // multiplies one output's colours by a factor. It reads
+    // "<connector> <factor>" lines on stdin. Per output, unlike hyprsunset,
+    // whose single gamma dims every monitor at once.
+    function setOutputDim(connector: string, factor: real): bool {
+        if (!dimProc.running)
+            return false;
+        dimProc.write(`${connector} ${factor.toFixed(3)}\n`);
+        return true;
+    }
+
+    Process {
+        id: dimProc
+
+        command: ["ctm-dim"]
+        running: true
+        stdinEnabled: true
+        // The compositor resets every CTM when ctm-dim goes away, so the
+        // screens are back at full picture brightness: say so.
+        onRunningChanged: {
+            if (!running)
+                for (const m of root.monitors)
+                    m.dim = 1;
+        }
     }
 
     onMonitorsChanged: {
@@ -118,6 +146,13 @@ Singleton {
             return root.getMonitor(query)?.pendingBrightness ?? -1;
         }
 
+        // The level every control steps through: 0..1 is the panel's
+        // brightness, below 0 the picture is dimmed (-0.05 = 95 %). -1 for an
+        // unknown monitor, which is below the -0.8 floor.
+        function getLevelFor(query: string): real {
+            return root.getMonitor(query)?.pendingLevel ?? -1;
+        }
+
         function set(value: string): string {
             return setFor("active", value);
         }
@@ -128,22 +163,24 @@ Singleton {
             if (!monitor)
                 return "Invalid monitor: " + query;
 
+            // Relative steps build on pendingLevel so they carry on below 0
+            // into dimming, exactly like the keys and scroll do.
             let targetBrightness;
             if (value.endsWith("%-")) {
                 const percent = parseFloat(value.slice(0, -2));
-                targetBrightness = monitor.pendingBrightness - (percent / 100);
+                targetBrightness = monitor.pendingLevel - (percent / 100);
             } else if (value.startsWith("+") && value.endsWith("%")) {
                 const percent = parseFloat(value.slice(1, -1));
-                targetBrightness = monitor.pendingBrightness + (percent / 100);
+                targetBrightness = monitor.pendingLevel + (percent / 100);
             } else if (value.endsWith("%")) {
                 const percent = parseFloat(value.slice(0, -1));
                 targetBrightness = percent / 100;
             } else if (value.startsWith("+")) {
                 const increment = parseFloat(value.slice(1));
-                targetBrightness = monitor.pendingBrightness + increment;
+                targetBrightness = monitor.pendingLevel + increment;
             } else if (value.endsWith("-")) {
                 const decrement = parseFloat(value.slice(0, -1));
-                targetBrightness = monitor.pendingBrightness - decrement;
+                targetBrightness = monitor.pendingLevel - decrement;
             } else if (value.includes("%") || value.includes("-") || value.includes("+")) {
                 return `Invalid brightness format: ${value}\nExpected: 0.1, +0.1, 0.1-, 10%, +10%, 10%-`;
             } else {
@@ -179,6 +216,14 @@ Singleton {
         // single throttle window compute the same result, so a fast scroll or
         // knob spin collapses into one step instead of accumulating.
         readonly property real pendingBrightness: isNaN(queuedBrightness) ? brightness : queuedBrightness
+
+        // Below 0: `dim` multiplies the picture (1 = untouched, minDim = the
+        // floor), and pendingLevel folds it into the brightness scale as
+        // negative values -- -0.05 is dim 0.95 -- so every control keeps
+        // stepping one number straight through 0.
+        readonly property real minDim: 0.2
+        property real dim: 1
+        readonly property real pendingLevel: dim < 1 ? dim - 1 : pendingBrightness
 
         readonly property Process initProc: Process {
             stdout: StdioCollector {
@@ -248,16 +293,31 @@ Singleton {
             interval: 500
             onTriggered: {
                 if (!isNaN(monitor.queuedBrightness)) {
-                    // Clear before re-entering: setBrightness compares against
-                    // pendingBrightness, which reads this very value while set.
+                    // Clear before re-entering: setPanelBrightness compares
+                    // against pendingBrightness, which reads this very value
+                    // while set.
                     const queued = monitor.queuedBrightness;
                     monitor.queuedBrightness = NaN;
-                    monitor.setBrightness(queued);
+                    monitor.setPanelBrightness(queued);
                 }
             }
         }
 
+        // Takes a level from minDim - 1 to 1: 0..1 is the panel's brightness,
+        // below 0 keeps the panel at 0 and dims the picture instead.
         function setBrightness(value: real): void {
+            value = Math.max(minDim - 1, Math.min(1, value));
+            if (Math.round(pendingLevel * 100) === Math.round(value * 100))
+                return;
+
+            setDim(value < 0 ? 1 + value : 1);
+            setPanelBrightness(Math.max(0, value));
+        }
+
+        // The panel alone, 0..1. The throttle timer replays queued values
+        // through here, never through setBrightness: a queued 0 is the panel's
+        // half of a dimmed level, and replaying it as a level undid the dim.
+        function setPanelBrightness(value: real): void {
             value = Math.max(0, Math.min(1, value));
             const rounded = Math.round(value * 100);
             // Compare against where we are heading, not where we last wrote --
@@ -288,6 +348,15 @@ Singleton {
                 verifyTimer.interval = verifyDelay;
                 verifyTimer.restart();
             }
+        }
+
+        // Instant, unlike DDC: no throttle. Without ctm-dim the level simply
+        // stops at 0, as it did before.
+        function setDim(factor: real): void {
+            if (Math.round(factor * 100) === Math.round(dim * 100))
+                return;
+            if (root.setOutputDim(modelData.name, factor))
+                dim = factor;
         }
 
         function initBrightness(): void {

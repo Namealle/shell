@@ -89,9 +89,9 @@ Item {
                     if (!monitor)
                         return;
                     if (event.angleDelta.y > 0)
-                        monitor.setBrightness(monitor.brightness + GlobalConfig.services.brightnessIncrement);
+                        monitor.setBrightness(monitor.pendingLevel + GlobalConfig.services.brightnessIncrement);
                     else if (event.angleDelta.y < 0)
-                        monitor.setBrightness(monitor.brightness - GlobalConfig.services.brightnessIncrement);
+                        monitor.setBrightness(monitor.pendingLevel - GlobalConfig.services.brightnessIncrement);
                 }
 
                 implicitWidth: Tokens.sizes.osd.sliderWidth

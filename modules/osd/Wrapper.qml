@@ -78,6 +78,12 @@ Item {
             root.brightness = root.monitor?.brightness ?? 0;
         }
 
+        // Below 0 the brightness stays put while the picture dims; still show
+        // the OSD so the step is acknowledged.
+        function onDimChanged(): void {
+            root.show();
+        }
+
         target: root.monitor
     }
 
