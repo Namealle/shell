@@ -996,6 +996,15 @@ within 20 % of the reference's.
 v11 was 81 % one rigid motion. v12 is 59 %, with 1.9× the non-radial component and 78 % more spread of radial speed *within* a radius bin, which is the layer parallax
 measured on pixels rather than asserted.
 
+### H2. And on his own screen
+
+`tools/sn_live.py` over 150 captured frames (DP-3, 2160x3840, uncovered). **No sky flash:** the
+far half of the buffer steps by **+0.000075/255** at the detonation against a frame-to-frame
+noise floor of **0.00125/255** — one seventeenth of what the sky does anyway. **The remnant is
+its own object:** 1.98 px/frame of motion inside it, +0.86 to +1.19 of that radial about its own
+site, and a bulk motion of 0.92 px/frame while the star field it sits in travels at 3.11
+px/frame in the same frames.
+
 ### I. What it costs
 
 Two outputs uncovered (HDMI-A-1 3440×1440, DP-3 1440×2560 @ dpr 2), `starfield-shell perf`:
