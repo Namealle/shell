@@ -289,7 +289,12 @@ function main() {
     const document = rulesContext.validateDocument(configPath ? JSON.parse(readFileSync(configPath, "utf8")) : null);
     const h = makeHost(document, { width: W, height: H, screenSeed: 20260917, hole: false });
     h._state.clock = 0;
-    const e = h.captureEvent(1, 3, 0, family);
+    // COMET_INDEX picks a different hash stream. The disconnection is a 30 %
+    // draw, and a pass that happens to fire one has its measured ion REACH
+    // extended by the detached piece -- which is correct, and which confounds
+    // "does the dust peak after the ion" if it is the only pass measured.
+    const index = Number(process.env.COMET_INDEX) || 3;
+    const e = h.captureEvent(1, index, 0, family);
     // COMET_DISCONNECT=1 forces the severing to happen, and at a known moment,
     // so M12 is a measurement and not a wait for a 30 % draw.
     const forceDE = Number(process.env.COMET_DISCONNECT) || 0;

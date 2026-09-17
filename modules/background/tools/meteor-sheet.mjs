@@ -57,6 +57,12 @@ function previewShader() {
     const src = readFileSync(FRAG, "utf8");
     const kernels = KERNELS.filter(n => new RegExp("^(?:float|vec2|vec3|vec4)\\s+" + n + "\\s*\\(", "m").test(src))
         .map(n => fragFunction(src, n)).join("\n\n");
+    // v11's eventSlot took eight arguments; v12's takes ten. The call is
+    // written against whichever one was lifted, so this tool can be pointed
+    // at an older tree and produce the "before" of its own measurements.
+    const v12 = /vec3 eventSlot\([^)]*vec4 burn/.test(src);
+    const slotArgs = i => `ubuf.event${i}Head, ubuf.event${i}Colour, ubuf.event${i}Tail01, ubuf.event${i}Tail23, ubuf.event${i}Tail4, ubuf.event${i}Shape, ubuf.event${i}Bounds`
+        + (v12 ? `, ubuf.event${i}Burn, ubuf.meteorTone` : "");
     return `#version 450 core
 layout(location = 0) in vec2 qt_TexCoord0;
 layout(location = 0) out vec4 fragColor;
@@ -90,9 +96,9 @@ vec3 decodeDisplay(vec3 c) {
 void main() {
     vec2 pixel = qt_TexCoord0 * ubuf.resolution;
     vec3 sky = meteorStorm(pixel);
-    vec3 events = eventSlot(pixel, ubuf.event0Head, ubuf.event0Colour, ubuf.event0Tail01, ubuf.event0Tail23, ubuf.event0Tail4, ubuf.event0Shape, ubuf.event0Bounds, ubuf.event0Burn, ubuf.meteorTone);
-    events += eventSlot(pixel, ubuf.event1Head, ubuf.event1Colour, ubuf.event1Tail01, ubuf.event1Tail23, ubuf.event1Tail4, ubuf.event1Shape, ubuf.event1Bounds, ubuf.event1Burn, ubuf.meteorTone);
-    events += eventSlot(pixel, ubuf.event2Head, ubuf.event2Colour, ubuf.event2Tail01, ubuf.event2Tail23, ubuf.event2Tail4, ubuf.event2Shape, ubuf.event2Bounds, ubuf.event2Burn, ubuf.meteorTone);
+    vec3 events = eventSlot(pixel, ${slotArgs(0)});
+    events += eventSlot(pixel, ${slotArgs(1)});
+    events += eventSlot(pixel, ${slotArgs(2)});
     fragColor = vec4(clamp(encodeDisplay(decodeDisplay(sky) + decodeDisplay(events)), 0.0, 1.0), 1.0);
 }
 `;
@@ -343,7 +349,10 @@ function main() {
     const host = () => makeHost(document, { width: W, height: H, screenSeed: 20260917, hole: false });
 
     let rendered = 0;
-    const tone = host().meteorToneVector(0);
+    // v11 has no tone block; the shader then reads zeros and draws the shape
+    // change only, which is exactly what the 'before' should be.
+    const h0 = host();
+    const tone = h0.meteorToneVector ? h0.meteorToneVector(0) : [0, 0, 0, 4.5];
     const render = (name, storm, slots, keep) => {
         const u = join(outDir, name + ".uniforms");
         const raw = join(outDir, label + "-" + name + ".f32");
@@ -395,7 +404,10 @@ function main() {
         }
         const span = Math.max(1e-6, arc);
         for (const fr of frames) fr.pathU = Number((fr.arc / span).toFixed(4));
-        meteors.push({ index: k, family, fireball: !!e.fireball, duration: Number(e.duration.toFixed(3)), distance: Number(e.distance.toFixed(1)), tail: Number(e.tail.toFixed(1)), pointWidth: Number(e.pointWidth.toFixed(3)), arc: Number(arc.toFixed(1)), curveF: Number(e.curveF.toFixed(3)), headShare: Number(e.headShare.toFixed(3)), speed01: Number(e.speed01.toFixed(3)), doublePeak: !!e.doublePeak, flares: (e.flares || []).map(f => [Number(f[0].toFixed(3)), Number(f[1].toFixed(2))]), frames });
+        // The v12 draws are absent on an older tree, which is the point of
+        // being able to point this at one.
+        const n3 = x => x === undefined ? null : Number(x.toFixed(3));
+        meteors.push({ index: k, family, fireball: !!e.fireball, duration: Number(e.duration.toFixed(3)), distance: Number(e.distance.toFixed(1)), tail: Number(e.tail.toFixed(1)), pointWidth: Number(e.pointWidth.toFixed(3)), arc: Number(arc.toFixed(1)), curveF: n3(e.curveF), headShare: n3(e.headShare), speed01: n3(e.speed01), doublePeak: !!e.doublePeak, flares: (e.flares || []).map(f => [Number(f[0].toFixed(3)), Number(f[1].toFixed(2))]), frames });
     }
 
     // ---- 2. the ordinary fireball -----------------------------------------
@@ -425,7 +437,7 @@ function main() {
         }
         const span = Math.max(1e-6, arc);
         for (const fr of frames) fr.pathU = Number((fr.arc / span).toFixed(4));
-        fireballs.push({ index: 500 + k, duration: Number(e.duration.toFixed(3)), curveF: Number(e.curveF.toFixed(3)), flares: (e.flares || []).map(f => [Number(f[0].toFixed(3)), Number(f[1].toFixed(2))]), frames });
+        fireballs.push({ index: 500 + k, duration: Number(e.duration.toFixed(3)), curveF: e.curveF === undefined ? null : Number(e.curveF.toFixed(3)), flares: (e.flares || []).map(f => [Number(f[0].toFixed(3)), Number(f[1].toFixed(2))]), frames });
     }
 
     // ---- 3. the storm fireball's persistent train --------------------------
@@ -461,13 +473,28 @@ function main() {
                 // v12: the train is a ray. p0/p3 are its UNWARPED axis, which
                 // is only the frame the ridge walk measures in -- the drawn
                 // centreline comes from where the light actually is.
-                p0: [Math.round(slot.tail01[0]), Math.round(slot.tail01[1])],
-                p3: [Math.round(slot.tail01[0] + slot.tail01[2] * slot.tail23[0]),
-                Math.round(slot.tail01[1] + slot.tail01[3] * slot.tail23[0])],
-                trainLen: Number(slot.tail23[0].toFixed(1)), trainWidth: Number(slot.tail4[0].toFixed(2)),
-                shearPx: Number(slot.tail23[1].toFixed(1)), fold: Number(slot.tail23[2].toFixed(4)),
-                widen: Number(slot.shape[0].toFixed(3)),
-                tone: [Number(slot.burn[0].toFixed(3)), Number(slot.burn[1].toFixed(3)), Number(slot.burn[2].toFixed(3))],
+                // v11 published the train as FOUR POINTS (tail01 = p0,p1 and
+                // tail23 = p2,p3); v12 publishes a ray (origin, direction) with
+                // the length and warp in tail23. Both are reduced to the same
+                // axis here -- the frame the ridge walk measures in -- so the
+                // same deformation numbers come out of either tree and the
+                // before/after is a comparison and not two different metrics.
+                ...(slot.burn
+                    ? {
+                        p0: [Math.round(slot.tail01[0]), Math.round(slot.tail01[1])],
+                        p3: [Math.round(slot.tail01[0] + slot.tail01[2] * slot.tail23[0]),
+                        Math.round(slot.tail01[1] + slot.tail01[3] * slot.tail23[0])],
+                        trainLen: Number(slot.tail23[0].toFixed(1)),
+                        shearPx: Number(slot.tail23[1].toFixed(1)), fold: Number(slot.tail23[2].toFixed(4)),
+                        widen: Number(slot.shape[0].toFixed(3)),
+                        tone: [Number(slot.burn[0].toFixed(3)), Number(slot.burn[1].toFixed(3)), Number(slot.burn[2].toFixed(3))]
+                    }
+                    : {
+                        p0: [Math.round(slot.tail01[0]), Math.round(slot.tail01[1])],
+                        p3: [Math.round(slot.tail23[2]), Math.round(slot.tail23[3])],
+                        trainLen: Number(slot.shape[0].toFixed(1)), shearPx: 0, fold: 0, widen: 1, tone: null
+                    }),
+                trainWidth: Number(slot.tail4[0].toFixed(2)),
                 trainGain: Number((slot.head[3] * slot.tail4[1]).toFixed(5))
             }));
         }

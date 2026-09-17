@@ -30,8 +30,16 @@ const validateDocument = rulesContext.validateDocument;
 
 // ---------------------------------------------------------------- extraction
 const qml = readFileSync(QML, "utf8");
+// Functions that only exist from a given version on. A tool that hard-requires
+// them cannot be pointed at an older tree, and a before/after measurement is
+// exactly the thing that needs to be. A name NOT in here is still fatal when
+// missing, so a typo is still a crash.
+const OPTIONAL = new Set(["lightCurveAt", "meteorToneVector", "cometRange",
+    "cometPerihelion", "cometActivity", "cometFramePass"]);
+
 function extract(name) {
     const head = qml.indexOf("\n    function " + name + "(");
+    if (head < 0 && OPTIONAL.has(name)) return "";
     if (head < 0) throw new Error("no function " + name + " in Starfield.qml");
     const open = qml.indexOf("{", head);
     let depth = 0, i = open;
