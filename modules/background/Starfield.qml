@@ -3834,6 +3834,12 @@ Item {
     property var _particleMassRef: undefined
     property var _particleSettings: ({})
     property string _particleSettingsText: ""
+    // The retained halves of prepareParticles: one geometry object and one
+    // numeric signature, so neither is rebuilt on a frame that changed nothing.
+    property var _particleGeometry: null
+    property var _particleSig: [NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN]
+    property bool _particleSigDirty: true
+    property string _particleSignature: ""
     property int _particleAtlasHeight: 0
     property int _particleRevision: 0
     property int _particlePublications: 0
@@ -3850,11 +3856,23 @@ Item {
         // radius, the capture band and the tidal reach, so no particle is ever
         // drawn on top of the object it is falling into. Read-only: the look of
         // the disk is BlackHole.qml's to change, and this follows it.
-        const geometry = {
-            innerRs: _hole.bhDisk.x, outerRs: _hole.bhDisk.y,
-            arcGain: _hole.bhArcs.x, arcRadiusRh: _hole.bhArcs.y,
-            arcSpacingRh: _hole.bhArcs.z, arcCount: _hole.bhArcs.w
-        };
+        // One retained object: this runs twice a frame per output and Physics
+        // only reads it, so a fresh one every time was garbage for nothing.
+        const geometry = _particleGeometry || (_particleGeometry = {
+            innerRs: 0,
+            outerRs: 0,
+            arcGain: 0,
+            arcRadiusRh: 0,
+            arcSpacingRh: 0,
+            arcCount: 0
+        });
+        const disk = _hole.bhDisk, arcs = _hole.bhArcs;
+        geometry.innerRs = disk.x;
+        geometry.outerRs = disk.y;
+        geometry.arcGain = arcs.x;
+        geometry.arcRadiusRh = arcs.y;
+        geometry.arcSpacingRh = arcs.z;
+        geometry.arcCount = arcs.w;
         // Serializing the settings twice a frame was pure garbage: both property
         // objects are replaced wholesale on an edit, so identity is the test.
         // blackHole.mass is the canonical key; particles.mass overrides it, so
@@ -3867,11 +3885,31 @@ Item {
             if (mass !== undefined && _particleSettings.mass === undefined)
                 _particleSettings.mass = mass;
             _particleSettingsText = JSON.stringify(_particleSettings);
+            _particleSigDirty = true;
         }
-        const signature = _particleSettingsText + ":" + w + ":" + h + ":" + rh
-            + ":" + geometry.innerRs + ":" + geometry.outerRs
-            + ":" + geometry.arcGain + ":" + geometry.arcRadiusRh
-            + ":" + geometry.arcSpacingRh + ":" + geometry.arcCount;
+        // Building a ten-part string and comparing it was the rest of that
+        // garbage, twice a frame per output, to answer a question that ten
+        // number comparisons answer. The signature stays a string because the
+        // published snapshot and publishParticles compare it by value; it just
+        // only changes when something in it does.
+        const sig = _particleSig;
+        if (_particleSigDirty || sig[0] !== w || sig[1] !== h || sig[2] !== rh
+            || sig[3] !== geometry.innerRs || sig[4] !== geometry.outerRs
+            || sig[5] !== geometry.arcGain || sig[6] !== geometry.arcRadiusRh
+            || sig[7] !== geometry.arcSpacingRh || sig[8] !== geometry.arcCount) {
+            _particleSigDirty = false;
+            sig[0] = w;
+            sig[1] = h;
+            sig[2] = rh;
+            sig[3] = geometry.innerRs;
+            sig[4] = geometry.outerRs;
+            sig[5] = geometry.arcGain;
+            sig[6] = geometry.arcRadiusRh;
+            sig[7] = geometry.arcSpacingRh;
+            sig[8] = geometry.arcCount;
+            _particleSignature = _particleSettingsText + ":" + sig.join(":");
+        }
+        const signature = _particleSignature;
         if (!_particles) {
             _particles = ParticlePhysics.create(w, h, rh, screenSeed ^ varietySeed, _particleSettings, undefined, geometry);
             // v10: the optical half of a transient birth. Physics must not reach

@@ -65,20 +65,26 @@ Item {
                 });
             if (starId >= 0 && pool.alive[starId] && pool.generation[starId] === starGen) {
                 const items = field._particleItems;
-                if (items)
+                // items.stride, never a literal: the render-instance stride is a
+                // contract Appearance.js owns and it has changed (21 -> 23 when
+                // the unit velocity moved into it). A hardcoded 21 here silently
+                // read the wrong column and failed "the precursor was drawn".
+                if (items) {
+                    const s = items.stride;
                     for (let n = 0; n < items.count; ++n)
-                        if (items.data[n * 21 + 16] === starId) {
+                        if (items.data[n * s + 16] === starId) {
                             starTrack.push({
                                 t: clock,
-                                core: items.data[n * 21 + 4],
-                                light: items.data[n * 21 + 10],
-                                r: items.data[n * 21 + 7],
-                                b: items.data[n * 21 + 9],
-                                x: items.data[n * 21],
-                                y: items.data[n * 21 + 1]
+                                core: items.data[n * s + 4],
+                                light: items.data[n * s + 10],
+                                r: items.data[n * s + 7],
+                                b: items.data[n * s + 9],
+                                x: items.data[n * s],
+                                y: items.data[n * s + 1]
                             });
                             break;
                         }
+                }
             }
         }
     }
