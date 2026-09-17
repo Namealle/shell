@@ -27,6 +27,13 @@ vm.runInContext(readFileSync(join(repo, "services", "ambient", "rules.js"), "utf
 // The moments worth a frame, as (label, age). Anything given as a function of
 // the captured episode is resolved after capture.
 function moments(e) {
+    // SN_MOMENTS overrides the phase list with explicit ages in seconds, so the
+    // same rig can render a SEQUENCE a second apart instead of a contact sheet.
+    // That is what tools/sn_flow_offscreen.py measures the remnant's internal
+    // motion from: offscreen, at a pinned site, with nothing on the screen to
+    // pollute it and no need to take over an output he might be looking at.
+    if (process.env.SN_MOMENTS)
+        return process.env.SN_MOMENTS.split(",").map((v, i) => ["t" + String(i).padStart(3, "0"), Number(v)]);
     const flashEnd = e.precursor + e.rise + e.hold;
     const shellEnd = flashEnd + e.shellSpan;
     return [

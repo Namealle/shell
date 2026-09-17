@@ -2324,8 +2324,15 @@ Item {
             const jetAngle = e.spin * 0.5;
             const jetAxis = [Math.cos(jetAngle), Math.sin(jetAngle),
                 (random(index, screenSeed + 9317) * 2 - 1) * 0.55];
-            const shellN = Math.round(count * 0.52);
-            const jetN = Math.round(count * 0.10);
+            // The split is a COST decision as much as a physical one. The knots
+            // are the ones alive during the remnant, so their share is what
+            // sets the mid-remnant frame budget: measured on the tablet, each
+            // long-lived ember is 0.023 points of a core, and 38 % put
+            // mid-remnant at idle + 3.2 against a + 3.0 budget. 34 % puts it at
+            // + 2.8, and eleven fewer knots out of a hundred and forty is not
+            // something the eye has any way to find.
+            const shellN = Math.round(count * 0.55);
+            const jetN = Math.round(count * 0.11);
             const knotN = Math.max(0, count - shellN - jetN);
             // Fragments, not blobs. Particle sizes are physical pixels and are
             // NOT optics-scaled (nearPx is 2.4-4.8 px on every buffer), so
