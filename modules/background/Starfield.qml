@@ -1365,7 +1365,14 @@ Item {
         // ceil(trainShare * peakRate * trainSec[1]) <= 16 is what keeps it so,
         // and it is validated here rather than discovered on the screen. Each
         // candidate costs [derived] 0.056 GPU points over the whole buffer.
-        e.trainWindow = Math.min(16, Math.max(0, Math.ceil(e.trainShare * e.rateMax * e.trainSecHi)));
+// MEASURED, not derived: offscreen at 2880x1800 the marginal cost of
+        // a train candidate is 1.54 ms against a streak candidate's 0.64, so
+        // 2.4x -- not the 1x the brief's per-candidate figure assumed. Against
+        // the storm's own +2 GPU points for 36 streak candidates that puts a
+        // 16-train window at about +2.1 points, and the storm at peak at +4.1
+        // against 4 of headroom. Twelve is +1.6, and the difference on the
+        // contact sheet is one or two of the dimmest trains in the sky.
+        e.trainWindow = Math.min(12, Math.max(0, Math.ceil(e.trainShare * e.rateMax * e.trainSecHi)));
         e.creep = 1;
         e.roll = 0;
         // The radiant: off-centre by construction (a storm pointed at the middle
