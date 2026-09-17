@@ -1117,9 +1117,21 @@ function step(s, dt, options) {
         var h=dt/count, half=h/2, invH=count/dt, t=clock, dead=false, zn=0;
         for (var m=0;m<count;++m) {
             var r2=x*x+y*y, g=0, r=0;
-            if (r2<outer2) { r=Math.sqrt(r2); g=smooth(floor,inner,r)*(1-smooth(inner,outer,r)); }
+            // smooth() inlined: a call into it and the clamp() inside it cost
+            // 125 ns in QML's JS engine against 25 ns for the arithmetic, and
+            // this runs per substep per particle. Same expression, same result.
+            if (r2<outer2) {
+                r=Math.sqrt(r2);
+                var ga=(r-floor)/(inner-floor); ga=ga>1?1:(ga>0?ga:0);
+                var gb=(r-inner)/(outer-inner); gb=gb>1?1:(gb>0?gb:0);
+                g=ga*ga*(3-2*ga)*(1-gb*gb*(3-2*gb));
+            }
             var gamma=doDrag ? drag*g : 0;
-            var nu=doTorque ? RATE[i]*smooth(0,3,t-CTIME[i]) : 0;
+            var nu=0;
+            if (doTorque) {
+                var rt=RATE[i];
+                if (rt!==0) { var ts=(t-CTIME[i])/3; ts=ts>1?1:(ts>0?ts:0); nu=rt*ts*ts*(3-2*ts); }
+            }
             if (gamma !== 0 || nu !== 0) {
                 if (r === 0) r=Math.sqrt(r2);
                 if (r > 0) {
@@ -1129,8 +1141,15 @@ function step(s, dt, options) {
                 }
             }
             var softened=r2+eps2;
-            var f=-mu/(softened*Math.sqrt(softened));
-            vx+=half*f*x; vy+=half*f*y;
+            // mu is exactly 0 in the camera regime (gravity = (1-blend)^2 with
+            // blend 1), and the kick it produces is then exactly 0 -- but the
+            // cube root of the softened radius is computed and thrown away all
+            // the same, twice per substep per particle. The mass IS off; skip
+            // its force. With mu non-zero this is the same arithmetic.
+            if (mu!==0) {
+                var f=-mu/(softened*Math.sqrt(softened));
+                vx+=half*f*x; vy+=half*f*y;
+            }
             var nx=x+h*vx, ny=y+h*vy;
             var cam=blend>0 && !TRANSIENT[i];
             if (cam) {
@@ -1138,7 +1157,12 @@ function step(s, dt, options) {
                 // scales about the centre by z/z'. Exact, exactly invertible --
                 // which is what makes reverse playback an exact reverse -- and
                 // one multiply. A slow roll rides along in the same 2x2.
-                var z=cameraDepthOf(s,i);
+                // cameraDepthOf's fast path is one array read; reaching it
+                // through two function calls (it calls cameraFar too) costs
+                // more than everything else in this branch. camFar is already
+                // hoisted, so read the slot and only call out to draw a depth.
+                var z=DZ[i];
+                if (!(z>=CAMERA_NEAR && z<=camFar)) z=cameraDepthOf(s,i);
                 zn=z-camDir*camRate*h;
                 if (zn<CAMERA_NEAR) zn=CAMERA_NEAR; else if (zn>camFar) zn=camFar;
                 DZ[i]=zn;
@@ -1182,10 +1206,17 @@ function step(s, dt, options) {
             if (doDeaths && deathR>0 && swept(x,y,nx,ny,deathR)) { VX[i]=vx; VY[i]=vy; kill(s,i,'absorbed'); dead=true; break; }
             var nr2=nx*nx+ny*ny;
             softened=nr2+eps2;
-            f=-mu/(softened*Math.sqrt(softened));
-            vx+=half*f*nx; vy+=half*f*ny;
+            if (mu!==0) {
+                var f2=-mu/(softened*Math.sqrt(softened));
+                vx+=half*f2*nx; vy+=half*f2*ny;
+            }
             g=0; r=0;
-            if (nr2<outer2) { r=Math.sqrt(nr2); g=smooth(floor,inner,r)*(1-smooth(inner,outer,r)); }
+            if (nr2<outer2) {
+                r=Math.sqrt(nr2);
+                var ha=(r-floor)/(inner-floor); ha=ha>1?1:(ha>0?ha:0);
+                var hb=(r-inner)/(outer-inner); hb=hb>1?1:(hb>0?hb:0);
+                g=ha*ha*(3-2*ha)*(1-hb*hb*(3-2*hb));
+            }
             gamma=doDrag ? drag*g : 0;
             if (gamma !== 0 || nu !== 0) {
                 if (r === 0) r=Math.sqrt(nr2);
@@ -1228,7 +1259,7 @@ function step(s, dt, options) {
                 var px=cx+nx, py=cy+ny;
                 if ((px<-pad || px>width+pad || py<-pad || py>height+pad)
                     && (nx*vx+ny*vy)>0
-                    && 0.5*(vx*vx+vy*vy)-mu/Math.sqrt(softened)>=0) {
+                    && 0.5*(vx*vx+vy*vy)-(mu!==0 ? mu/Math.sqrt(softened) : 0)>=0) {
                     VX[i]=vx; VY[i]=vy; kill(s,i,'escapes'); dead=true; break;
                 }
             }

@@ -57,7 +57,10 @@ function capacity(bins, maxItems, maxSupport, maxFlares, flareSupport, maxBends,
     var needed = 4 + bins.nx * bins.ny + references + Math.ceil(references / 16) + 8 * maxItems + 1;
     return Math.max(16, Math.ceil(needed / (256 * 16)) * 16);
 }
-function pack(previous, bins, items, meta, allocate) {
+// `probe`: see Binning.build. Absent on every ordinary frame and every test.
+function pack(previous, bins, items, meta, allocate, probe) {
+    var clk = probe ? probe.clock : null;
+    var pt0 = clk ? clk.elapsedNs() : 0, pt1 = 0;
     var out = layout(previous, bins, items.count, meta.minHeight);
     var length = out.width * out.height * 4;
     var fresh = !previous || !previous.bytes || previous.bytes.length !== length;
@@ -94,6 +97,7 @@ function pack(previous, bins, items, meta, allocate) {
             bytes[j1] = 0; bytes[j1 + 1] = 0; bytes[j1 + 2] = 0;
         }
     }
+    if (clk) { pt1 = clk.elapsedNs(); probe.packClear += pt1 - pt0; pt0 = pt1; }
     var written = previous && previous.occupied ? previous.occupied : [];
     var writtenCount = 0;
     var used = 0;
@@ -115,6 +119,7 @@ function pack(previous, bins, items, meta, allocate) {
     }
     out.occupied = written;
     written.length = writtenCount;
+    if (clk) { pt1 = clk.elapsedNs(); probe.packGrid += pt1 - pt0; pt0 = pt1; }
     // The instance loop is the hot one: byte offsets are computed once per texel
     // and written directly instead of through a closure.
     // Flat render instances (particles/Appearance.js): stride 21, field order
@@ -186,6 +191,7 @@ function pack(previous, bins, items, meta, allocate) {
         bytes[j + 30] = ((captured > 1 ? 1 : (captured > 0 ? captured : 0)) * 255 + 0.5) | 0;
     }
     rgb(out.texelsUsed - 1, 251, 127, 19);
+    if (clk) probe.packInst += clk.elapsedNs() - pt0;
     return out;
 }
 function verify(packet) {

@@ -113,7 +113,8 @@ if not isinstance(d, dict) or not d:
     print("   (no outputs registered)"); raise SystemExit
 keys = ["sec","frames","fps","msFrame","msAdvance","msPhysics","msPublish","msEvents",
         "msParts","msRender","msBin","msLayout","msPaint","msPack","msUpload",
-        "msAtlasTotal","worstMs","corePct","atlases","paints","alive","live",
+        "msAtlasTotal","msBinClear","msBinWalk","msBinGrid","msBinInsert",
+        "msPackClear","msPackGrid","msPackInst","worstMs","corePct","atlases","paints","alive","live",
         "transient","kicks","glows","items","atlasH","events","pendingEvents",
         "entries","hashes","publications","missed","sentinel"]
 names = [n for n in d if d[n]]

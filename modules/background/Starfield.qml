@@ -160,7 +160,20 @@ Item {
             paint: 0,
             pack: 0,
             upload: 0,
-            atlas: 0
+            atlas: 0,
+            // Handed to Binning.build and Packing.pack so the two halves of
+            // their cost -- the sweep over the whole bin GRID and the work per
+            // PARTICLE -- can be told apart. Absent without a clock.
+            sub: perfClock ? {
+                clock: perfClock,
+                binClear: 0,
+                binWalk: 0,
+                binGrid: 0,
+                binInsert: 0,
+                packClear: 0,
+                packGrid: 0,
+                packInst: 0
+            } : null
         };
     }
 
@@ -199,6 +212,13 @@ Item {
             msPack: ms(p.pack / n),
             msUpload: ms(p.upload / n),
             msAtlasTotal: ms(p.atlas / n),
+            msBinClear: p.sub ? ms(p.sub.binClear / n) : 0,
+            msBinWalk: p.sub ? ms(p.sub.binWalk / n) : 0,
+            msBinGrid: p.sub ? ms(p.sub.binGrid / n) : 0,
+            msBinInsert: p.sub ? ms(p.sub.binInsert / n) : 0,
+            msPackClear: p.sub ? ms(p.sub.packClear / n) : 0,
+            msPackGrid: p.sub ? ms(p.sub.packGrid / n) : 0,
+            msPackInst: p.sub ? ms(p.sub.packInst / n) : 0,
             worstMs: ms(p.worst),
             // share of ONE core this output's frame work took over the window
             corePct: Math.round(1000 * (p.frame + p.paint) / Math.max(1, span)) / 10,
@@ -3961,7 +3981,7 @@ Item {
             twinkle: shader.twinkle
         });
         const t1 = perf ? perfClock.elapsedNs() : 0;
-        _particleBins = ParticleBinning.build(_particleBins, _particleItems, pool.width, pool.height);
+        _particleBins = ParticleBinning.build(_particleBins, _particleItems, pool.width, pool.height, perf ? perf.sub : undefined);
         const t2 = perf ? perfClock.elapsedNs() : 0;
         if (perf) {
             perf.render += t1 - t0;
@@ -4214,6 +4234,12 @@ Item {
         x: -width - 1
         smooth: false
         renderTarget: Canvas.Image
+        // Immediate, NOT Threaded. Measured 2026-09-17 on the tablet: Threaded
+        // moved nothing off the main thread -- Qt runs the onPaint JS on the GUI
+        // thread either way and only the rasterisation crosses -- and cost 15.4
+        // -> 15.8 % of a core per output, plus a QQuickContext2D thread and 0.6
+        // points more on QSGRenderThread for the command buffer. V12's
+        // "unverified one-liner" is a loss; do not re-propose it.
         renderStrategy: Canvas.Immediate
         property var pixels: null
         property var packet: null
@@ -4228,7 +4254,7 @@ Item {
             packet = ParticlePacking.pack(packet, snapshot.bins, snapshot.items, snapshot, (w, h) => {
                 pixels = ctx.createImageData(w, h);
                 return pixels.data;
-            });
+            }, perf ? perf.sub : undefined);
             const t1 = perf ? root.perfClock.elapsedNs() : 0;
             // Qt 6 requires the explicit dirty rectangle for this data upload;
             // it also keeps the upload proportional to the texels actually used

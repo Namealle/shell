@@ -5,7 +5,13 @@ function growRows(old, size) {
     next.set(old);
     return next;
 }
-function build(previous, items, width, height) {
+// `probe` is the optional diagnostics accumulator (Starfield.qml's `perf`): an
+// object carrying an ElapsedTimer as `clock` and one nanosecond total per
+// phase. Absent -- which is every ordinary frame and every test -- it costs one
+// undefined test per phase and makes no clock call.
+function build(previous, items, width, height, probe) {
+    var clk = probe ? probe.clock : null;
+    var pt0 = clk ? clk.elapsedNs() : 0, pt1 = 0;
     var nx = Math.max(1, Math.ceil(width / 32));
     var ny = Math.max(1, Math.ceil(height / 32));
     var n = nx * ny;
@@ -25,6 +31,7 @@ function build(previous, items, width, height) {
         b.ranges = new Int32Array(Math.max(count * 4, b.ranges.length * 2));
     b.counts.fill(0);
     b.rowCount = 0;
+    if (clk) { pt1 = clk.elapsedNs(); probe.binClear += pt1 - pt0; pt0 = pt1; }
     var counts = b.counts, i, x, y, k;
     for (i = 0; i < count; ++i) {
         var base = i * stride, px = data[base], py = data[base + 1], radius = data[base + 5];
@@ -68,6 +75,7 @@ function build(previous, items, width, height) {
             for (x = bx0; x <= bx1; ++x) ++counts[y * nx + x];
         }
     }
+    if (clk) { pt1 = clk.elapsedNs(); probe.binWalk += pt1 - pt0; pt0 = pt1; }
     b.references = 0; b.maxOccupants = 0; b.overflowBins = 0; b.overflowPages = 0;
     for (k = 0; k < n; ++k) {
         var occupants = counts[k];
@@ -83,6 +91,7 @@ function build(previous, items, width, height) {
     b.offsets[n] = b.references;
     if (b.indices.length < b.references)
         b.indices = new Uint16Array(Math.max(b.references, b.indices.length * 2));
+    if (clk) { pt1 = clk.elapsedNs(); probe.binGrid += pt1 - pt0; pt0 = pt1; }
     var cursor = b.cursor, indices = b.indices, ranges = b.ranges, rows = b.rows;
     for (i = 0; i < count; ++i) {
         var at = ranges[4 * i + 2];
@@ -94,6 +103,7 @@ function build(previous, items, width, height) {
             }
         }
     }
+    if (clk) probe.binInsert += clk.elapsedNs() - pt0;
     return b;
 }
 
