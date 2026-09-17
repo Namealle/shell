@@ -667,3 +667,32 @@ bins on the portrait output against about two thousand that hold anything.
 
 Measure with `starfield-shell perf on|dump|off` and
 `tools/perf_sample.sh`; see STARFIELD.md "WHAT A FRAME COSTS".
+
+
+## v12 — what the meteor and comet work did NOT ask of the pool
+
+The v12 comets-and-meteors pass (STARFIELD.md, "v12") is almost entirely GPU-side, and that is a
+decision with two hard reasons behind it rather than a preference:
+
+* **`bendMaxPx` 64 forbids a particle from carrying a long streak at all.** A meteor's trail is
+  hundreds of pixels; a particle with a longer streak resizes the sampled texture, measured at
+  13 ms → 6700 ms per frame on llvmpipe and never recovering. **No meteor head can be a particle.**
+* **QML's JS charges 211 ns per particle-iteration against node's 15 ns** (V11-PERF), so anything
+  many, cheap and derivable from `(index, seed, time)` belongs in the fragment shader as stateless
+  hash-derived geometry — the route the v11 supernova's gas took.
+
+So the ablation streak, the four emitters, the persistent trains (both the slot fireball's warped
+polyline and the storm's second stateless stream), the fragment comb, the comet's rays, knots,
+synchrones, striae, grain, sodium tail, anti-tail and the whole disconnection event are fragment-shader
+geometry. The pool's involvement is unchanged from v10: the comet's nucleus and motes, the storm
+fireball's terminal spray and its `brightenNear`.
+
+**Measured live on his two outputs, v12 against idle**: the storm at peak and a comet at perihelion
+both cost **nothing resolvable on the main thread** (11.0–11.8 % of a core against an idle 10.9–11.4 %,
+worst frame 4.0–4.9 ms against an idle 4.3–4.9). That is the design working: the streaks, the trains
+and the tails never reach `advanceParticles` or `publishParticles` at all.
+
+**The ceilings that still bind, and were checked rather than assumed:** `glows: 4` (three storm
+fireballs plus a supernova is already the ceiling and the oldest is silently shifted out), and
+`debris.maxAlive` 400 shared with a supernova's 300–400 ejecta, so `spawnBurst`'s return has to be
+checked rather than trusted. v12 added no new sprays, so neither moved.

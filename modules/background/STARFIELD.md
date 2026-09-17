@@ -27,14 +27,14 @@ One validated snapshot owns configuration; neither process ever writes it. Full 
     "fragmenting":{"weight":0.02,"durationSec":[8,16],"gain":0.80,"tailShortSide":[0.08,0.16],"bendShortSide":[0.02,0.06],"cooldownSec":7200},
     "spiral":{"weight":0.10,"durationSec":[18,35],"gain":0.65,"tailShortSide":[0.08,0.18],"bendShortSide":[0,0.06],"cooldownSec":14400}}},
   "meteors": {"enabled":true,"interval":[45,120],"companionChance":0.04,"fireballChance":0.01,"paletteMix":0.25,"families":{
-    "straight":{"weight":0.72,"durationSec":[0.7,1.3],"gain":0.85,"tailShortSide":[0.08,0.14],"bendShortSide":[0,0]},
-    "curved":{"weight":0.20,"durationSec":[0.9,1.7],"gain":0.80,"tailShortSide":[0.04,0.10],"bendShortSide":[0.005,0.02]},
-    "skipping":{"weight":0.08,"durationSec":[1.2,2.2],"gain":0.70,"tailShortSide":[0.08,0.14],"bendShortSide":[0,0]}}},
+    "straight":{"weight":0.72,"durationSec":[0.7,1.3],"gain":0.85,"tailShortSide":[0.13,0.22],"bendShortSide":[0,0]},
+    "curved":{"weight":0.20,"durationSec":[0.9,1.7],"gain":0.80,"tailShortSide":[0.11,0.17],"bendShortSide":[0.005,0.02]},
+    "skipping":{"weight":0.08,"durationSec":[1.2,2.2],"gain":0.70,"tailShortSide":[0.12,0.19],"bendShortSide":[0,0]}}},
   "satellites": {"enabled":true,"interval":[150,330]},
   "events": {"headCap":3,"phenomenonCap":3,"phenomenonGainCap":1.6,"dramaCooldownSec":900,"rateScale":1,
     "shower":{"enabled":true,"everyHours":[0.42,1],"durationSec":[70,130],"gain":1,"rampFraction":0.32,"peakRate":6,
       "radiantBias":0.28,"paletteMix":0.30,"streakShortSide":[0.10,0.30],"headPx":[3,6],
-      "fireballs":[1,3],"trainSec":[12,26],"earthgrazerShare":0.08,"fragmentShare":0.06},
+      "fireballs":[1,3],"trainSec":[16,44],"earthgrazerShare":0.08,"fragmentShare":0.06},
     "slowWanderer":{"enabled":true,"everyHours":[0.75,2],"durationSec":[180,360],"gain":0.75}},
   "phenomena": {}, "blackHole": {}, "particles": {}, "particlesEnabled": true,
   "reactive": {"enabled":true,"contextScope":"perScreen","processPresenceWeight":0.35,"paletteBudget":0.45,
@@ -474,7 +474,7 @@ a **rate hump** and **fireballs**, and every ordinary streak in it is generated 
   `fragmentShare` (0.06) splits a head into three after its own midpoint. `headPx` [3,6] is the head sigma at a 2160 short side, spread across that pair per streak.
 - **Fireballs.** `fireballs` [1,3] per storm, spread across the peak, each on an ordinary transient head as **style 7**: a nucleus, a terminal flash 5-10 % of the short side
   across (a 0.90 s Gaussian in time - 3.3 % of its own peak per frame at 30 Hz, inside the 5 % the anti-strobe floors are proven against) and a persistent train that drifts and
-  SHEARS for `trainSec` [12,26] seconds after the head has gone. A fireball is AIMED: its ray and angular speed are solved so the flash lands on the buffer, and with the hole on
+  SHEARS for `trainSec` [16,44] seconds after the head has gone (v12; [12,26] through v11, which never reached `trainFoldSec` so no train could loop). A fireball is AIMED: its ray and angular speed are solved so the flash lands on the buffer, and with the hole on
   the whole ray - not only its far end - must miss the keep-out, because a train is a slot and a slot drawn across the shadow shines through it. A fireball with no clear ray in
   forty tries is dropped rather than aimed through the disk (1-2 in 400).
 - **Both regimes.** A storm streak is SKY: it is accumulated into the far-field, so one passing the hole is lensed by the same warp the background stars get, is eaten by the
@@ -488,7 +488,7 @@ a **rate hump** and **fireballs**, and every ordinary streak in it is generated 
   normalised to one 4K output.
 Storm keys CLAMP like the rest of the v4 shower block rather than rejecting. Bounds: `everyHours` ordered 0.25-168, `durationSec` ordered 20-600, `gain` 0-1.5,
 `rampFraction` 0.1-0.6, `peakRate` 0.2-8, `radiantBias` 0-0.45, `paletteMix` 0-0.45, `streakShortSide` ordered 0-0.45, `headPx` ordered 1-12, `fireballs` ordered 0-6 (rounded),
-`trainSec` ordered 0-60, `earthgrazerShare` and `fragmentShare` 0-0.35. v8's three keys keep their names, their meaning and their clamping; only their bounds widened, which
+`trainSec` ordered 0-180 since v12 (0-60 through v11), `earthgrazerShare` and `fragmentShare` 0-0.35. v8's three keys keep their names, their meaning and their clamping; only their bounds widened, which
 cannot reject a file that used to validate.
 `starfield-shell fire <family> <screen> <overrides>` now takes the TRANSIENT families too - `fire storm tablet ''`, `fire shower tablet ''`,
 `fire meteors '' ''`, `fire comet '' ''`, `fire satellites '' ''`, `fire slowWanderer '' ''` - as well as the seven radial names and `nebula`. v8 only knew the radial
@@ -1053,3 +1053,182 @@ The expansion law stays `R ∝ t^0.4`. The exponent is right for Sedov–Taylor 
 yet** — Vink et al. 2022 measure `m = 0.73 ± 0.10`. It is kept because he signed the deceleration off in v11 and changing it would move every radius in the episode;
 it is recorded here so the next pass knows it is a choice and not an oversight.
 
+
+
+## v12 — comets and meteors: burn, change, glare, deform
+
+> *"commets and metorieds idk what we use i dont have specific issues with them but they seems to be
+> underdeveloped and unrealistic specifically the special event once. because the rail looks
+> underdeveloped they just apper and disaper they dont burn change glare deform like a real once."*
+> — ledger 2404, 2026-09-17
+
+Four verbs. The shipped renderer did none of them, and the reason was structural in each case rather
+than a matter of tuning.
+
+### A. The ablation streak — `ablationStreak()` in the frag
+
+**The shipped meteor was a real one played backwards.** Its envelope peaked at **9 % of the life**
+(`ease(u/0.09)`), it decelerated **10.51×** so the drawn trail got SHORTER as it aged, its bloom
+existed for the first 16 % of the path and never again — the source called it *"the entry bloom of a
+meteor"*, and there is no such thing — and one colour drawn at birth was applied to head and trail
+alike. The trail's own width law shrank 1.0 → 0.35 while `stormTrainSegment` forty lines away already
+grew 0.55 → 1.95: **two code paths drawing the same physical object disagreed about its shape.**
+
+One kernel is now the body of every meteor in the sky. `eventSlot`'s style 0 calls it per polyline
+segment and `meteorStorm` calls it per accepted candidate, so a storm streak and an ordinary meteor
+are the same object drawn twice instead of two things that share a name.
+
+| | law | source |
+|---|---|---|
+| light curve | `L(x) = (x/F)^(sF) ((1-x)/(1-F))^(s(1-F))`, one `exp2` over two `log2` | `F` drawn N(0.52, 0.09), the measured population over 113 light curves |
+| deceleration | near-linear (1.18×); 2.94× only for a fireball | visible-phase deceleration is a few per cent; Žďár went 21.89 → 4.8 km/s |
+| width | `sigma * (1.4 + 3.2 u)`, growing | radial expansion 10.5 m/s, near-constant between 86 and 97 km |
+| breadth | a bloom on `L²` | the trail's width in every photograph is the PSF convolved with saturation, not the column |
+| glare | permanent, radius on `log(brightness)` | the saturated disc grows with the log of brightness |
+| head:trail | `shape.y`, drawn [0.50, 0.80] | 80:20 single-body to 50:50 strongly fragmenting (CAMO) |
+
+**`curveSharp` has a floor nobody should chase.** For this curve family the measured "pointedness"
+`P = width at −1 mag / width at −2 mag` is `1/sqrt(1 + 2^(-2/s))` at `F = 0.5`, **bounded below by
+1/√2 = 0.707 however sharp `s` is made**. The measured 0.70 ± 0.05 is not reachable by sharpening;
+it would need a different family. `s = 4.5` sits at 0.75 with the half maximum spanning half the path.
+
+### B. Four fixed tones, three clocks
+
+Colour changes because **which emitter is lit changes**, never because one hue is interpolated into
+another. Differential ablation gives this for free.
+
+| emitter | tone | where | clock |
+|---|---|---|---|
+| head core + wake | speed-drawn blue-white, `paletteMix` applies here only | the vapour cloud | `0.30 + 0.70·age` |
+| sodium sheath | fixed orange-yellow (589 nm) | peaks at `F − 0.25`, **gone before the end** | `0.10 + 0.90·age²` — fast |
+| [O I] train | fixed green (557.7 nm) | **atmospheric oxygen**, so only BEHIND the head | `0.62 + 0.38·age` — slow |
+| leading edge | violet-red (Ca II 393 + N₂ 631) | AHEAD of the head, fast entries only | with the head |
+
+The three clocks are the mechanism: the near half of a streak is white because the wake is still lit,
+the far half is green because the wake and its sodium have gone out and the [O I] train has not.
+The leading edge is drawn as a needle AND as a violet fringe on the leading half of the head's own
+bloom, because at a real head's angular size that is what a camera records.
+
+### C. Flares go in the DISC
+
+`flareMag` is in **magnitudes**. The gain is capped at 3.2× the family cap; the magnitudes reach the
+saturated disc **uncapped**. A head already at 255/255 cannot get brighter, so a flare drawn as a
+value is a flare nobody can see. Measured: the disc grows **1.41× median, 2.17× largest**.
+
+`flareShare` is **0.12 for ordinary meteors, not the 0.35 the design brief proposed**, and the brief's
+own digest is why: 86.6 % of 1496 CAMO videos show continuous fragmentation with no discrete flare,
+9.0 % negligible, and only **4.3 %** the gross kind that makes one. At 0.35 with the full magnitude
+range the flare became the light curve's maximum for a third of the sky and `F` moved
+0.525 ± 0.075 → **0.592 ± 0.147**.
+
+### D. Persistent trains — `trainPoint()` / `stormTrainRay()` and the storm's second stream
+
+The one persistent train in the tree was four points on the head's own path pulled along frozen
+bearings. Measured by a transverse-centroid ridge walk on rendered frames, a 20 s train turned through
+**0.07–3.16°** over its whole life with a sagitta of 0.3–2.3 % of its chord. The cap was structural:
+**three segments admit at most one inflection**, so it could bow and could never kink, S-bend or loop.
+
+**The fold is the point.** A displacement across the track is a graph over the along-track coordinate
+and can never double back on itself however large it is made. Warping the ALONG coordinate makes the
+vertex parameter → position map non-monotonic, and a non-monotonic centreline is what a loop is. The
+slot fireball's train is therefore an **eight-segment polyline whose vertices are warped in both
+coordinates**; the storm's own trains, which are many and are the dimmest things on the screen, get
+the shear evaluated at the sample point instead — three sines, no fold, still kinks.
+
+**The shear is derived from a wind speed**: 27 m/s to 81 m/s were measured at different points of one
+real Perseid train. `metres = differential × 180 s`, `radians = metres / 100 km`,
+`pixels = radians × focal` with `focal` the short side, gnomonic, at θ = 0.
+
+**The one honest approximation, stated rather than hidden:** the train's clock is COMPRESSED onto the
+three-minute panel of Cordonnier's six ("pronounced kinks, one or two loops"), because playing the
+real rate gives a straight bar for the whole of a 30 s train — which is exactly what shipped.
+
+Three tones on three clocks, straight from the chemistry: **[O I] green afterglow** (seconds), the
+**metal-line recombination** phase (tens of seconds), and the **FeO 570–630 nm continuum** for the
+rest of its life — measured at ~40× the Na D lines, so **a late train is distinctly orange, not grey**.
+
+### E. Slot priority, decided rather than discovered
+
+Three transient heads. v9 filled them with storm fireballs FIRST, and a fireball holds its head for
+the whole of its train. Two rules:
+
+1. an event's **first** head competes for any free slot; only its **extra** heads (a fragment's
+   branches, a meteor's companion) are capped at two. v9 capped the first head too, so **a meteor
+   with a companion already blocked the comet completely**.
+2. a fireball whose head is still burning takes a slot first but **never more than two of the three**.
+   One carrying only a TRAIN drops **below** the comet, the satellite and the wanderer.
+
+### F. Fragments that separate, and the earthgrazer
+
+Transverse separation is ballistic and **linear**; longitudinal lag is drag and **quadratic**. Three
+things this cost, all found by measuring:
+
+* the separation is normalised to the streak's own flight. Physically 100 m/s for a second at 100 km
+  is 0.057°, which on a short side spanning fifty degrees is **1.6 pixels**.
+* the transverse splay is bounded by the **candidate's own corridor** — the angle reject runs before
+  the hashes are drawn, at about 63 px, and widening it would roughly double the accepted area of
+  every streak in the storm. So the **comb along the path** carries the picture.
+* sizes are a **ladder**, not an independent draw per piece; drawn independently they come out equal
+  often enough that they carry the same drag and sit on the leader.
+
+The earthgrazer's **life yields to the window**: covering the measured 5–10 s at 8 streaks a second
+needs 83 candidates against a loop bounded at 48, so the drawn range is 3.0–7.5 s clamped to what the
+window holds at the rate currently running. Its sodium sheath is 2.1× the ordinary one, which is not
+decoration — at a 5° path angle it covers 57 km of path per 5 km of altitude drop, so it **spends its
+flight** in the 95–100 km band where Na and K ablate.
+
+### G. The comet: a pass, not a translation
+
+Every drawn property was birth-frozen; over an 8.4 s pass nothing changed but the position. They are
+now functions of distance from the light source through `m = H + 5 log Δ + 2.5 n log r`, n = 4.
+
+**Two approximations, both stated:** a screen chord is not an orbit — its `r` spans about 1.4×, not
+decades — so the real switch-on radii are mapped onto the pass's own range, which preserves the ORDER
+(dust, then ion, then sodium, and off again); and the coma's SIZE follows activity squared where the
+gains follow it linearly, because a linear law on a 1.4× range gives a 1.7× change nobody would call
+evolution. **A pass must contain its perihelion** or the whole thing draws a monotone fade;
+`cometFramePass` slides the chord until the light's *unclamped* perpendicular foot is inside it.
+
+Dust tail: synchrones that **move** (the shipped modulation had no time term at all), a separate
+**Sun-aligned striae family** at an offset angle, advected two-octave grain, a **hard sunward edge and
+a diffuse trailing one**, and colour warming outward. Ion tail: 0.008 short sides, **3–6 discrete
+rays** folding toward the axis at the measured ~0.9°/min, and **3 knots that accelerate** so the
+spacing stretches downstream. Sodium tail at perihelion: monochromatic 589 nm, **parallel-edged and
+ruler-straight** because β = 82–100. A narrow sunward anti-tail at the plane crossing.
+
+**The disconnection is a SEVERING, not a fade.** Two tails are evaluated, not one dimmed: the old one
+keeps its shape and is displaced outward at its own decaying gain while a new one grows from the coma.
+The gap peaks at **0.61 of the lit span**.
+
+### H. The UBO
+
+**2080 → 2272 B of 16384.** Eight v12 meteor vectors (`event0/1/2Burn`, `meteorTone`, `stormTone`,
+`stormBurn`, `stormTrain`, `stormWind`) and four shared comet ones (`cometIon`, `cometEvent`,
+`cometNa`, `cometExtra`), all **appended** so no existing offset moves and the four offscreen sheets
+that re-declare the layout by hand keep reading what they already read.
+
+### I. Tools
+
+`meteor-sheet.mjs` + `meteor_curve.py` (light curve, width, ridge, colour bins, train deformation),
+`comet-sheet.mjs` (the pass, the synchrone phase, the disconnection gap), `storm_fragments.py` (the
+head census), `meteor_strobe.mjs` (the anti-strobe report and the spatial bound that replaces it).
+`storm-sheet.mjs` gained `STORM_DENSE=n`.
+
+**Two measurement bugs found, both of the kind that would have "passed":** a cross-correlator whose
+best score started at 0 silently returned lag zero for any all-negative correlation, and a gap metric
+measured against a fixed window scored every ordinary comet a huge "gap" made entirely of the empty
+space past its own tip.
+
+### J. Anti-strobe
+
+A meteor is **exempt from the validator's temporal floors**, and `meteor_strobe.mjs` says so with the
+reason: those floors are for the radial phenomena, where a fixed point of light getting brighter fast
+is a pixel blinking. A meteor's light is carried by a MOVING object, so no pixel is lit for longer
+than the head's crossing time. **The binding rule is spatial** and is checked instead — every drawn
+component of every meteor, swept over its whole life including a flare's peak, sits inside its own
+published bounds box (worst margin 10.5 px), and the warped train is checked against the warp's own
+analytic worst case.
+
+  worst 30 fps step, no flare  26.2 % of that meteor's own peak
+  worst 30 fps step, flaring   30.7 %
+  the shipped v11 envelope     72 % on a 0.7 s meteor
