@@ -450,6 +450,19 @@ It costs LESS per frame than the division it replaced (two array reads), and a
 caller that passes no `curl` leaves both at zero and gets v10's behaviour.
 Measured: **293/293 embers drawn tangentially while 293/293 still move radially.**
 
+**v12: the GAS left the particle pool entirely, and none of the above moved.**
+The remnant's visible cloud is now thousands of stateless grains generated in
+the fragment shader (`snSlice()` in `starfield.frag`, STARFIELD.md "V12
+SUPERNOVA"), because QML's JS charges 211 ns per particle-iteration and
+thousands of anything on this thread is impossible rather than expensive. The
+CPU pool keeps exactly what it had — the shell, the jets and the long-lived
+knots, which are the BRIGHT material — and pays ten extra uniform vector writes
+a frame for the grain field. Nothing in `Physics.js`, `Appearance.js`,
+`Binning.js` or `Packing.js` changed for it, `pack-equivalence.mjs` and
+`atlas-equivalence.qml` stayed green through the whole pass, and the shell
+phase's cost is still what it was: 286 streaked transients on a 3440x1440
+output, against v11's 299 on a 1920x1200 one.
+
 `Appearance.transient(s, i, traits)` is the optical half, wired up once by the
 renderer (`pool.transientBirth`) exactly the way `birthCallback` is: Physics
 must not reach into Appearance's arrays. Event material takes its colour from

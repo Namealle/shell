@@ -824,3 +824,223 @@ move the GPU at all.
 `v11-supernova-trails.png` (the max composite — the ejecta's orange tracks fan out of the detonation point across the sky's own white streamlines, which is the one
 picture that shows it is a separate object with its own 3-D velocity distribution), `v11-supernova-phases.png`, and
 `v11-supernova-{reference.json,reference.csv,flash.json,live.json,cost.json,internal-flow.json}` plus `v10-supernova-internal-flow.json`.
+
+## V12 SUPERNOVA — the gas is a POPULATION, not a tinted field (2026-09-17)
+
+His verdict on v11 (ledger 2403): *"supernovas looks now much better but 2 things i want more is phase chaning when it changes the color it feels unatural and as
+just pure color fade transition. second is the gas physic. the color transition should more be of particles based ... atfrist it is full of green particles then over
+time more of particles that color is closer to red start appering ... also the gas right now feeels too static it should behave like real gas on the wind ... that gas
+is volumetric and 3 each part of it moves differently ... with it i think supernovas still look far from the reference image"*.
+
+Four complaints, one construction. The gas stopped being a noise field with a time-varying tint and became thousands of **stateless GPU grains** that are born, drift
+on a divergence-free wind, and die, each carrying a single colour it was born with. **Nothing lerps a hue.** The only thing that changes smoothly is how many grains of
+each tone are being born.
+
+### A. Why the grains are on the GPU and have no state
+
+QML's JS charges **211 ns per particle-iteration** against node's 15 ns (V11-PERF-REPORT.md), so thousands of grains on the main thread is not expensive, it is
+impossible; the GPU sat at 4 % with room to spare. So every grain's identity — birth time, life, position, size, stretch, brightness and TONE — comes out of
+`hash4(cell, generation, slice)`. There is no buffer, no atlas row and no frame-to-frame state anywhere: a grain is as procedural as one of the field's stars, and for
+the same reason. `gen` is a `floor()`, so every attribute downstream of it is constant between two births, which is the mechanical guarantee behind "a tracked grain's
+hue does not move".
+
+The v11 CPU ejecta (shell, jets, knots) are untouched and still the bright material.
+
+### B. Colour by population turnover, and the reverse shock that drives it
+
+Six populations, indexed by an INTEGER. A grain's index is chosen ONCE, from the birth-rate distribution **as it stood at that grain's birth time** — the shader
+reconstructs that from the published rate (`posRate`), which is the only way a stateless grain can know what the distribution looked like when it was born. The
+distribution slides; the grain does not.
+
+One scalar, `pos`, carries both structures so they can never disagree:
+
+```
+pos(u, t) = posLo + posSpan·u                      the RADIAL walk: Fe and bulk ejecta inside, sheets at the limb, knots on it, Si beyond
+          + toneAdvance·smoothstep(0, 0.45, u − rs(t))   the TIME walk: material the reverse shock has passed has advanced
+          − plume·cos⁴(φ − seed)·smoothstep(0.28, 0.86, u)   the inverted layer (see D)
+          + 1.95·n6.x + 0.80·n1.y                   spatial CLUSTERING, so populations come in patches not salt-and-pepper
+```
+
+`rs(t)` walks from 1.30 (nothing swept) to 0.10 over the remnant phase, so the turnover starts at the rim and travels IN. That is not a stylistic choice: in the
+ejecta's own frame Cas A's reverse shock is still moving inward at 1150–1300 km/s over most of the rim, and in the west it moves inward in the *observer's* frame too
+(−1884 ± 17 km/s, Vink et al. 2022, <https://iopscience.iop.org/article/10.3847/1538-4357/ac590f>). Each layer it reaches is heated and ionised and lights up in its
+element's colour — which is exactly the mechanism he described.
+
+**The four-wide hoisted window.** The palette is evaluated 4× per pixel, never per grain: `base = floor(pos − margin)` and a grain's tone is `mix`ed out of
+`snPop(base…base+3)` by the integer offset `idx − base`, which is exact at integers, so a grain is never the average of two populations. `test-events.mjs` sweeps 61
+ages × 61 radii × 6 corners and asserts `clamp(base + clamp(idx−base,0,3), 0, 5) == clamp(idx, 0, 5)` — the window must reconstruct every grain's own tone, because
+`base` is a `floor()` of a smooth field and a mis-sized window does not lose a stray pixel, it draws a hard edge along that field's level set.
+
+### C. The palette is MEASURED, twice
+
+A six-way cluster of the lit interior of `reference/sa0225Mosk01.jpg`, in linear light, each pixel normalised to its own peak so tone is separated from brightness,
+returns exactly six tones. The **median** tone of each cluster is used, not the mean: a mean of tones loses chroma by arithmetic, and the grains then lose more where
+they overlap.
+
+| # | population | tone (linear, peak 1) | area % | energy % | **emissivity** | dust frac |
+|---|---|---|---|---|---|---|
+| 0 | iron, magenta-violet | 0.931, 0.361, 1.000 | 15.8 | 8.9 | 0.56 | 0.55 |
+| 1 | bulk ejecta, blue | 0.153, 0.343, 1.000 | 25.9 | 14.7 | 0.57 | 0.62 |
+| 2 | shocked sheets, cyan | 0.446, 0.694, 1.000 | 15.0 | 20.9 | 1.39 | 0.30 |
+| 3 | blast wave, blue-white | 0.861, 0.883, 1.000 | 15.6 | **31.5** | **2.02** | 0.10 |
+| 4 | calcium/sulphur, yellow | 1.000, 0.957, 0.316 | 8.1 | 13.1 | 1.62 | 0.18 |
+| 5 | silicon, crimson | 1.000, 0.174, 0.302 | 19.5 | 10.9 | 0.56 | 0.40 |
+
+**Emissivity is the second measured number and it is what stops six tones reading as a plaid**: energy share over area share. The blast wave is 31.5 % of the light on
+15.6 % of the picture and the bulk ejecta 14.7 % on 25.9 %, so one is nearly four times the surface brightness of the other. It is folded into the rgb, which is free
+and leaves the hue untouched.
+
+**The element map, and which release it is.** Si red, S yellow, Ca green, Fe purple, blue = the highest-energy blast-wave continuum
+(<https://chandra.cfa.harvard.edu/elements/>, 2017 `casa_life`, 2025 release). Chandra has published **at least six different colour maps** for this object and the
+2024 25th-anniversary one contradicts this one outright (Si green, Fe red, <https://chandra.harvard.edu/photo/2024/casa/>), so naming the release is not pedantry. His
+reference is the element-map family: purple exists at all (only Fe gives it), the jets leaving the rim are red (Si-rich), and the knot patches are yellow beside green
+(S and Ca are co-located in the bright ring).
+
+**One honest departure.** A deep purple interior is an artistic choice, not the data: Cas A's Fe sits OUTSIDE the Si in the southeast — the layers are inverted — and
+the unshocked interior is cold (~100 K) and shows in the IR, not as an X-ray glow (Raymond et al. 2018, <https://arxiv.org/abs/1809.04101>; Hughes et al. 2000,
+<https://arxiv.org/pdf/astro-ph/9910474>). The palette is fitted to HIS image, which has the purple, so the purple stays — and the inverted layer is put in as well,
+as the `plume` term: in one frozen sector the schedule is pulled back toward iron at large radius and a violet plume reaches the rim through the warm knots.
+
+### D. Volume: four slices that are also four scales
+
+A plane at line-of-sight depth `z` cuts a shell of inner radius `a` in an annulus of outer radius √(1−z²) and inner √(a²−z²), so the two slices past |z| > a are
+filled **caps** — which is why the middle of the remnant carries material instead of being a hole. Each slice has its own lattice rotation, its own curl field, its own
+morph phase and its own perspective magnification `1/(1 + parallax·z)` — near material subtends more, so the slices separate radially as R grows, which is layer
+parallax for two multiplies and is the same effect the particle side already measures on the ejecta.
+
+They are also a **scale hierarchy**, and that is the change that stopped the gas reading as a field of rice: the lattice pitch runs 2.3× finer to 1.5× coarser than the
+`grainCells` dial, a factor of 3.5 end to end, with the nearest slice coarsest. Because an eddy's turnover time goes as its size to the two-thirds (Kolmogorov), the
+fine slices live proportionally shorter and carry proportionally less light — the speckle boils while the blobs drift, and most of the energy is in the big structures,
+which is what gives the gas a foreground.
+
+**Emission ADDS; only dust multiplies.** A young remnant's plasma is optically thin: it emits and does not reabsorb its own light. Compositing the glow with an
+over-operator makes the far cap disappear behind the near one instead of shining through it, which is the opposite of the translucency the whole kernel exists for.
+`gAcc` carries only the dust of the nearer slices.
+
+### E. The wind
+
+Curl noise (Bridson, Hourihan & Nordenstam, SIGGRAPH 2007): the curl of a scalar potential is divergence-free by construction, so advecting by `v = (∂ψ/∂y, −∂ψ/∂x)`
+never compresses grains into sinks the way a raw vector-noise field does — grains piling into blobs and leaving holes is the one artefact that would make this read as
+a texture again. `nebulaTap` returns two decorrelated channels per fetch, so **three forward-differenced taps give two independent potentials and therefore two
+independent flows**; forward rather than central because central costs four taps for a visually identical difference at this amplitude.
+
+The field **morphs, it does not slide.** Translating a potential in time is the cheap way to animate a flow and it reads as one picture arriving somewhere else, which
+is half of what "too static" means. The curl is linear in the potential, so cross-fading the two potentials the same three taps already produced evolves the field in
+place and is still exactly divergence-free. Each slice cross-fades on its own phase, so no two slices show the same flow.
+
+The grid is laid down in the flow-warped coordinate, which is how a stateless grain travels further than its own cell: the lattice itself is displaced, so cells
+stretch and shear like a Lagrangian mesh and the grains ride inside them. The displacement is held under one cell, and that is not a quality compromise, because a
+grain only lives `grainLifeSec` — it is reborn long before it would have needed to travel further. **Short lives are what make a one-step advection honest.**
+
+### F. THE 3×3 NEIGHBOURHOOD IS EXACT — and the artefact that proves why it must be
+
+A grain sits at its cell + [0.16, 0.84], so the nearest edge of the nine cells is **1.16 cells** away in every direction. If a grain's support stays under 1.16, no
+pixel outside the neighbourhood can be inside a grain and the nine cells are the complete answer, not an approximation.
+
+The first version violated that: a Gaussian has no support bound, the reject cut it at 4.5 % of peak, and the stretch pushed a long grain 2.6 cells out. Every
+elongated grain was being **sliced off square at the neighbourhood edge**, so the gas was crossed by hard straight lines ON THE GRAIN LATTICE. It survived rotating
+the noise octaves and survived turning the curl off, which is what finally identified it. The fix is a **compact kernel** `(1 − r²/rad²)²` — zero value AND zero slope
+at the support radius, so there is no step to crawl — plus `stretch ≤ 1.16/rad`, which lets small grains be long threads and holds only the largest rounder.
+
+**A fifth noise rule, joining the four in the v11 section:**
+
+5. **A `floor()` of a bilinear field DRAWS that field's lattice.** The level sets of a bilinear interpolant are straight inside each cell, so quantising anything
+   against `w` — the one octave that is neither warped nor rotated, because it is what warps the others — prints straight-edged polygons across the gas. This is
+   artefact family 2 arriving through a *quantisation* rather than through a ridge, which is why rotating the sharp octaves did not stop it. The clustering field gets
+   its own tap, warped by the coarse octave and rotated **47°**. The rule generalises: *the lattice that matters is the one a hard edge is taken against, not the one
+   that is sharpest.*
+
+### G. Before / after
+
+Remnant at mid-life, 2880×1800, `tools/sn_reference.py`:
+
+| | edge dens | knots/rad | knot diam | tangential | radial jets | cavities | **lum p50** | **lum p99** | **sat mean** |
+|---|---|---|---|---|---|---|---|---|---|
+| v11 | 1.50 | 28.8 | 0.0224 | 0.52 | 0.78 | 0.12 | 0.0274 | 0.1470 | 0.249 |
+| **v12** | **1.04** | 22.8 | 0.0252 | **0.61** | 0.90 | 0.21 | **0.1092** | **0.5301** | **0.430** |
+| Chandra `sa0225Mosk01` | 0.91 | 50.5 | 0.0170 | 0.58 | 0.77 | 0.14 | 0.1316 | 0.7971 | 0.707 |
+
+Colour by radius, (R−B)/(R+B), centre → rim. **v11 had the sign flipped against the frame he is pointing at** — it was fitted to the JWST one:
+
+```
+v11        −0.13 −0.06 +0.05 +0.08 +0.10 +0.20     red where the reference is blue
+v12        −0.12 −0.12 −0.20 −0.15 −0.06 −0.01
+Chandra    −0.50 −0.10 −0.17 −0.18 −0.11 +0.01
+```
+
+Brightness at three ages (same episode, same rig, linear):
+
+| | t+20 s (shell) | t+60 s (shell, late) | t+120 s (remnant) |
+|---|---|---|---|
+| v11 p50 / p99 | 0.4267 / 0.8589 | 0.0667 / 0.2636 | 0.0286 / 0.1882 |
+| **v12 p50 / p99** | 0.4252 / 0.8589 | 0.0667 / 0.2640 | **0.1057 / 0.4720** |
+
+The shell phase is unchanged to three decimals, because the grains are the REMNANT's gas; the remnant is **3.7× brighter at p50 and 2.5× at p99**, and its p50 lands
+within 20 % of the reference's.
+
+### H. Is it a turnover, and is the flow varied?
+
+`tools/sn_grains.py`. Mid-transition, 178–200 grains a frame matched between frames 0.4 s apart:
+
+* **tracked hue drift 0.0012 turns** (0.4° on the hue circle) against **0.2298 for randomly paired grains** (83°) — a ratio of **0.005**.
+* the hue histogram is **bimodal**: 12 of 16 moments through the episode have two populations visibly coexisting, and at t+180 s the second peak is **0.992** of the
+  first. A crossfade has one peak that slides; this has two at fixed hues whose heights trade.
+
+`tools/sn_flow_offscreen.py`, both trees through the same rig at the same ages:
+
+| | internal | radial | tangential | coherence (1 = rigid) | magnitude CV | layer parallax |
+|---|---|---|---|---|---|---|
+| v11 | 0.38 px/s | 0.30 | 0.15 | **0.81** | 1.43 | 1.19 |
+| **v12** | **0.59 px/s** | 0.34 | **0.28** | **0.59** | **2.08** | **2.12** |
+
+v11 was 81 % one rigid motion. v12 is 59 %, with 1.9× the non-radial component and 78 % more spread of radial speed *within* a radius bin, which is the layer parallax
+measured on pixels rather than asserted.
+
+### I. What it costs
+
+Two outputs uncovered (HDMI-A-1 3440×1440, DP-3 1440×2560 @ dpr 2), `starfield-shell perf`:
+
+| | idle | shell phase | mid-remnant | budget |
+|---|---|---|---|---|
+| HDMI-A-1 main thread (3440x1440) | 11.8 % | 20.0 % (+8.2, ~30 s) | **13.4 % (+1.6)** | idle + 3 |
+| DP-3 main thread (1440x2560 @ dpr 2) | 11.2 % | 16.9 % (+5.7) | **13.8 % (+2.6)** | idle + 3 |
+| worst frame | 4.95 ms | 6.09 ms | **5.23 ms** | < 8 ms |
+
+Mid-remnant and worst frame are inside budget on both outputs. **The shell phase on HDMI-A-1 is +8.2 against the +7 the brief allows**, for about 30 s, and it is
+reported rather than hidden. It is not the grains: the grain field is entirely GPU-side and the CPU pays ten extra vector writes a frame for it. That window holds
+286 streaked debris transients, which is v11's own cost (299 of them, +6.2, on a 1920x1200 tablet) arriving on an output with 2.1x the pixels. The long-lived knot
+share is the dial if he ever wants it lower.
+
+**On the GPU, `nvidia-smi`'s "utilization" cannot resolve this and should not be quoted for it**: it is the fraction of wall time any kernel was resident, and the sky
+already pins that at 30 fps on two outputs, so extra ALU raises clocks and power rather than the percentage. Power is the sensitive metric: a remnant on DP-3's
+2880×5120 buffer costs **+4.1 W** over a 45 s window against the same background load. Timed directly offscreen at that buffer size, the remnant kernel costs **≈10.6
+ms against v11's ≈4.5 ms** (same-frame renders, the constant EGL startup subtracted) — about 2.4×, from about five texture taps to about twenty and from ~110 ALU to a
+bounded 4 × 9 grain loop. **An idle sky pays nothing**: with the remnant over, v12 renders the same frame in 149.6 ms against v11's 150.2 ms, i.e. identically, because
+the kernel still rejects on one compare outside the bounds box.
+
+### J. The uniform block
+
+```
+snPop0..snPop5 = (r, g, b, dustFrac)   population tone, LINEAR, peak 1 x emissivity
+snGrain        = (grainGain, cellsPerUnit, lifeSec, grainSizeCells)   grainGain is ABSOLUTE linear
+snFlow         = (curlAmp, curlScale, plume, toneSpread)
+snTurn         = (posLo, posSpan, shockU, toneAdvance)
+snTurn2        = (shockUDot, sheetGain, grainOpacity, parallax)
+```
+
+Block 1920 → **2080 B** of 16384, offsets read off the baked `.qsb` (`snPop0` at 1440 … `snTurn2` at 1584). `grainGain` carries its own **1.35 → 5.40 calibration**,
+the same idea as the body's 0.34 and the nebula passage's 0.36, because the gas and the diffuse underlay are two layers now and one dial cannot land both.
+
+**Tools kept in step:** `events-sheet.mjs`'s UBO block, its kernel list (`snPop`, `snCurl`, `snSlice`) and `uniformText`; `fragFunction`'s regex learned `void`
+because `snCurl` returns two flow fields through `out` parameters.
+
+**New config keys** (`events.supernova`): `grainGain` 1.05, `grainCells` 20, `grainLifeSec` 7.5, `grainSize` 0.44, `grainOpacity` 0.42, `curlAmp` 0.44 (hard cap 0.5 —
+above that the 3×3 neighbourhood stops being exact and the gas sparkles at cell boundaries), `curlScale` 3.1, `parallax` 0.17, `toneSpread` 1.5, `sheetGain` 0.30,
+`plume` 2.3.
+
+### K. Sedov, kept deliberately
+
+The expansion law stays `R ∝ t^0.4`. The exponent is right for Sedov–Taylor (Leahy & Williams, <https://arxiv.org/pdf/1701.05942>) but **Cas A is not in that phase
+yet** — Vink et al. 2022 measure `m = 0.73 ± 0.10`. It is kept because he signed the deceleration off in v11 and changing it would move every radius in the episode;
+it is recorded here so the next pass knows it is a choice and not an oversight.
+
