@@ -1057,6 +1057,14 @@ function step(s, dt, options) {
     var shadow=s.shadow, deathR=shadow*(s.absorb === undefined ? 1 : s.absorb);
     var inner=s.captureInner, outer=s.captureOuter, outer2=outer*outer, drag=c.gamma;
     var floor=s.captureFloor;
+    // The two capture-window denominators, hoisted out of the particle loop and
+    // guarded EXACTLY the way smooth() guards them -- Math.max(1e-9, b - a), not
+    // a bare subtraction. A degenerate geometry can put the floor above the
+    // inner radius (a disk rim inside the shadow), and a bare negative
+    // denominator would flip the ramp instead of saturating it. It also keeps
+    // every ratio finite, which is what makes clamping to [0,1] here the same
+    // thing clamp() does (clamp() answers 0, not 1, for a non-finite input).
+    var floorDen=Math.max(1e-9, inner-floor), bandDen=Math.max(1e-9, outer-inner);
     // The camera regime crossfades against the orbital one over the hole's own
     // enable envelope: gravity and the capture drag fade out as the camera's
     // magnification fades in, so the toggle is a thirty-second change of regime
@@ -1122,8 +1130,8 @@ function step(s, dt, options) {
             // this runs per substep per particle. Same expression, same result.
             if (r2<outer2) {
                 r=Math.sqrt(r2);
-                var ga=(r-floor)/(inner-floor); ga=ga>1?1:(ga>0?ga:0);
-                var gb=(r-inner)/(outer-inner); gb=gb>1?1:(gb>0?gb:0);
+                var ga=(r-floor)/floorDen; ga=ga>1?1:(ga>0?ga:0);
+                var gb=(r-inner)/bandDen; gb=gb>1?1:(gb>0?gb:0);
                 g=ga*ga*(3-2*ga)*(1-gb*gb*(3-2*gb));
             }
             var gamma=doDrag ? drag*g : 0;
@@ -1213,8 +1221,8 @@ function step(s, dt, options) {
             g=0; r=0;
             if (nr2<outer2) {
                 r=Math.sqrt(nr2);
-                var ha=(r-floor)/(inner-floor); ha=ha>1?1:(ha>0?ha:0);
-                var hb=(r-inner)/(outer-inner); hb=hb>1?1:(hb>0?hb:0);
+                var ha=(r-floor)/floorDen; ha=ha>1?1:(ha>0?ha:0);
+                var hb=(r-inner)/bandDen; hb=hb>1?1:(hb>0?hb:0);
                 g=ha*ha*(3-2*ha)*(1-hb*hb*(3-2*hb));
             }
             gamma=doDrag ? drag*g : 0;

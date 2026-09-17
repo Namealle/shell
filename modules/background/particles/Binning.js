@@ -27,8 +27,10 @@ function build(previous, items, width, height, probe) {
             // pass, used to walk all of them every frame.
             touched: new Int32Array(n), touchedCount: 0 };
     }
-    // Flat render instances (particles/Appearance.js): stride 21, x/y/support at
-    // offsets 0/1/5. The same field order the packer reads.
+    // Flat render instances (particles/Appearance.js): x/y/support at offsets
+    // 0/1/5, the half-extents at 18/19 and the unit velocity at 21/22. The
+    // stride is the contract Appearance.js publishes as `items.stride` -- never
+    // a literal, it has changed once already.
     var data = items.data, stride = items.stride, count = items.count;
     if (count > 6400)
         throw new Error("Particle render-instance limit exceeded");
@@ -41,6 +43,10 @@ function build(previous, items, width, height, probe) {
     else for (i = 0; i < tc; ++i) counts[touched[i]] = 0;
     tc = 0;
     b.rowCount = 0;
+    // If the walk below throws on an invalid support, `touched` no longer
+    // describes what is in `counts`; this sentinel makes the next build clear
+    // the whole grid instead of trusting a half-written list.
+    b.touchedCount = n + 1;
     if (clk) { pt1 = clk.elapsedNs(); probe.binClear += pt1 - pt0; pt0 = pt1; }
     for (i = 0; i < count; ++i) {
         var base = i * stride, px = data[base], py = data[base + 1], radius = data[base + 5];
