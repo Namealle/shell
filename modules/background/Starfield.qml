@@ -1507,7 +1507,11 @@ Item {
             // one uniform block.
             burn: [e.curveF, e.curveSpread, e.flareShare, e.doublePeakShare],
             train: [e.trainShare, e.trainWindow, e.trainSecLo, e.trainSecHi],
-            wind: [e.trainShearPx, e.trainFoldSec, e.trainGain, e.trainDiffuseSec]
+            // 1.45 x trainGain: the key is one emitter's share of a head,
+            // and a PERSISTENT train is the same emitter seen with no head
+            // beside it to be read against. Matching them numerically made
+            // the residue invisible next to the streaks that left it.
+            wind: [e.trainShearPx, e.trainFoldSec, e.trainGain * 1.45, e.trainDiffuseSec]
         };
     }
 

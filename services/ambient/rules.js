@@ -540,9 +540,32 @@ function validateEvents(value, warn) {
             streakShortSide: interval(s.streakShortSide, [0.10, 0.30], 0, 0.45),
             headPx: interval(s.headPx, [3, 6], 1, 12),
             fireballs: interval(s.fireballs, [1, 3], 0, 6),
-            trainSec: interval(s.trainSec, [12, 26], 0, 60),
+            // v12: trainSec is the general train life, not just a fireball's.
+            // At [12, 26] no train in the sky ever reached trainFoldSec, so
+            // none could ever loop. Widening a default and its bound together
+            // keeps a config that set the old value valid.
+            trainSec: interval(s.trainSec, [16, 44], 0, 180),
             earthgrazerShare: number(s.earthgrazerShare, 0.08, 0, 0.35),
-            fragmentShare: number(s.fragmentShare, 0.06, 0, 0.35)
+            fragmentShare: number(s.fragmentShare, 0.06, 0, 0.35),
+            // ---- v12 ablation streak, clamping like every key in this block
+            // (the v2/v4 keys here clamp rather than reject, so a new sibling
+            // must clamp too or a file that used to validate starts warning).
+            curveF: number(s.curveF, 0.52, 0.20, 0.90),
+            curveSpread: number(s.curveSpread, 0.09, 0, 0.25),
+            curveSharp: number(s.curveSharp, 4.5, 0.5, 12),
+            doublePeakShare: number(s.doublePeakShare, 0.18, 0, 0.5),
+            flareShare: number(s.flareShare, 0.12, 0, 1),
+            flareMag: interval(s.flareMag, [1.5, 4.5], 0, 6),
+            flareSec: number(s.flareSec, 0.22, 0.10, 0.60),
+            headTrailRatio: interval(s.headTrailRatio, [0.50, 0.80], 0.3, 0.95),
+            naGain: number(s.naGain, 0.45, 0, 1),
+            trainGain: number(s.trainGain, 0.40, 0, 1),
+            leadingEdgeGain: number(s.leadingEdgeGain, 0.30, 0, 0.6),
+            // ---- v12 persistent trains
+            trainShare: number(s.trainShare, 0.13, 0, 0.40),
+            trainWindSpeed: number(s.trainWindSpeed, 45, 0, 160),
+            trainFoldSec: number(s.trainFoldSec, 22, 4, 120),
+            trainDiffuseSec: number(s.trainDiffuseSec, 34, 4, 240)
         },
         slowWanderer: {
             enabled: boolean(w.enabled, true),
@@ -1323,6 +1346,43 @@ function validateDocument(value, warn) {
             companionChance: number(meteor.companionChance, 0.04, 0, 1),
             fireballChance: number(meteor.fireballChance, 0.01, 0, 1),
             paletteMix: number(meteor.paletteMix, 0.25, 0, 0.45),
+            // ---- v12 THE ABLATION STREAK. Clamping, like the v2/v4 keys
+            // beside them: a rejecting sibling inside `meteors` would make a
+            // file that used to validate start warning.
+            //
+            // curveF/curveSpread   where along its path a meteor is brightest.
+            //                      0.52 +- 0.09 measured over 113 light
+            //                      curves; the shipped envelope peaked at 0.09
+            //                      of the LIFE, which is one played backwards.
+            // curveSharp           the curve's sharpness. Worth knowing before
+            //                      tuning it: this family's pointedness is
+            //                      bounded below by 0.707 however sharp it is
+            //                      made, so the measured 0.70 +- 0.05 is not
+            //                      reachable by sharpening. 4.5 sits at 0.75.
+            // flareShare           0.12, not the 0.35 the brief proposed:
+            //                      86.6 % of 1496 CAMO videos show continuous
+            //                      fragmentation with no discrete flare and
+            //                      only 4.3 % the gross kind that makes one.
+            // flareMag             MAGNITUDES. Drives the saturated disc, not
+            //                      only the gain -- a head already at 255/255
+            //                      cannot get brighter, and the disc can.
+            // naGain/trainGain/leadingEdgeGain
+            //                      the three emitters beside the head's own
+            //                      tone: sodium at 589 nm, the forbidden
+            //                      [O I] 557.7 nm train, and the ~10000 K
+            //                      second spectrum ahead of a fast head. All
+            //                      three at 0 leaves the shape change alone.
+            curveF: number(meteor.curveF, 0.52, 0.20, 0.90),
+            curveSpread: number(meteor.curveSpread, 0.09, 0, 0.25),
+            curveSharp: number(meteor.curveSharp, 4.5, 0.5, 12),
+            doublePeakShare: number(meteor.doublePeakShare, 0.18, 0, 0.5),
+            flareShare: number(meteor.flareShare, 0.12, 0, 1),
+            flareMag: interval(meteor.flareMag, [1.5, 4.5], 0, 6),
+            flareSec: number(meteor.flareSec, 0.22, 0.10, 0.60),
+            headTrailRatio: interval(meteor.headTrailRatio, [0.50, 0.80], 0.3, 0.95),
+            naGain: number(meteor.naGain, 0.45, 0, 1),
+            trainGain: number(meteor.trainGain, 0.40, 0, 1),
+            leadingEdgeGain: number(meteor.leadingEdgeGain, 0.30, 0, 0.6),
             families: validateFamilies(meteor.families, false)
         },
         comet: {

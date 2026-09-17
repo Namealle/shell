@@ -1145,6 +1145,20 @@ vec2 trainPoint(vec2 o, vec2 d, vec2 n, float len, float v, vec4 warp) {
     s *= warp.x * 0.4288 * (0.22 + 0.78 * clamp(uu, 0.0, 1.2));
     return o + d * (len * uu) + n * s;
 }
+// The across-track wind spectrum on its own, evaluated at the SAMPLE POINT
+// rather than at eight vertices. The slot fireball's train is one object and
+// gets the polyline above, and therefore gets loops; a storm's own trains are
+// many, they are the dimmest things on the screen, and they get this -- three
+// sines and no fold. It still kinks, because a three-term spectrum at three
+// scales does; it cannot double back on itself, because a displacement across
+// the track is a graph over the along-track coordinate. That is the honest
+// difference between the two, and it is a cost decision: sixteen candidates
+// with the polyline would be about 150 ALU on every pixel of the buffer.
+float trainShear(float u, float ph, float t) {
+    return (1.66667 * sin(3.769911 * u + ph * 4.1 + 0.031 * t)
+          + 0.47619 * sin(13.19469 * u + ph * 7.7 + 0.053 * t)
+          + 0.18868 * sin(33.30088 * u + ph * 11.3 + 0.079 * t)) * 0.4288;
+}
 // The drawn train: eight capsules on the warped centreline, max-combined so a
 // fold crossing itself brightens like a fold and not like a sum.
 //   widen  the diffusion factor; diffusivity goes as 1/pressure, so the HIGH
@@ -1376,7 +1390,83 @@ vec3 meteorStorm(vec2 pixel) {
             // meteors do -- the sodium is where the head is.
             extra += vec3(1.00, 0.58, 0.19) * (ubuf.stormTone.x * naProfile(pHead, F)
                    * 1.2 * exp2(-0.7213475 * r2 / variance) * sigma2 / variance);
-            sum += extra * bright * 0.85;
+            sum += extra * bright * 0.70;
+        }
+    }
+    // ---- v12: THE STORM'S OWN PERSISTENT TRAINS ---------------------------
+    // A meteor storm's picture is not the five or six streaks alive at one
+    // instant. It is what they LEAVE: after half a minute at peak there are
+    // several trains hanging in the sky, all radiating from one point, and
+    // that is what makes a storm legible AS a storm rather than as a few fast
+    // lines. It is also the complaint open since ledger 2284 -- he still
+    // cannot spot the special events -- and nothing that vanishes inside a
+    // second was ever going to answer it.
+    //
+    // 13.4 % of meteors leave a persistent train (Cordonnier, 4726 meteors),
+    // and the gate is TERMINAL HEIGHT below 93.5 km -- slow and deep, not fast
+    // and bright, which is the opposite of the folklore. So a fast streak's
+    // train is short and faint here and a slow one's is long and bright.
+    //
+    // A SECOND STATELESS STREAM: train index m advances at rate*trainShare per
+    // second on the storm's own phase, and the streak that left it is
+    // k = m/trainShare on the SAME index stream, so a train lies on a ray a
+    // meteor really flew rather than on one invented for it.
+    if (ubuf.stormTrain.x > 0.0 && ubuf.stormTrain.y > 0.5) {
+        float tPhase = ubuf.stormHead.z * ubuf.stormTrain.x;
+        float tTop = floor(tPhase);
+        int tWindow = int(ubuf.stormTrain.y);
+        float tGainCfg = ubuf.stormWind.z;
+        for (int j = 0; j < 16; ++j) {
+            if (j >= tWindow) break;
+            float m = tTop - float(j);
+            float k = floor(m / ubuf.stormTrain.x);
+            float a = stormHash(k, seed) * 6.2831853;
+            float dphi = phi - a;
+            dphi -= 6.2831853 * floor(dphi * 0.1591549 + 0.5);
+            vec4 h = hash4(vec2(k * 0.017, seed));
+            vec4 g = hash4(vec2(seed + 7.31, k * 0.017));
+            float grazer = step(h.x, ubuf.stormSpan.y);
+            float omega = mix(0.30 + 0.60 * h.y, 0.08 + 0.10 * h.y, grazer);
+            float life = mix(0.65 + 1.30 * h.z, 3.0 + 2.5 * h.z, grazer);
+            // Slow and deep: the train's life and gain both follow it.
+            float slow = 1.0 - clamp((omega - 0.08) / 0.82, 0.0, 1.0);
+            float tLife = mix(ubuf.stormTrain.z, ubuf.stormTrain.w, 0.20 + 0.80 * slow * (0.4 + 0.6 * g.y));
+            float tAge = (ubuf.stormHead.z - k) / rate - life;
+            if (tAge < 0.0 || tAge > tLife) continue;
+            float fast = clamp((omega - 0.30) / 0.60, 0.0, 1.0);
+            float theta = min(mix(0.05, 0.95, h.w * h.w) * (1.0 - 0.45 * fast) + mix(0.0, 0.40, grazer) + omega * life, 1.35);
+            float trail = mix(ubuf.stormShape.y, ubuf.stormShape.z, g.x) * mix(1.0, 2.2, grazer);
+            float rHead = focal * tan(theta);
+            float rFoot = focal * tan(max(theta - min(trail, omega * life), 0.004));
+            float span = max(rHead - rFoot, 1.0);
+            float tLive = tAge / max(tLife, 0.001);
+            float widen = 1.0 + 1.9 * (1.0 - exp2(-1.4426950 * tAge / max(2.0, ubuf.stormWind.w)));
+            float width = base * (2.2 + 1.6 * g.w) * 0.55;
+            float shearEnv = (1.0 - exp2(-3.6067 * tLive)) * 1.0855;
+            float shear = ubuf.stormWind.x * shearEnv;
+            float support = shear * 1.2 + width * 7.0 * widen;
+            if (abs(dphi * d) > support) continue;
+            if (d < rFoot - support || d > rHead + support) continue;
+            float u = clamp((rHead - d) / span, 0.0, 1.0);
+            float across = dphi * d - shear * trainShear(u, fract(h.w * 7.77), tAge) * (0.22 + 0.78 * u);
+            float w = width * (0.55 + 1.4 * u) * (1.0 + (widen - 1.0) * (1.0 - 0.55 * u));
+            float over = max(d - rHead, 0.0) + max(rFoot - d, 0.0);
+            // Mass is conserved as it widens, so as it spreads it dims; and the
+            // last three candidates of the window fade rather than pop out of
+            // existence when the loop's bound drops them.
+            float edge = 1.0 - smoothstep(float(tWindow) - 3.0, float(tWindow) - 0.2, float(j));
+            float value = exp2(-1.4426950 * (across * across + over * over) / (w * w))
+                        * pow(1.0 - tLive, 1.4) / widen * edge
+                        * smoothstep(0.0, 0.12, u) * (1.0 - 0.45 * u);
+            // Three tones on three clocks, the same chemistry the fireball's
+            // train reads, evaluated here because every train has its own age.
+            float green = exp2(-1.4426950 * tAge / 4.5);
+            float mt = (tAge - 9.0) * 0.0769231;
+            float metal = exp2(-1.4426950 * mt * mt);
+            float feo = 1.0 - exp2(-1.4426950 * max(0.0, tAge - 3.0) * 0.0625);
+            vec3 tone = (green * vec3(0.50, 1.00, 0.60) + metal * vec3(1.00, 0.92, 0.72)
+                       + feo * vec3(1.00, 0.52, 0.16)) / max(1e-4, green + metal + feo);
+            sum += value * tGainCfg * (0.25 + 0.75 * slow) * (0.35 + 0.65 * g.y) * tone;
         }
     }
     return gain * max(sum, vec3(0.0));

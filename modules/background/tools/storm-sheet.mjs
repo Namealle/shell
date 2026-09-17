@@ -46,7 +46,7 @@ function previewShader() {
     // remnant out of supernovaField into supernovaRemnant(), which is a SKY
     // layer this sheet never composites, so it is not lifted here and neither
     // is snPolar, which went with it.
-    const kernels = ["hash4", "lightCurve", "naProfile", "ablationStreak", "tailSegment", "cometField", "supernovaField", "radialField", "stormHash", "trainPoint", "stormTrainRay", "stormTrainSegment", "stormFireball", "meteorStorm", "eventSlot"]
+    const kernels = ["hash4", "lightCurve", "naProfile", "ablationStreak", "tailSegment", "cometField", "supernovaField", "radialField", "stormHash", "trainPoint", "trainShear", "stormTrainRay", "stormTrainSegment", "stormFireball", "meteorStorm", "eventSlot"]
         .filter(n => src.indexOf(n + "(") >= 0)
         .map(n => fragFunction(src, n)).join("\n\n");
     return `#version 450 core

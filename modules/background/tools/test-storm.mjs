@@ -208,7 +208,10 @@ for (const out of OUTPUTS) {
     check("the fireball flashes", sawFlash, `flash sigma ${c.flashSigma.toFixed(0)} px = ${(100 * c.flashSigma * 5 / shortSide).toFixed(1)} % of the short side across`);
     check("the flash has no strobe edge", worstFlashStep <= 0.05 * peak,
         `worst frame step ${worstFlashStep.toFixed(4)} = ${(100 * worstFlashStep / peak).toFixed(1)} % of the slot peak, against the 5 % anti-strobe floor`);
-    check("the train outlives the head by 10-30 s", sawTrain >= 10 && sawTrain <= 30, sawTrain.toFixed(1) + " s");
+    // v12 widened trainSec to [16, 44]: at [12, 26] no train ever reached
+    // trainFoldSec, so none could loop, and a storm's residue was gone before
+    // the next fireball arrived.
+    check("the train outlives the head by 14-46 s", sawTrain >= 14 && sawTrain <= 46, sawTrain.toFixed(1) + " s");
     check("the fireball is 2x an ordinary storm head", c.sigma / e.headSigma >= 1.7 && c.sigma / e.headSigma <= 2.4,
         `${c.sigma.toFixed(2)} px against ${e.headSigma.toFixed(2)} px`);
 
