@@ -16,6 +16,11 @@ Loader {
 
     required property string screenName
 
+    // The diagnostics probe reaches the renderer through the service's registry;
+    // `starfield-shell perf dump` then answers for every output at once.
+    onLoaded: Services.Starfield.registerRenderer(root.screenName, item)
+    Component.onDestruction: Services.Starfield.unregisterRenderer(root.screenName)
+
     sourceComponent: BackgroundComponents.Starfield {
         running: Services.Ambient.forScreen(root.screenName).running
 

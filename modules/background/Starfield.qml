@@ -131,6 +131,99 @@ Item {
     property real _pending: 0
     property bool _firstFrame: true
 
+    // ---- Per-frame probe (diagnostics, off by default) ---------------------
+    // `starfield-shell perf on|dump|off`. Every probe sits behind one test of
+    // _perf, so an unprobed frame pays a handful of property reads and makes no
+    // clock call at all. The clock is INJECTED (an ElapsedTimer, nanoseconds)
+    // rather than declared here, because this file is also loaded by the
+    // headless harnesses under plain `/usr/lib/qt6/bin/qml`, which has no
+    // Quickshell types; with no clock and no `perf on` nothing here runs.
+    property var perfClock: null
+    property var _perf: null
+
+    function perfStart(): void {
+        _perf = {
+            frames: 0,
+            paints: 0,
+            atlases: 0,
+            since: perfClock ? perfClock.elapsedNs() : 0,
+            worst: 0,
+            frame: 0,
+            advance: 0,
+            physics: 0,
+            publish: 0,
+            events: 0,
+            parts: 0,
+            render: 0,
+            bin: 0,
+            layout: 0,
+            paint: 0,
+            pack: 0,
+            upload: 0,
+            atlas: 0
+        };
+    }
+
+    function perfStop(): void {
+        _perf = null;
+    }
+
+    // One window's rolling averages, then the window restarts: consecutive
+    // dumps are consecutive intervals, which is what a leak shows up in.
+    function perfDump(): var {
+        const p = _perf;
+        if (!p)
+            return null;
+        const span = (perfClock ? perfClock.elapsedNs() : 0) - p.since;
+        const n = Math.max(1, p.frames);
+        const ms = x => Math.round(x / 1000) / 1000;
+        const pool = _particles;
+        const out = {
+            w: Math.round(width),
+            h: Math.round(height),
+            dpr: devicePixelRatio,
+            sec: Math.round(span / 1e6) / 1000,
+            frames: p.frames,
+            fps: Math.round(1e11 * p.frames / Math.max(1, span)) / 100,
+            // ms per frame, main thread, this output
+            msFrame: ms(p.frame / n),
+            msAdvance: ms(p.advance / n),
+            msPhysics: ms(p.physics / n),
+            msPublish: ms(p.publish / n),
+            msEvents: ms(p.events / n),
+            msParts: ms(p.parts / n),
+            msRender: ms(p.render / n),
+            msBin: ms(p.bin / n),
+            msLayout: ms(p.layout / n),
+            msPaint: ms(p.paint / n),
+            msPack: ms(p.pack / n),
+            msUpload: ms(p.upload / n),
+            msAtlasTotal: ms(p.atlas / n),
+            worstMs: ms(p.worst),
+            // share of ONE core this output's frame work took over the window
+            corePct: Math.round(1000 * (p.frame + p.paint) / Math.max(1, span)) / 10,
+            atlases: p.atlases,
+            paints: p.paints,
+            // bookkeeping that a leak would grow
+            alive: pool ? pool.aliveCount : 0,
+            live: pool ? pool.liveCount : 0,
+            transient: pool ? pool.transientCount : 0,
+            kicks: pool ? pool.kickAlive : 0,
+            glows: pool ? pool.glows.length : 0,
+            items: _particleItems ? _particleItems.count : 0,
+            atlasH: _particleAtlasHeight,
+            events: _state ? _state.events.filter(e => e).length : 0,
+            pendingEvents: _state ? _state.pendingEvents.length : 0,
+            entries: _state ? Object.keys(_state.entries).length : 0,
+            hashes: _state ? Object.keys(_state.nearHashes).length : 0,
+            publications: _state ? _state.publications : 0,
+            missed: _particleMissed,
+            sentinel: _particleSentinelErrors
+        };
+        perfStart();
+        return out;
+    }
+
     function clamp(x: real, lo: real, hi: real): real {
         return Number.isFinite(x) ? Math.max(lo, Math.min(hi, x)) : lo;
     }
@@ -397,12 +490,24 @@ Item {
         _pending = modulo(_pending, period);
         // Preserve all elapsed active time; the remainder above controls cadence.
         const step = elapsed - _pending;
+        const perf = _perf;
+        const t0 = perf ? perfClock.elapsedNs() : 0;
         advance(step);
+        const t1 = perf ? perfClock.elapsedNs() : 0;
         _writingTime = true;
         time = _state.clock;
         _writingTime = false;
         _state.runtimeAtlas = true;
         publish();
+        if (perf) {
+            const t2 = perfClock.elapsedNs();
+            perf.advance += t1 - t0;
+            perf.publish += t2 - t1;
+            perf.frame += t2 - t0;
+            if (t2 - t0 > perf.worst)
+                perf.worst = t2 - t0;
+            ++perf.frames;
+        }
     }
 
     // `phenomena` travels inside eventFamilies; an absent block is the default.
@@ -3483,10 +3588,16 @@ Item {
         // texture and its uniforms; an unsealed row can never reach a live frame.
         if (s.publishedRevision !== s.atlasRevision) {
             if (s.pendingRevision !== s.atlasRevision) {
+                const perfAtlas = _perf;
+                const tAtlas = perfAtlas ? perfClock.elapsedNs() : 0;
                 s.pendingRevision = s.atlasRevision;
                 const image = shader.descriptorAtlas === descriptorImage ? descriptorBack : descriptorImage;
                 s.pendingImage = image;
                 image.source = atlasUrl();
+                if (perfAtlas) {
+                    perfAtlas.atlas += perfClock.elapsedNs() - tAtlas;
+                    ++perfAtlas.atlases;
+                }
                 if (image.status === Image.Ready)
                     completeAtlas(image);
             }
@@ -3613,9 +3724,17 @@ Item {
         for (const name of ["bhDetail", "bhStreaks", "bhKnots", "bhEmbers", "bhDoppler", "bhHue", "bhGlow", "bhPhoton", "bhDetailPhase", "bhArcs", "bhRim", "bhDepth"])
             if (_hole[name] !== undefined)
                 shader[name] = _hole[name];
+        const perf = _perf;
+        const tA = perf ? perfClock.elapsedNs() : 0;
         publishEvents();
         publishNebula();
+        const tB = perf ? perfClock.elapsedNs() : 0;
         publishParticles();
+        if (perf) {
+            const tC = perfClock.elapsedNs();
+            perf.events += tB - tA;
+            perf.parts += tC - tB;
+        }
         ++s.publications;
     }
 
@@ -3774,7 +3893,11 @@ Item {
         _particles.cameraRoll = clamp(cameraRoll, 0, 2) * (Math.PI / 180) * wave(s.clock, 23, phase + 0.9);
         _particles.cameraSizeGain = clamp(cameraSizeGain, 0, 1);
         scheduleTde();
+        const perf = _perf;
+        const t0 = perf ? perfClock.elapsedNs() : 0;
         ParticlePhysics.advance(_particles, dt, radialSpeed, s.live[2], cx, cy, blackHole && blackHole.disk && blackHole.disk.rotationSign < 0 ? -1 : 1, _particleBirth);
+        if (perf)
+            perf.physics += perfClock.elapsedNs() - t0;
     }
 
     // Tidal disruption: particles only, so it costs no slot, no uniform and no
@@ -3832,10 +3955,18 @@ Item {
         const hz = pool.config.publishHz;
         if (hz < 30 && shader.particleReady > 0 && _particlePublishedConfiguration === _particleConfiguration && pool.clock - _particlePublishedClock + 1e-9 < 1 / hz)
             return;
+        const perf = _perf;
+        const t0 = perf ? perfClock.elapsedNs() : 0;
         _particleItems = ParticleAppearance.render(_particleItems, pool, {
             twinkle: shader.twinkle
         });
+        const t1 = perf ? perfClock.elapsedNs() : 0;
         _particleBins = ParticleBinning.build(_particleBins, _particleItems, pool.width, pool.height);
+        const t2 = perf ? perfClock.elapsedNs() : 0;
+        if (perf) {
+            perf.render += t1 - t0;
+            perf.bin += t2 - t1;
+        }
         const canvas = shader.particleAtlas === particleFront ? particleBack : particleFront;
         // One height for BOTH buffers, sized for every population this
         // configuration can reach, so the sampled texture is allocated once and
@@ -3845,7 +3976,10 @@ Item {
             const ceiling = ParticleAppearance.bounds(pool);
             _particleAtlasHeight = ParticlePacking.capacity(_particleBins, ceiling.maxItems, ceiling.maxSupport, ceiling.maxFlares, ceiling.flareSupport, ceiling.maxBends, ceiling.bendSupport, ceiling.maxTde, ceiling.tdeSupport, ceiling.maxWide, ceiling.wideSupport);
         }
+        const t3 = perf ? perfClock.elapsedNs() : 0;
         const layout = ParticlePacking.layout(canvas.packet, _particleBins, _particleItems.count, _particleAtlasHeight);
+        if (perf)
+            perf.layout += perfClock.elapsedNs() - t3;
         _particleAtlasHeight = layout.height;
         canvas.width = layout.width;
         canvas.height = layout.height;
@@ -4088,16 +4222,26 @@ Item {
         onPaint: {
             if (!snapshot)
                 return;
+            const perf = root._perf;
+            const t0 = perf ? root.perfClock.elapsedNs() : 0;
             const ctx = getContext("2d");
             packet = ParticlePacking.pack(packet, snapshot.bins, snapshot.items, snapshot, (w, h) => {
                 pixels = ctx.createImageData(w, h);
                 return pixels.data;
             });
+            const t1 = perf ? root.perfClock.elapsedNs() : 0;
             // Qt 6 requires the explicit dirty rectangle for this data upload;
             // it also keeps the upload proportional to the texels actually used
             // rather than to the once-allocated texture.
             ctx.putImageData(pixels, 0, 0, 0, 0, width, Math.min(height, Math.ceil(packet.texelsUsed / width)));
             paintedRevision = packet.revision;
+            if (perf) {
+                const t2 = root.perfClock.elapsedNs();
+                perf.pack += t1 - t0;
+                perf.upload += t2 - t1;
+                perf.paint += t2 - t0;
+                ++perf.paints;
+            }
         }
         onPainted: root.completeParticles(this)
     }

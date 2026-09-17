@@ -36,8 +36,55 @@ Singleton {
     // Invalid JSON is ignored, not an error: this is a test hook.
     signal fire(string name, string screen, var overrides)
 
+    // ---- The per-frame probe ----------------------------------------------
+    // One nanosecond clock, shared by every output so their windows line up,
+    // and a registry the renderers put themselves in (StarfieldLayer.onLoaded)
+    // so one IPC call reaches all of them. Timing is OFF until `perf on`; the
+    // renderer's probes are behind a null test and make no clock call at all
+    // while it is.  `starfield-shell perf on|dump|off`.
+    readonly property ElapsedTimer perfClock: ElapsedTimer {}
+    property bool perfOn: false
+    // Plain JS map, deliberately not a binding source: mutated in place.
+    readonly property var renderers: ({})
+
+    function registerRenderer(name: string, item: var): void {
+        renderers[name] = item;
+        item.perfClock = perfClock;
+        if (perfOn)
+            item.perfStart();
+    }
+
+    function unregisterRenderer(name: string): void {
+        delete renderers[name];
+    }
+
     IpcHandler {
         target: "starfield"
+
+        // on    start (or restart) the rolling window on every output
+        // dump  print one JSON object per output and start the next window
+        // off   stop timing; the probes cost nothing again
+        function perf(mode: string): string {
+            const names = Object.keys(root.renderers);
+            if (mode === "off") {
+                root.perfOn = false;
+                for (const name of names)
+                    root.renderers[name].perfStop();
+                return "perf off";
+            }
+            if (mode === "on" || !root.perfOn) {
+                root.perfOn = true;
+                for (const name of names)
+                    root.renderers[name].perfStart();
+                if (mode !== "dump")
+                    return `perf on: ${names.join(" ") || "no outputs"}`;
+                return "perf on (nothing measured yet)";
+            }
+            const out = {};
+            for (const name of names)
+                out[name] = root.renderers[name].perfDump();
+            return JSON.stringify(out);
+        }
 
         function fire(name: string, screen: string, overrides: string): string {
             let parsed = null;
