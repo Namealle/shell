@@ -940,7 +940,23 @@ float tailSegment(vec2 pixel, vec2 a, vec2 b, float travelled, vec4 head, vec4 s
 //   tail23 = (dustDirX, dustDirY, dustLengthPx, dustWidth0Px)
 //   tail4  = (dustCurve, comaSigmaPx)
 //   shape  = (ionGain, dustGain, comaGain, striationAmp)
-vec3 cometField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec2 tail4, vec4 shape) {
+// v12. Value noise from one integer hash, C1 by pre-easing the fractional
+// part -- the same trick nebulaTap uses on the noise texture, done
+// arithmetically so the comet kernel needs no sampler and the three offscreen
+// sheets need no texture bound to render a comet.
+float cometHash(vec2 p) {
+    vec3 v = fract(vec3(p.x, p.y, p.x) * 0.1031);
+    v += dot(v, vec3(v.y, v.z, v.x) + 33.33);
+    return fract((v.x + v.y) * v.z);
+}
+float cometGrain(vec2 q) {
+    vec2 i = floor(q), f = q - i;
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(cometHash(i), cometHash(i + vec2(1.0, 0.0)), f.x),
+               mix(cometHash(i + vec2(0.0, 1.0)), cometHash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+//   burn = (synchronePhase, striaeOffsetRad, striaeBands, dustReddening)
+vec3 cometField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec2 tail4, vec4 shape, vec4 burn) {
     vec2 p = pixel - head.xy;
     float r2 = dot(p, p);
     float sigma2 = head.z * head.z;
@@ -972,10 +988,46 @@ vec3 cometField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, ve
             // The parabola is applied to the SAMPLE point, so the curved tail
             // is a straight one in warped space: six ops, no curve solve.
             float across = dot(p, vec2(-d.y, d.x)) - tail4.x * u * u * tail23.z;
-            float w = max(tail23.w * (0.7 + 2.8 * u), 0.5);
-            float striae = 1.0 + shape.w * (0.50 * cos(5.5 * across / w + 7.0 * u) + 0.28 * cos(13.0 * u));
+            // ASYMMETRIC EDGE. A dust tail has a HARD sunward edge and a
+            // DIFFUSE trailing one, against the ion tail's two sharp ones.
+            // That contrast is the cheapest cue that sells two tails as two
+            // different things, and it is one sign test.
+            float w = max(tail23.w * (0.7 + 2.8 * u) * (across > 0.0 ? 0.70 : 1.45), 0.5);
+            // ---- SYNCHRONES, AND THEY MOVE. The shipped modulation had NO
+            // TIME TERM, so the pattern was welded to the tail and the tail
+            // was a decal: over an 8.4 s pass nothing about it changed except
+            // its position. burn.x is 2*pi*age/striaeDriftSec, so the bands
+            // march outward and new ones appear at the head. One argument, and
+            // the single highest-value edit in this kernel.
+            float syn = cos(13.0 * u - burn.x);
+            // ---- STRIAE, A SECOND FAMILY, and this corrects an easy mistake.
+            // Synchrones point back at the nucleus; striae are closer to
+            // SUN-ALIGNED and are OFFSET from the local synchrone. Hale-Bopp
+            // showed at least 12 straight bands 1.5-3 degrees from the
+            // nucleus, each 1-3 arcmin wide -- an aspect of 20:1 to 60:1 with
+            // spacing about their own width. The offset angle is the one
+            // physical number the research could not pin down (Pfeifer & Jones
+            // 2019 was not reachable open-access), so it is a config key with
+            // a range, tuned by eye against the McNaught and West references,
+            // and said so rather than invented.
+            float band = u * cos(burn.y) + (across / tail23.z) * sin(burn.y);
+            float str = cos(6.2831853 * burn.z * band - 0.35 * burn.x);
+            // ---- GRAIN, so the tail is made of something. Two octaves of
+            // value noise in the tail's own (u, across) frame, ADVECTED by u
+            // so it flows outward with the dust rather than sitting still, and
+            // the second octave rotated so the two lattices have no common
+            // structure to lock to (V11 noise rule 2).
+            vec2 q = vec2(u * 7.0 - 0.22 * burn.x, across / w * 1.6);
+            vec2 q2 = vec2(q.x * 0.6820 - q.y * 0.7314, q.x * 0.7314 + q.y * 0.6820) * 2.17 + 11.3;
+            float grain = cometGrain(q) * 0.62 + cometGrain(q2) * 0.38;
+            float texture = 1.0 + shape.w * (0.46 * syn + 0.30 * str + 0.70 * (grain - 0.5));
+            // ---- COLOUR WARMS OUTWARD. The dust is reflected sunlight,
+            // slightly redder than the Sun, and the reddening RISES with
+            // distance from the nucleus: about 5-8 % per 1000 A in the inner
+            // coma to ~15 % along the tail axis.
+            vec3 warm = vec3(1.0, 0.87 * (1.0 - 0.30 * burn.w * u), 0.64 * (1.0 - 0.85 * burn.w * u));
             sum += shape.y * exp2(-1.4426950 * across * across / (w * w)) * pow(1.0 - u, 1.25)
-                 * max(striae, 0.0) * smoothstep(0.0, 0.05, u) * mix(vec3(1.0, 0.87, 0.64), colour.rgb, 0.32);
+                 * max(texture, 0.0) * smoothstep(0.0, 0.05, u) * mix(warm, colour.rgb, 0.32);
         }
     }
     return head.w * max(sum, vec3(0.0));
@@ -1480,7 +1532,7 @@ vec3 eventSlot(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec
     // meteors' one: events.shower and events.meteors carry the same key names
     // and are separately configured, and a fireball belongs to the shower.
     if (colour.w > 6.5) return stormFireball(pixel, head, colour, tail01, tail23, tail4, shape, burn, ubuf.stormTone);
-    if (colour.w > 4.5 && colour.w < 5.5) return cometField(pixel, head, colour, tail01, tail23, tail4, shape);
+    if (colour.w > 4.5 && colour.w < 5.5) return cometField(pixel, head, colour, tail01, tail23, tail4, shape, burn);
     if (colour.w > 2.5) return radialField(pixel, head, colour, tail01, shape, bounds);
     vec2 p = pixel - head.xy;
     float r2 = dot(p, p);

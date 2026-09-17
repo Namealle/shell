@@ -1105,6 +1105,41 @@ Item {
             // Anti-sunward means away from the hole; with no hole, away from
             // the radial centre the whole field already flows out of.
             event.light = _hole.enabled ? [_hole.bhCentre.x, _hole.bhCentre.y] : centre.slice();
+            // ---- v12: THE PASS BECOMES AN ARC ------------------------------
+            // Every drawn property of the comet was a birth-frozen constant.
+            // Over an 8.4 s pass NOTHING about the object changed except its
+            // position -- which is the whole of "underdeveloped" for a comet.
+            //
+            // They become functions of the comet's distance from the light
+            // source, through the standard brightness law m = H + 5 log D +
+            // 2.5 n log r with n = 4 (the H10 default; real comets span 1-8,
+            // and the source is blunt that "most comets do not follow power
+            // laws", so this is a plausible curve and not a law).
+            event.activityExponent = 4.0;
+            // The pass's own range. THE HONEST APPROXIMATION, stated: the real
+            // switch-on radii are 3 AU for the dust coma, ~2 AU for the ion
+            // tail and ~1.4 AU for sodium, and a screen chord is not an orbit
+            // -- a pass whose ends are only 1.4x its perihelion distance would
+            // never switch anything on. They are therefore mapped onto the
+            // PASS'S OWN dynamic range, which preserves what matters (the
+            // ORDER: dust first, then ion, then sodium, and all three off
+            // again on the way out) and guarantees the sequence happens.
+            event.dustLag = 0.11;
+            event.striaeDriftSec = 7;
+            event.striaeOffsetRad = 0.16;
+            event.striaeBands = 12;
+            event.dustReddening = 0.12;
+            // A PASS HAS TO CONTAIN ITS PERIHELION, or nothing happens on it:
+            // a comet that only recedes from the light is one you watch
+            // nothing change on, and "every property is a function of r" then
+            // draws a monotone fade. The chord is slid along its OWN direction
+            // until the light's perpendicular foot is inside it, which moves
+            // where the comet enters and leaves and nothing else about it.
+            // (cometParticles re-cuts a 1.1-1.6 short-side chord around
+            // `origin` for the live path, where the foot lands inside on its
+            // own; this is what the offscreen sheets and a pool with no free
+            // body get.)
+            cometFramePass(event);
         }
         // Satellite glint: one hash-placed smooth brightening somewhere along
         // the pass. Birth-frozen like everything else here, so it never moves,
@@ -2984,6 +3019,68 @@ Item {
         return [x, y];
     }
 
+    // v12. Where the comet is on its chord, as a distance from the light, at
+    // pass fraction t -- and the pass's own perihelion and dynamic range,
+    // solved once rather than swept. The chord is the MODEL of the orbit; the
+    // drawn nucleus is a particle flying it, so `cometRange` is used for the
+    // activity law and the head's own position for everything geometric.
+    function cometRange(e: var, t: real): real {
+        const u = clamp(t, 0, 1);
+        const x = e.p0[0] + (e.p2[0] - e.p0[0]) * u;
+        const y = e.p0[1] + (e.p2[1] - e.p0[1]) * u;
+        return Math.hypot(x - e.light[0], y - e.light[1]);
+    }
+    // The closest approach: the projection of the light onto the chord,
+    // clamped to it, which is exact for a straight chord and within a few per
+    // cent for the bent families.
+    function cometPerihelion(e: var): var {
+        const ax = e.p2[0] - e.p0[0], ay = e.p2[1] - e.p0[1];
+        const len2 = Math.max(1e-6, ax * ax + ay * ay);
+        const raw = ((e.light[0] - e.p0[0]) * ax + (e.light[1] - e.p0[1]) * ay) / len2;
+        const t = clamp(raw, 0, 1);
+        const rp = Math.max(1, cometRange(e, t));
+        const rm = Math.max(rp, cometRange(e, 0), cometRange(e, 1));
+        // The fourth element is the UNCLAMPED foot, which is what a caller
+        // needs to slide the chord onto its own perihelion: the clamped one is
+        // already 0 or 1 exactly when the pass does not contain it, so sliding
+        // by it moves nothing and in the wrong direction.
+        return [rp, rm, t, raw];
+    }
+    // activity(r) = (rPeri/r)^(n/2.5), the brightness law rearranged. Every
+    // drawn property of the comet is a function of this, which is what turns a
+    // translation into a pass.
+    function cometActivity(e: var, t: real): real {
+        const rp = e.rPeri === undefined ? cometPerihelion(e)[0] : e.rPeri;
+        return Math.pow(rp / Math.max(cometRange(e, t), 1), (e.activityExponent === undefined ? 4 : e.activityExponent) / 2.5);
+    }
+
+    // A PASS HAS TO CONTAIN ITS PERIHELION, or nothing happens on it: a comet
+    // that only recedes from the light is one you watch nothing change on, and
+    // "every property is a function of r" then draws a monotone fade. The
+    // chord is slid along its OWN direction until the light's perpendicular
+    // foot is inside it, which moves where the comet enters and leaves and
+    // nothing else about it. Called at capture, and again by anything that
+    // re-places the chord -- the offscreen sheets and the tests do.
+    function cometFramePass(e: var): var {
+        let peri = cometPerihelion(e);
+        if (peri[3] < 0.30 || peri[3] > 0.70) {
+            const ax = e.p2[0] - e.p0[0], ay = e.p2[1] - e.p0[1];
+            const len = Math.max(1e-6, Math.hypot(ax, ay));
+            const slide = (peri[3] - 0.5) * len;
+            for (const key of ["p0", "p1", "p2", "origin"]) {
+                if (!e[key])
+                    continue;
+                e[key][0] += ax / len * slide;
+                e[key][1] += ay / len * slide;
+            }
+            peri = cometPerihelion(e);
+        }
+        e.rPeri = peri[0];
+        e.rMax = peri[1];
+        e.periU = peri[2];
+        return peri;
+    }
+
     // v10: where the nucleus actually is. A fragment carries the same lateral
     // split the drawn path used, measured off the real body rather than off a
     // Bezier that is no longer what the comet is flying.
@@ -3199,9 +3296,36 @@ Item {
         const breath = e.family === "pulsating" ? 1 + 0.45 * Math.max(0, Math.sin(age * 2 * Math.PI / e.pulsePeriod)) : 1;
         // A fragment carries its own small coma and a short stub of dust.
         const share = branch === 0 ? 1 : 0.45;
-        const coma = e.coma * breath * share;
-        const dust = e.dustLength * (branch === 0 ? 1 : 0.5);
-        const ion = e.ionLength * share;
+        // ---- v12: every drawn property is now a function of the distance
+        // from the light source instead of a constant captured at birth.
+        // Recomputed every publish, never cached: cometParticles re-cuts the
+        // chord once it knows how fast the field is actually moving, and a
+        // perihelion captured before that would describe a pass the comet is
+        // no longer flying.
+        const peri = cometPerihelion(e);
+        const rPeri = peri[0], rMax = peri[1];
+        const act = cometActivity(e, progress);
+        // The dust tail peaks LATER than the ion tail, because grains ejected
+        // at perihelion take days to weeks to populate it. Implemented as the
+        // activity at a LAGGED position on the same chord, so it is one
+        // evaluation and not a filter with state the sheets could not sweep.
+        const actDust = cometActivity(e, progress - (e.dustLag === undefined ? 0.11 : e.dustLag));
+        // The switch-ons, mapped onto the pass's own range (see captureEvent).
+        // The ORDER is the physics: dust coma first, ion tail second, sodium
+        // only near perihelion, and all of them off again on the way out.
+        const span = Math.max(1e-3, rMax / rPeri - 1);
+        const ratio = cometRange(e, progress) / rPeri;
+        const gate = (at, width) => clamp((1 + span * at - ratio) / Math.max(1e-3, span * width), 0, 1);
+        const dustOn = gate(0.85, 0.30);
+        const ionOn = gate(0.55, 0.25);
+        // The SIZE exponent is 2 against the gains' 1. A coma is an expanding
+        // volume fed by a production rate that rises steeply, and on a screen
+        // chord -- which is not an orbit, and whose r spans about 1.4x rather
+        // than the decades a real pass does -- a linear law gives a 1.7x
+        // change nobody would call evolution. Measured: 1.71x -> 2.49x.
+        const coma = e.coma * (0.08 + 0.92 * act * act) * breath * share;
+        const dust = e.dustLength * dustOn * (0.25 + 0.75 * actDust) * (branch === 0 ? 1 : 0.5);
+        const ion = e.ionLength * ionOn * (0.20 + 0.80 * act) * share;
         // A tail reaches one way only, so the box follows the two tails rather
         // than squaring the longer of them: the slow family's box halves.
         const pad = Math.max(9 * e.dustWidth, 3 * coma, 6 * width);
@@ -3215,9 +3339,18 @@ Item {
             tail01: [ix, iy, ion, e.ionWidth],
             tail23: [dx, dy, dust, e.dustWidth],
             tail4: [Math.abs(e.curve) * side, coma],
-            shape: [e.ionGain * share, e.dustGain * share, e.comaGain * breath, e.striae],
+            shape: [e.ionGain * share * ionOn * (0.30 + 0.70 * act),
+                e.dustGain * share * dustOn * (0.30 + 0.70 * actDust),
+                e.comaGain * breath * (0.25 + 0.75 * act), e.striae],
             bounds: [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad],
-            burn: [0.52, 0, 0, 0]
+            // v12 style 5: (synchronePhase, striaeOffsetRad, striaeBands,
+            // dustReddening). The phase is what turns a decal into a flow --
+            // the shipped striation had no time term at all, so the pattern
+            // was welded to the tail and could not move.
+            burn: [age * 6.2831853 / Math.max(1, e.striaeDriftSec === undefined ? 7 : e.striaeDriftSec),
+                e.striaeOffsetRad === undefined ? 0.16 : e.striaeOffsetRad,
+                e.striaeBands === undefined ? 12 : e.striaeBands,
+                e.dustReddening === undefined ? 0.12 : e.dustReddening]
         };
     }
 

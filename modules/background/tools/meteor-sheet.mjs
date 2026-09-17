@@ -50,7 +50,7 @@ function fragFunction(src, name) {
 
 // The same lift storm-sheet.mjs uses: eventSlot dispatches every style, so the
 // whole chain has to compile even though a meteor lights none of the others.
-const KERNELS = ["hash4", "lightCurve", "naProfile", "ablationStreak", "tailSegment", "cometField", "supernovaField", "radialField",
+const KERNELS = ["hash4", "lightCurve", "naProfile", "ablationStreak", "tailSegment", "cometHash", "cometGrain", "cometField", "supernovaField", "radialField",
     "stormHash", "trainPoint", "trainShear", "stormTrainRay", "stormTrainSegment", "stormFireball", "meteorStorm", "eventSlot"];
 
 function previewShader() {

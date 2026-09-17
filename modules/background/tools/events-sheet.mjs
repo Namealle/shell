@@ -49,7 +49,7 @@ export function previewShader() {
     // whole v9 catalogue -- every family, the storm and the passage -- through
     // one shader in main()'s own composite order. The filter keeps this list
     // valid against an older frag.
-    const kernels = ["hash4", "lightCurve", "naProfile", "ablationStreak", "tailSegment", "cometField", "supernovaField", "radialField",
+    const kernels = ["hash4", "lightCurve", "naProfile", "ablationStreak", "tailSegment", "cometHash", "cometGrain", "cometField", "supernovaField", "radialField",
         "stormHash", "trainPoint", "trainShear", "stormTrainRay", "stormTrainSegment", "stormFireball", "meteorStorm", "nebulaTap", "nebulaStar",
         "nebulaField", "snPop", "snCurl", "snSlice", "supernovaRemnant", "eventSlot"]
         .filter(n => src.indexOf(n + "(") >= 0)

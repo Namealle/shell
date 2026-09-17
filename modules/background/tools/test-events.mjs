@@ -44,7 +44,7 @@ function extract(name) {
     return "host[\"" + name + "\"] = function " + args + " " + qml.slice(open, i + 1) + ";";
 }
 
-const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "lightCurveAt", "meteorToneVector", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "warmStart", "scheduleRadial", "mixColour", "linearGain", "supernovaShellReach", "supernovaEjecta", "cfgShockSpeed", "supernovaParticles", "supernovaSite", "supernovaState", "radialState", "eventPath", "cometHead", "eventState", "cometState", "cometRatio", "cometTurn", "cometParticles", "pushEvent", "drainPending", "publishEvents", "publishPhenomena", "stormValue", "stormTrailAngle", "captureStorm", "stormRate", "stormPhase", "stormRadiant", "stormState", "stormOff", "stormFireballState", "stormFireballParticles", "farBoost", "nebulaConfig", "nebulaEnabled", "nebulaFlowRate", "nebulaDrift", "nebulaBoundary", "nebulaDriftPerSec", "nebulaReach", "nebulaSink", "captureNebula", "scheduleNebula", "nebulaState", "pushNebula", "publishNebula"];
+const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "lightCurveAt", "meteorToneVector", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "warmStart", "scheduleRadial", "mixColour", "linearGain", "supernovaShellReach", "supernovaEjecta", "cfgShockSpeed", "supernovaParticles", "supernovaSite", "supernovaState", "radialState", "eventPath", "cometRange", "cometPerihelion", "cometActivity", "cometFramePass", "cometHead", "eventState", "cometState", "cometRatio", "cometTurn", "cometParticles", "pushEvent", "drainPending", "publishEvents", "publishPhenomena", "stormValue", "stormTrailAngle", "captureStorm", "stormRate", "stormPhase", "stormRadiant", "stormState", "stormOff", "stormFireballState", "stormFireballParticles", "farBoost", "nebulaConfig", "nebulaEnabled", "nebulaFlowRate", "nebulaDrift", "nebulaBoundary", "nebulaDriftPerSec", "nebulaReach", "nebulaSink", "captureNebula", "scheduleNebula", "nebulaState", "pushNebula", "publishNebula"];
 
 // Readonly root constants the scheduler reads by bare name, taken from the
 // same source rather than restated here.
@@ -928,6 +928,37 @@ function tests() {
         check("with no body behind it, the comet is exactly v9",
             Math.abs(st9.tail01[0] - dxl / l) < 1e-12 && Math.abs(st9.tail01[1] - dyl / l) < 1e-12,
             "ion tail still anti-sunward");
+
+        // ---- v12: the pass is an ARC, not a translation. Over an 8.4 s pass
+        // the shipped comet changed nothing but its position; every drawn
+        // property is now a function of its distance from the light source.
+        const hc = makeHost(validateDocument(null), { width: 2880, height: 1800 });
+        for (const family of ["fast", "slow", "bent", "pulsating", "spiral"]) {
+            const e = hc.captureEvent(1, 11, 0, family);
+            const dx = Math.cos(e.angle), dy = Math.sin(e.angle);
+            e.p0 = [2880 * 0.30 - dx * e.distance / 2, 1800 * 0.34 - dy * e.distance / 2];
+            e.p2 = [2880 * 0.30 + dx * e.distance / 2, 1800 * 0.34 + dy * e.distance / 2];
+            e.p1 = [2880 * 0.30, 1800 * 0.34];
+            e.capture = false;
+            hc.cometFramePass(e);
+            const track = [];
+            for (let i = 0; i <= 60; ++i) {
+                hc._state.clock = e.start + e.duration * i / 60;
+                const s = hc.cometState(e, hc.eventPath(e, i / 60, 0), i / 60, 0, e.gain, e.pointWidth, e.duration * i / 60);
+                track.push({ u: i / 60, coma: s.tail4[1], ion: s.tail01[2], dust: s.tail23[2] });
+            }
+            const argmax = key => track.reduce((b, t) => t[key] > b[key] ? t : b, track[0]).u;
+            const first = key => track[0][key], top = key => Math.max(...track.map(t => t[key]));
+            check(`comet ${family}: the coma grows and shrinks again`,
+                top("coma") / Math.max(1e-6, first("coma")) >= 2.2 && argmax("coma") > 0.35 && argmax("coma") < 0.70,
+                `${first("coma").toFixed(1)} -> ${top("coma").toFixed(1)} px, peak at u ${argmax("coma").toFixed(2)}`);
+            check(`comet ${family}: the ion tail switches ON, from exactly zero`,
+                first("ion") === 0 && top("ion") > 0 && argmax("ion") > 0.30 && argmax("ion") < 0.70,
+                `0 -> ${top("ion").toFixed(0)} px, peak at u ${argmax("ion").toFixed(2)}`);
+            check(`comet ${family}: the dust tail peaks AFTER the ion tail`,
+                argmax("dust") > argmax("ion"),
+                `dust u ${argmax("dust").toFixed(2)} against ion u ${argmax("ion").toFixed(2)} (grains ejected at perihelion take time to populate it)`);
+        }
     }
     nebulaTests();
     console.log("\n" + (failures ? failures + " failures" : "all " + checks + " checks passed"));
