@@ -610,3 +610,60 @@ to the (inactive) wallpaper Loader — an empty Item. The bars still draw; what 
 **nice.** The script asks for 15 (absolute, not `nice -n` relative — an agent shell measured at -4). It does not get it: `ananicy-cpp` pins every process named `qs`
 to its `Service` type (nice 10, ionice 6) and re-applies within 5 s — measured. The rule is `/etc/ananicy.d/00-default/DEs-and-WMs/dank-material-shell.rules` and it
 matches by process NAME, so it cannot tell the two instances apart. Both run at nice 10, which is what the shell always ran at. Changing that means system config.
+
+## v11: WHAT A FRAME COSTS, AND THE PROBE THAT SAYS SO
+
+**`starfield-shell perf on | dump | off`** turns on the renderer's own per-frame clock, per output. `dump` prints one JSON object per output and RESTARTS the window,
+so two dumps are two intervals and a leak shows as a rising line instead of an average creeping up. Nothing is timed until `on`: every probe sits behind one null
+test of `_perf` and makes no clock call while it is off. The clock is an `ElapsedTimer` (nanoseconds) injected from `services/Starfield.qml`, deliberately NOT
+declared in `Starfield.qml`, because the headless harnesses load that file under plain `/usr/lib/qt6/bin/qml`, which has no Quickshell types.
+`tools/perf_sample.sh <label> [window] [outfile]` puts it next to per-thread CPU for BOTH Quickshell processes, the GPU and Tctl, over the same window;
+`tools/perf_leak_run.sh` restarts the sky and samples at 1, 5, 30 and 60 minutes.
+
+**Where a frame goes** (2026-09-17, 3 outputs, 30 fps, ~600 particles each, hole off so the camera regime is live, `local` da77c651 → after the five fixes below).
+Per output, ms on the main thread:
+
+| phase | before | after | what it is |
+|---|---|---|---|
+| `ParticlePhysics.advance` | 0.90–0.98 | 0.63–0.75 | the integration |
+| `ParticleAppearance.render` | 1.17–1.34 | 0.94–1.02 | per-particle optics into the flat instance array |
+| `ParticleBinning.build` | 0.97–1.47 | 0.50–0.58 | the 32 px bin grid |
+| `ParticlePacking.pack` (in `onPaint`) | 1.20–1.46 | 1.02–1.16 | the instance rows and bin headers into the atlas bytes |
+| publish uniforms + events | ~0.30 | ~0.30 | ~60 shader property writes and the scheduler |
+| **whole frame + paint** | **4.65–5.52** | **3.61–4.03** | |
+| **share of one core** | **13.5–16.3 %** | **10.7–12.0 %** | |
+| worst single frame | 21.6–23.8 ms | 4.3–4.5 ms | the descriptor atlas rebuild |
+
+Sky main thread, three outputs uncovered and idle: **47.2 % → 33.1 %** of one core; Tctl 58.2 → 52.2 °C. With a supernova's ejecta, a storm and a nebula alive on
+all three (266–326 transients per output, ~830 particles), the sum is 35.2 % — the debris reserve is already in the atlas allocation, so a live event costs about
+what an idle field does.
+
+**The engine is the floor.** QML's JS engine runs the same numeric kernel 14× slower than node: 211 ns per particle-iteration against 15 ns, measured this session
+with an identical loop, and `QV4_FORCE_INTERPRETER=1` only takes it to 301 ns — so the JIT is on and this IS its speed. A call that wraps a `clamp` costs 125 ns
+against 25 ns for the arithmetic inside it, which is why `smooth()`, `supportFor()`, `rgb()` and `cameraDepthOf()` are inlined at their hot call sites (each marked
+KEEP IN STEP with the function it copies). Six hundred particles × three passes × 30 fps × 3 outputs is around 160 000 engine-ops a second per output and there is
+no more fat on it: **the remaining 33 % is the cost of running this simulation in QML at all**, not waste. Below ~20 % needs the C++ `QQuickItem` in
+`V12-FUTURE-GPU-CPP.md`.
+
+**`Canvas.Threaded` is a loss — do not re-propose it.** V12 lists it as the one small unverified candidate. Measured 2026-09-17: Qt runs the `onPaint` JS on the GUI
+thread either way and only the rasterisation crosses, so nothing moved off the main thread; it cost 15.4 → 15.8 % of a core per output, added a `QQuickContext2D`
+thread and put 0.6 points more on `QSGRenderThread` for the command buffer. Reverted, with the reason written next to `renderStrategy`.
+
+**The five fixes**, each measured on its own (`evidence/v11-perf-*.txt`), all of them work whose result was already known:
+1. **Gravity that is off.** The camera regime sets `gravity = (1-blend)² = 0`, so `mu` is exactly 0 — and `step()` computed `-mu/(r²·√r²)` twice per substep per
+   particle to add nothing. Guarded on `mu`, with `cameraDepthOf`'s fast path and two `smooth()`s inlined beside it. −0.35 ms/frame.
+2. **A tide that is off.** `render()`'s continuous tidal deformation is multiplied by the hole's enable envelope, exactly 0 with the hole off; a cube, two
+   smoothsteps and a dot product were computed per particle to reach zero. The relaxation of the remaining stretch is the same arithmetic with target 0. −0.35 ms.
+3. **Bins that are empty.** Six hundred particles reach a sixth of a 14400-bin grid and both the binner's prefix sum and the packer's header pass walked all of it,
+   every frame. `Binning.build` records a bin the first time something lands in it and all three passes run over that list. −0.5 ms on the portrait output.
+   `tools/pack-equivalence.mjs` decodes every bin the way `starfield.frag` does, from both layouts, over 400 frames: 129600 bins, zero differences.
+4. **An atlas that did not change.** The descriptor BMP is 64×1536: 256 rows of sealed descriptors and 1280 rows of entry ledger that only `publishEntries`
+   (particles OFF) ever writes. Bottom-up rows put the ledger FIRST in the byte stream, and both halves are multiples of three, so the base64 of the whole is the
+   concatenation of the two base64s — the ledger half is encoded once and cached. **Worst frame 29.0 → 6.3 ms**, which is the dropped frame that used to land every
+   30 flow seconds per output. `tools/atlas-equivalence.qml` proves the data URL is byte-identical in both regimes, across thirteen seals.
+5. **A normalisation done three times.** `vx/vy` was normalised in `render()`, again in `Binning.build` and again in `Packing.pack`. Stride 21 → 23 carries it once.
+   An unstreaked particle's capsule is a DISC, and a disc's x-span is the same in every row, so the per-row interpolation is skipped for most of the field. −0.6 ms.
+
+**The shell is not the sky's problem.** Measured 2026-09-17 with the sky killed AND all three outputs uncovered (no fullscreen window anywhere), `qs -c caelestia`
+used **0.1 % of one core** over five minutes: 3.1 s of CPU in 56 minutes of uptime, three child processes, no growth. The 21–28 % seen on 2026-09-14 does not
+reproduce in any state reachable from his current configuration.

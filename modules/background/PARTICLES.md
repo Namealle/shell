@@ -581,3 +581,29 @@ Binding1 is bhTransfer,2 is D's bhNoise,3 particles,4 birth descriptor history.
 D's included GLSL reaches production only through a rebake of this shader.
 Bake from repository root (qsb resolves sibling includes from its input path):
 `/usr/lib/qt6/bin/qsb --glsl "100 es,120,150" --hlsl 50 --msl 12 -o modules/background/shaders/starfield.frag.qsb modules/background/shaders/starfield.frag`
+
+PERFORMANCE (2026-09-17). Per output at 30 fps with ~600 particles, the three
+per-particle passes cost about 2.5 ms of main thread: render 0.95, the binner's
+capsule walk 0.38, the packer's instance rows 0.73, plus physics 0.68. That is
+~6 us per particle per frame, and it is the ENGINE, not the algorithm: QML's JS
+runs the same numeric kernel 14x slower than node (211 ns vs 15 ns per
+particle-iteration, measured; QV4_FORCE_INTERPRETER=1 gives 301, so the JIT is
+on and that is its speed), and a function call that wraps a clamp costs 125 ns
+against 25 ns for the arithmetic inside it. That is why `smooth()`,
+`supportFor()` and `rgb()` are INLINED at their hot call sites here, each one
+marked KEEP IN STEP with the function it copies -- and why the remaining cost
+needs C++ rather than more JS (V12-FUTURE-GPU-CPP.md).
+
+Three things were removed because they computed a known answer: the gravity
+kick when `mu` is exactly 0 (the camera regime), the tidal deformation when the
+hole's enable envelope is exactly 0, and the normalisation of vx/vy in all
+three passes instead of one (stride 21 -> 23). An unstreaked particle's capsule
+is a disc, and a disc's x-span is the same in every bin row, so the binner
+skips the per-row interpolation for most of the field. `Binning.build` also
+records which bins it filled, and the prefix sum, the clear and the packer's
+header pass all run over that list rather than over the whole grid -- 14400
+bins on the portrait output against about two thousand that hold anything.
+`tools/pack-equivalence.mjs` proves the atlas the shader reads is unchanged.
+
+Measure with `starfield-shell perf on|dump|off` and
+`tools/perf_sample.sh`; see STARFIELD.md "WHAT A FRAME COSTS".
