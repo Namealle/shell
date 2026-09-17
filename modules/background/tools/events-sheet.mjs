@@ -25,7 +25,11 @@ vm.runInContext(readFileSync(join(repo, "services", "ambient", "rules.js"), "utf
 
 // ---------------------------------------------------------------- frag slice
 function fragFunction(src, name) {
-    const re = new RegExp("^(?:float|vec2|vec3|vec4)\\s+" + name + "\\s*\\(", "m");
+    // `void` is in the list since v12: snCurl returns its two flow fields
+    // through `out` parameters, because one scalar potential per channel is
+    // two fields from the same three taps and returning a struct would cost a
+    // type the lifted slice would also have to carry.
+    const re = new RegExp("^(?:void|float|vec2|vec3|vec4)\\s+" + name + "\\s*\\(", "m");
     const m = re.exec(src);
     if (!m) throw new Error("no " + name + "() in starfield.frag");
     const open = src.indexOf("{", m.index);
@@ -47,7 +51,7 @@ export function previewShader() {
     // valid against an older frag.
     const kernels = ["hash4", "tailSegment", "cometField", "supernovaField", "radialField",
         "stormHash", "stormTrainSegment", "stormFireball", "meteorStorm", "nebulaTap", "nebulaStar",
-        "nebulaField", "supernovaRemnant", "eventSlot"]
+        "nebulaField", "snPop", "snCurl", "snSlice", "supernovaRemnant", "eventSlot"]
         .filter(n => src.indexOf(n + "(") >= 0)
         .map(n => fragFunction(src, n)).join("\n\n");
     return `#version 450 core
@@ -66,6 +70,8 @@ layout(std140, binding = 0) uniform buf {
     vec4 event5Head; vec4 event5Colour; vec4 event5Tail01; vec4 event5Shape; vec4 event5Bounds;
     vec4 snRemnant; vec4 snTone; vec4 snShell; vec4 snExtra;
     vec4 snBody; vec4 snHot; vec4 snWisp; vec4 snDust; vec4 snJet;
+    vec4 snPop0; vec4 snPop1; vec4 snPop2; vec4 snPop3; vec4 snPop4; vec4 snPop5;
+    vec4 snGrain; vec4 snFlow; vec4 snTurn; vec4 snTurn2;
     vec4 stormHead; vec4 stormShape; vec4 stormColour; vec4 stormSpan;
     vec4 nebulaHead; vec4 nebulaShape; vec4 nebulaTone0; vec4 nebulaTone1;
     vec4 nebulaStars; vec4 nebulaStars2; vec4 nebulaBounds;
@@ -272,10 +278,15 @@ export function uniformText(width, height, entry) {
     // family, so one uniforms file format covers the whole catalogue.
     const zero = [0, 0, 0, 0];
     const x = s.extras || { remnant: zero, tone: zero, shell: zero, extra: zero,
-        body: zero, hot: zero, wisp: zero, dust: zero, jet: [1, 0, 0, 0] };
+        body: zero, hot: zero, wisp: zero, dust: zero, jet: [1, 0, 0, 0],
+        pop0: zero, pop1: zero, pop2: zero, pop3: zero, pop4: zero, pop5: zero,
+        grain: zero, flow: zero, turn: zero, turn2: zero };
     for (const [name, vec] of [["snRemnant", x.remnant], ["snTone", x.tone], ["snShell", x.shell],
         ["snExtra", x.extra], ["snBody", x.body], ["snHot", x.hot], ["snWisp", x.wisp],
-        ["snDust", x.dust], ["snJet", x.jet]])
+        ["snDust", x.dust], ["snJet", x.jet],
+        ["snPop0", x.pop0], ["snPop1", x.pop1], ["snPop2", x.pop2],
+        ["snPop3", x.pop3], ["snPop4", x.pop4], ["snPop5", x.pop5],
+        ["snGrain", x.grain], ["snFlow", x.flow], ["snTurn", x.turn], ["snTurn2", x.turn2]])
         lines.push(name + " " + vec.map(y => y.toFixed(6)).join(" "));
     return lines.join("\n") + "\n";
 }

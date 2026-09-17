@@ -1683,18 +1683,105 @@ Item {
             e.precursorColour = [1, 0.66, 0.45];
             e.shellWarm = [1, 0.92, 0.60];
             e.shellCool = [1, 0.46, 0.28];
-            // v11, requirement E. The v10 remnant was TEAL and dark red in two
-            // radial wedges -- open his screenshot, that is the whole palette
-            // of it, and neither reference has a teal pixel in it. Cas A goes
-            // blue-white in the hot inner knots, orange and pink along the
-            // shocked rim, deep red in the outer wisps, grey-brown in the dusty
-            // sheets between them. Four tones, still saturation-sane, and the
-            // sky outside the remnant is untouched: he vetoed rainbow and
-            // whole-sky recolour, not a remnant that is hotter than a star.
-            e.remnantHot = [0.72, 0.86, 1];
-            e.remnantTone = [1, 0.58, 0.44];
-            e.remnantWisp = [0.95, 0.28, 0.22];
-            e.remnantDust = [0.50, 0.43, 0.38];
+            // v12. The palette is MEASURED off his reference rather than
+            // chosen. `tools/sn_reference.py --palette` clusters the lit
+            // interior of reference/sa0225Mosk01.jpg six ways in linear light,
+            // each pixel normalised to its own peak so tone is separated from
+            // brightness, and returns these six with these area shares. They
+            // are ordered INSIDE -> OUT, which is what lets one 1-D schedule
+            // carry both the radial structure and the time turnover.
+            //
+            //   0 iron, magenta-violet      15.8 % of the lit area
+            //   1 bulk ejecta, blue         25.9 %   the largest population
+            //   2 shocked sheets, cyan      15.0 %
+            //   3 blast wave, blue-white    15.6 %   31.5 % of the ENERGY
+            //   4 calcium/sulphur, yellow    8.1 %   the knot clusters
+            //   5 silicon, crimson          19.5 %   wisps and both jets
+            //
+            // The .w is the population's DUST FRACTION: how much of a grain of
+            // it absorbs rather than emits. Iron and bulk ejecta are the cold,
+            // dense, absorbing material; the blast wave is nearly pure
+            // emission. That is what makes the near slices eat the far ones
+            // instead of all four just adding up.
+            //
+            // v11's four tones (blue-white knots, orange rim, red wisps,
+            // grey-brown dust) were fitted to the JWST infrared frame. He is
+            // pointing at the CHANDRA composite, and the two disagree about the
+            // one thing that matters: measured, the Chandra frame's colour walk
+            // runs -0.50 -0.10 -0.17 -0.18 -0.11 +0.01 in (R-B)/(R+B) from
+            // centre to rim -- blue nearly all the way out -- and v11 scored
+            // -0.13 -0.06 +0.05 +0.08 +0.10 +0.20, which is the same walk with
+            // the sign flipped. It was red where the reference is blue.
+            // The second measured number, and it is the one that stops six
+            // tones reading as one grey average: each population's share of the
+            // lit ENERGY divided by its share of the lit AREA. The blast wave
+            // is 31.5 % of the light on 15.6 % of the picture and the bulk
+            // ejecta is 14.7 % on 25.9 %, so one is nearly FOUR TIMES the
+            // surface brightness of the other. A palette of six equally bright
+            // tones is a plaid; this is why the reference has bright white and
+            // cyan SHEETS standing out of a dim violet and crimson body. The
+            // emissivity is folded into the rgb rather than carried in a fifth
+            // component, which is free and leaves the hue untouched (scaling
+            // all three channels is a brightness, not a colour).
+            const emis = [0.56, 0.57, 1.39, 2.02, 1.62, 0.56];
+            const tones = [
+                [0.931, 0.361, 1.000, 0.55],
+                [0.153, 0.343, 1.000, 0.62],
+                [0.446, 0.694, 1.000, 0.30],
+                [0.861, 0.883, 1.000, 0.10],
+                [1.000, 0.957, 0.316, 0.18],
+                [1.000, 0.174, 0.302, 0.40]
+            ];
+            e.pops = tones.map((p, i) => [p[0] * emis[i], p[1] * emis[i], p[2] * emis[i], p[3]]);
+            // The non-grain terms read the same palette, so the front, the
+            // wisps and the knots can never disagree with the gas: the shock
+            // front is the blast wave (3), the rim tone the shocked sheets (2),
+            // the wisps silicon (5) and the dust the cold bulk ejecta (1),
+            // darkened, because the reference's obscuring material is BLUE and
+            // v11's was grey-brown.
+            e.remnantHot = tones[3].slice(0, 3);
+            e.remnantTone = tones[2].slice(0, 3);
+            e.remnantWisp = tones[5].slice(0, 3);
+            e.remnantDust = [0.16, 0.19, 0.34];
+            // ---- the grain field's own dials --------------------------------
+            // `grainGain` is the gas's brightness; `grainCells` how many cells
+            // fit in one remnant radius, which with one grain per cell and four
+            // slices is the grain COUNT (see STARFIELD.md for the arithmetic);
+            // `grainLifeSec` how long a grain lives, which is also how far the
+            // one-step advection is ever asked to carry it; `grainSize` its
+            // radius in cells, held under 0.5 so the shader's 3x3 neighbourhood
+            // is exact.
+            // The cell COUNT is free: every pixel walks the same 3x3
+            // neighbourhood whatever the lattice pitch is, so raising this
+            // makes more and finer grains at exactly the same cost. What it is
+            // really bounded by is the screen -- at 30 cells per remnant radius
+            // a cell is R/30 px across, which on his 3440x1440 is about 9 px,
+            // and a grain of 0.28 cells is 2.5 px. Below about two pixels a
+            // grain starts aliasing into sparkle instead of reading as a knot.
+            e.grainGain = value("grainGain", 1.05, 3);
+            e.grainCells = Math.max(4, clamp(cfg.grainCells === undefined ? 20 : cfg.grainCells, 4, 64));
+            e.grainLife = Math.max(1.5, clamp(cfg.grainLifeSec === undefined ? 7.5 : cfg.grainLifeSec, 1.5, 60));
+            e.grainSize = clamp(cfg.grainSize === undefined ? 0.44 : cfg.grainSize, 0.10, 0.50);
+            e.grainOpacity = value("grainOpacity", 0.42, 1);
+            // The wind. `curlAmp` is in CELLS and is what bounds the 3x3
+            // neighbourhood, so it is hard-capped at 0.5 rather than validated
+            // into a range: above that the shader would start missing grains
+            // and the gas would sparkle at cell boundaries.
+            e.curlAmp = clamp(cfg.curlAmp === undefined ? 0.44 : cfg.curlAmp, 0, 0.5);
+            e.curlScale = Math.max(0.5, clamp(cfg.curlScale === undefined ? 3.1 : cfg.curlScale, 0.5, 12));
+            e.parallax = clamp(cfg.parallax === undefined ? 0.17 : cfg.parallax, 0, 0.5);
+            // How many populations are being born at one instant. 1.5 means a
+            // grain's index is its schedule position give or take three
+            // quarters of a step, so two adjacent tones are always in the air
+            // and a third appears at the crossings -- the MIXTURE he asked for.
+            // 0 would make the cloud one pure tone that steps; the shader's
+            // four-wide window is sized for 1.5 and test-particles asserts the
+            // window never clips.
+            e.toneSpread = clamp(cfg.toneSpread === undefined ? 1.5 : cfg.toneSpread, 0, 2.2);
+            e.sheetGain = value("sheetGain", 0.30, 1.2);
+            // How far the inverted-layer plume pulls the schedule back toward
+            // iron at large radius, in populations. 0 turns the feature off.
+            e.plume = clamp(cfg.plume === undefined ? 2.3 : cfg.plume, 0, 4);
         } else if (kind === 9) {
             // A pulsar MODULATES; the validator floors (period >= 0.8 s, trough
             // >= 0.5 of peak, edge >= 0.10 s) make a square blink unreachable.
@@ -1932,6 +2019,11 @@ Item {
         // first frames, and a slow creep through the remnant phase after that.
         let nebulaR = 0, nebulaAbs = 0, pulsarAbs = 0, spikeAbs = 0, spikeLen = 0;
         let filaments = 0, tone = 0, remnantV = 0;
+        // v12: the remnant's own 0..1 envelope, and the span it runs over. Both
+        // were local to the remnant branch; the grain schedule needs them at
+        // this level, and there is one copy of each so the grains and the gas
+        // can never be on two different clocks.
+        let remnantEnv = 0, remnantSpanSec = 0.4 * e.shellSpan + e.remnant;
         let colour = e.colour, second = e.peakColour;
         // v10: the shell's clock starts at the DETONATION, not at the end of
         // the flash. The shock leaves when the star explodes -- that is the
@@ -2023,11 +2115,11 @@ Item {
             // pulsar family's own floors - period >= 0.8 s, trough >= 0.55 of
             // peak - so it modulates instead of flashing.
             const remnantAt = e.precursor + 0.6 * e.shellSpan;
-            const remnantSpan = 0.4 * e.shellSpan + e.remnant;
-            const rv = clamp((age - remnantAt) / Math.max(0.001, remnantSpan), 0, 1);
+            const rv = clamp((age - remnantAt) / Math.max(0.001, remnantSpanSec), 0, 1);
             remnantV = rv;
             if (rv > 0) {
-                nebulaAbs = e.remnantGain * ease(rv / 0.16) * ease((1 - rv) / 0.55);
+                remnantEnv = ease(rv / 0.16) * ease((1 - rv) / 0.55);
+                nebulaAbs = e.remnantGain * remnantEnv;
                 const turn = modulo(d, e.pulsarPeriod) / e.pulsarPeriod;
                 pulsarAbs = e.pulsarGain * (0.55 + 0.45 * (0.5 - 0.5 * Math.cos(2 * Math.PI * turn)))
                     * ease(rv / 0.08) * ease((1 - rv) / 0.60);
@@ -2106,6 +2198,49 @@ Item {
         // nebula passage's 0.36 does (tools/nebula_sheet.py established that
         // method; tools/sn_reference.py measures this one).
         const bodyLin = linearGain(nebulaAbs) * 0.34;
+        // ---- v12: THE REVERSE SHOCK, AND THE TURNOVER IT DRIVES ------------
+        // Cas A is ~350 years old and has NOT finished exploding: its reverse
+        // shock is still walking inward through the ejecta in the material's
+        // own frame at 1150-1300 km/s over most of the rim, and in the west it
+        // moves inward in the OBSERVER's frame too (-1884 +- 17 km/s, Vink et
+        // al. 2022). Each layer it reaches is heated and ionised, and lights up
+        // in its own element's colour. So the physical answer to "the colour
+        // change should be new particles of a new tone appearing" is: the wave
+        // starts at the rim and travels IN, and a grain born behind it is born
+        // with the new tone while the old grains in front of it die on their
+        // own lifetimes. That is one mechanism for his complaint and for the
+        // object, and it is why this is a radius walking inward and not a clock.
+        //
+        // `shockRadiusU` starts outside everything (1.30, nothing swept) and
+        // ends inside the core (0.10). `shockRateU` is its speed, which the
+        // shader needs because it is the only way a stateless grain can know
+        // what the birth-rate distribution looked like when it was born.
+        const shockRadiusU = 1.30 - 1.20 * remnantV;
+        const shockRateU = 1.20 / Math.max(0.001, remnantSpanSec);
+        // The schedule's two halves. `posSpan` is the RADIAL walk across the
+        // six populations at a fixed time -- deliberately under two populations
+        // wide, because the reference's own radial colour walk is muted
+        // (measured -0.50 -0.10 -0.17 -0.18 -0.11 +0.01) even though its local
+        // chroma is high: it is not a rainbow disc, it is a blue object with
+        // warm knots in it. `toneAdvance` is how far swept material moves along
+        // the sequence, and it is the bigger of the two, because the TURNOVER
+        // is the thing he asked for.
+        //
+        // Together they make the object walk, over one episode, from a violet
+        // and blue cold-ejecta cloud (nothing swept) through the reference's
+        // own mid-life picture -- blue-violet interior, blue-white sheets and
+        // yellow knots at the limb, crimson beyond it -- to a fully swept,
+        // warm-ended remnant. Every step of that is population turnover; no
+        // grain's hue ever moves.
+        const posLo = 0;
+        const posSpan = 1.7;
+        const toneAdvance = 2.9;
+        // 1.35 is a CALIBRATION in the same family as the body's 0.34 and the
+        // nebula passage's 0.36: it is what puts the drawn GAS's 99th linear
+        // percentile at the `grainGain` dial, measured with
+        // tools/sn_reference.py --brightness rather than chosen by eye. The
+        // grains carry their own one because they are their own layer now.
+        const grainAbs = linearGain(nebulaAbs) * e.grainGain * 5.40;
         return {
             head: [site[0], site[1], core, peak],
             colour: colour.concat(6),
@@ -2140,7 +2275,14 @@ Item {
                 hot: e.remnantHot.concat(e.knotGain),
                 wisp: e.remnantWisp.concat(e.wispGain * (0.25 + 0.75 * ease(shockU / 0.25))),
                 dust: e.remnantDust.concat(e.jetGain * ease(shockU / 0.18)),
-                jet: [Math.cos(jetAngle), Math.sin(jetAngle), e.jetReach, e.jetWidth]
+                jet: [Math.cos(jetAngle), Math.sin(jetAngle), e.jetReach, e.jetWidth],
+                // ---- v12: the grain populations and their schedule ---------
+                pop0: e.pops[0], pop1: e.pops[1], pop2: e.pops[2],
+                pop3: e.pops[3], pop4: e.pops[4], pop5: e.pops[5],
+                grain: [grainAbs, e.grainCells, e.grainLife, e.grainSize],
+                flow: [e.curlAmp, e.curlScale, e.plume, e.toneSpread],
+                turn: [posLo, posSpan, shockRadiusU, toneAdvance],
+                turn2: [shockRateU, e.sheetGain, e.grainOpacity * remnantEnv, e.parallax]
             }
         };
     }
@@ -3186,6 +3328,20 @@ Item {
         shader.snWisp = extras ? Qt.vector4d(extras.wisp[0], extras.wisp[1], extras.wisp[2], extras.wisp[3]) : Qt.vector4d(0, 0, 0, 0);
         shader.snDust = extras ? Qt.vector4d(extras.dust[0], extras.dust[1], extras.dust[2], extras.dust[3]) : Qt.vector4d(0, 0, 0, 0);
         shader.snJet = extras ? Qt.vector4d(extras.jet[0], extras.jet[1], extras.jet[2], extras.jet[3]) : Qt.vector4d(1, 0, 0, 0);
+        // v12: the six grain populations and the schedule that decides which of
+        // them a grain born now belongs to. Zeroed with the rest when no
+        // supernova is alive; snGrain.x is the whole switch on the shader side,
+        // inside a branch that already needs snRemnant.w > 0.
+        shader.snPop0 = extras ? Qt.vector4d(extras.pop0[0], extras.pop0[1], extras.pop0[2], extras.pop0[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snPop1 = extras ? Qt.vector4d(extras.pop1[0], extras.pop1[1], extras.pop1[2], extras.pop1[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snPop2 = extras ? Qt.vector4d(extras.pop2[0], extras.pop2[1], extras.pop2[2], extras.pop2[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snPop3 = extras ? Qt.vector4d(extras.pop3[0], extras.pop3[1], extras.pop3[2], extras.pop3[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snPop4 = extras ? Qt.vector4d(extras.pop4[0], extras.pop4[1], extras.pop4[2], extras.pop4[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snPop5 = extras ? Qt.vector4d(extras.pop5[0], extras.pop5[1], extras.pop5[2], extras.pop5[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snGrain = extras ? Qt.vector4d(extras.grain[0], extras.grain[1], extras.grain[2], extras.grain[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snFlow = extras ? Qt.vector4d(extras.flow[0], extras.flow[1], extras.flow[2], extras.flow[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snTurn = extras ? Qt.vector4d(extras.turn[0], extras.turn[1], extras.turn[2], extras.turn[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snTurn2 = extras ? Qt.vector4d(extras.turn2[0], extras.turn2[1], extras.turn2[2], extras.turn2[3]) : Qt.vector4d(0, 0, 0, 0);
         for (let i = 0; i < phenomenonSlotCount; ++i) {
             const state = live[i];
             const head = state ? [state.head[0], state.head[1], state.head[2], state.head[3] * (state.exempt + (1 - state.exempt) * scale)] : [0, 0, 0, 0];
@@ -4398,6 +4554,20 @@ Item {
         property vector4d snWisp: Qt.vector4d(0, 0, 0, 0)
         property vector4d snDust: Qt.vector4d(0, 0, 0, 0)
         property vector4d snJet: Qt.vector4d(1, 0, 0, 0)
+        // v12 grain populations, 160 B. Qt binds a `vector4d` property to the
+        // uniform of the same name, which is why these are ten named vectors
+        // and not one array: a std140 `vec4 snPop[6]` would need `snPop[0]`
+        // style names that a QML property cannot carry.
+        property vector4d snPop0: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snPop1: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snPop2: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snPop3: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snPop4: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snPop5: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snGrain: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snFlow: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snTurn: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snTurn2: Qt.vector4d(0, 0, 0, 0)
         // The meteor storm: one slot for the whole shower, however many streaks
         // are in the air. stormShape.w is the gain AND the off switch.
         property vector4d stormHead: Qt.vector4d(0, 0, 0, 0)

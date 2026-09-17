@@ -123,6 +123,32 @@ layout(std140, binding = 0) uniform buf {
     vec4 snWisp;
     vec4 snDust;
     vec4 snJet;
+    // v12 GRAIN POPULATIONS, 160 B. The remnant's visible gas stopped being a
+    // noise field with a time-varying tint and became thousands of individual
+    // grains, each one born with ONE of six colours and keeping it until it
+    // dies (ledger 2403: "instead of it just transition the color slowly it
+    // should make new particles of new tone"). The six tones are not a palette
+    // ramp, they are element populations, and they are MEASURED off
+    // reference/sa0225Mosk01.jpg rather than chosen: a six-way cluster of that
+    // image's lit interior in linear light returns exactly these, with the
+    // area shares in snPop*.w's comment. See supernovaRemnant().
+    //   snPop0..5 = (r, g, b, dustFrac)   population tone, linear, peak = 1
+    //   snGrain   = (grainGain, cellsPerUnit, lifeSec, grainSizeCells)
+    //   snFlow    = (curlAmp, curlScale, layerCreep, toneSpread)
+    //   snTurn    = (posLo, posSpan, shockU, toneAdvance)
+    //   snTurn2   = (shockUDot, sheetGain, grainOpacity, parallax)
+    // Block 1920 -> 2080 B of 16384; offsets verified off the baked .qsb by
+    // tools/bh_probe.py --check, never by hand.
+    vec4 snPop0;
+    vec4 snPop1;
+    vec4 snPop2;
+    vec4 snPop3;
+    vec4 snPop4;
+    vec4 snPop5;
+    vec4 snGrain;
+    vec4 snFlow;
+    vec4 snTurn;
+    vec4 snTurn2;
     // METEOR STORM (events.shower), ONE slot for the whole shower. Four vec4,
     // 64 B, whatever the peak rate is: the kernel generates every streak from
     // the storm's seed and its PHASE, so several meteors a second cost no more
@@ -1165,15 +1191,76 @@ vec4 nebulaField(vec2 pixel) {
     }
     return vec4(emission * ubuf.nebulaHead.w, opacity);
 }
-// ---- v11 SUPERNOVA REMNANT ---------------------------------------------
-// "It looks nothing like a real supernova. I want it hyper-detailed" and "this
-// part looks flat: the cloud is static and not moving with the rest" (ledger
-// 2286). The v10 remnant was ONE radial-noise disc on a polar grid, drawn at a
-// fixed pixel: brightest at its own centre, hard-edged at its own radius, and
-// frozen. His screenshot is a teal and red wheel of spokes.
+// ---- v12 GRAIN POPULATIONS: the cloud is made of grains -----------------
+// v11 fixed "static" and "not hyper-detailed". He came back (ledger 2403) with
+// three things it still got wrong and one it had never tried:
 //
-// This is the opposite construction at every level, and every level of it comes
-// off one of the two Cas A references:
+//   "phase chaning when it changes the color it feels unatural and as just pure
+//    color fade transition [...] instead of it just transition the color slowly
+//    it should make new particles of new tone [...] atfrist it is full of green
+//    particles then over time more of particles that color is closer to red
+//    start appering the closer and closer and then finaaly red"
+//   "the clouds in speaking of i wan it to me more of particles based"
+//   "the gas right now feeels too static it should behave like real gas on the
+//    wind [...] that gas is volumetric and 3 each part of it moves differently"
+//   "supernovas still look far from the reference image"
+//
+// All four are ONE construction. The gas stopped being a noise field with a
+// time-varying tint and became a POPULATION: thousands of grains that are born,
+// drift on a divergence-free wind, and die, each one carrying a single colour
+// it was born with. Nothing in here lerps a hue. The only thing that changes
+// smoothly is HOW MANY grains of each tone are being born.
+//
+//   NO CPU. QML's JS charges 211 ns per particle-iteration (14x node,
+//   V11-PERF-REPORT.md), so thousands of grains on the main thread is not a
+//   budget question, it is impossible. The GPU sat at 4 % with room to 15. So
+//   every grain is STATELESS: a cell grid in the remnant's comoving frame, one
+//   grain per cell, and its birth time, life, position, size, stretch,
+//   brightness and TONE all derived from hash4(cell, generation, slice). There
+//   is no buffer, no atlas row and no frame-to-frame state anywhere; a grain
+//   is as procedural as one of the field's stars, and for the same reason.
+//
+//   BIRTH-FROZEN TONE, WHICH IS THE SKY'S OWN LAW. A star's traits are frozen
+//   at birth here and always have been. A grain's tone is chosen ONCE, from the
+//   birth-rate distribution as it stood AT THE GRAIN'S BIRTH TIME, and never
+//   read again. The distribution slides; the grain does not. So mid-change the
+//   cloud is a visible MIXTURE of two tones in different individual grains --
+//   which is what he described, and what a hue histogram taken mid-change shows
+//   as two peaks instead of one travelling bump.
+//
+//   THE SLIDE IS THE REVERSE SHOCK. Cas A is ~350 years old and its reverse
+//   shock is still walking INWARD through the ejecta in the material's frame,
+//   heating and ionising each layer as it reaches it. That is a physical reason
+//   for new-toned material to appear progressively from the outside in, which
+//   is exactly the turnover he asked for, so the schedule is driven by a
+//   reverse-shock radius that walks in rather than by a clock.
+//
+//   SIX POPULATIONS, MEASURED OFF HIS REFERENCE. Not a palette ramp and not my
+//   taste: a six-way cluster of sa0225Mosk01.jpg's lit interior, in linear
+//   light, normalised per pixel so tone is separated from brightness, returns
+//   exactly six and they are the six below with these area shares --
+//   blue 25.9 %, crimson 19.5 %, magenta 15.8 %, blue-white 15.6 %, cyan
+//   15.0 %, yellow-green 8.1 %. Ordered here INSIDE -> OUT, which is what makes
+//   one 1-D schedule serve both the radial structure and the time turnover.
+//   In Chandra's element mapping those are iron (purple), the bulk ejecta and
+//   the synchrotron blast wave (blue and blue-white), calcium (green), sulphur
+//   (yellow) and silicon (red) -- and the Si-rich jets are the fastest, outermost
+//   material, which is why crimson sits at the end of the sequence.
+//
+//   VOLUME, NOT A SHEET. Four depth slices, each a real plane section of the
+//   shell: a plane at line-of-sight depth z cuts a shell of inner radius a in
+//   an annulus of outer radius sqrt(1-z^2) and inner sqrt(a^2-z^2), so the two
+//   slices past |z| > a are filled DISCS -- the near and far caps, which is why
+//   the middle of the reference is full of material and the middle of v11's is
+//   empty. Each slice has its own lattice rotation, its own curl field, its own
+//   morph phase and its own perspective magnification, and they composite
+//   back-to-front so near material extincts far material. Each part moves
+//   differently because each part IS a different part.
+//
+// ---- v11, kept ---------------------------------------------------------
+//
+// v11 answered "the cloud is static and not moving with the rest" and "it looks
+// nothing like a real supernova". Everything below that answered it is kept:
 //
 //   COMOVING. Everything is evaluated in q = (pixel - site)/R, the MATERIAL's
 //   own frame: the site travels on the far layer's streamline and R is the
@@ -1198,7 +1285,11 @@ vec4 nebulaField(vec2 pixel) {
 //
 //   FILIGREE. A ridged high octave squared twice is a field of thin threads,
 //   concentrated in a band at the limb, plus an eighth-power channel for the
-//   isolated bright knots. Thousands of them per frame, at four texture taps.
+//   isolated bright knots. v12 demotes this to the DIFFUSE UNDERLAY the grains
+//   sit on (snTurn2.y): grains on black read as confetti, grains on a faint
+//   sheet read as a cloud that is made of them. The four noise artefacts this
+//   term cost to get right, and the rules that stop them coming back, are
+//   unchanged and still enforced below.
 //
 //   IT TAKES LIGHT AWAY. Returning (emission, opacity) like nebulaField means
 //   main() composites it INTO the far field: the dust column multiplies the
@@ -1206,8 +1297,269 @@ vec4 nebulaField(vec2 pixel) {
 //   sheets, which is what makes the JWST frame read as translucent layers. No
 //   additive sprite can do that.
 //
+// The six populations, indexed by an INTEGER. The chain of mixes evaluates to
+// the pure tone at every integer, so this is a lookup and not a ramp: a grain
+// is never the average of two populations, which is the whole point. It is
+// called THREE OR FOUR TIMES PER PIXEL, hoisted out of the grain loop, never
+// per grain -- see the window `base` below. rgb is linear with peak 1, w is the
+// population's dust fraction (how much of it absorbs rather than emits).
+vec4 snPop(float i) {
+    vec4 c = mix(ubuf.snPop0, ubuf.snPop1, clamp(i, 0.0, 1.0));
+    c = mix(c, ubuf.snPop2, clamp(i - 1.0, 0.0, 1.0));
+    c = mix(c, ubuf.snPop3, clamp(i - 2.0, 0.0, 1.0));
+    c = mix(c, ubuf.snPop4, clamp(i - 3.0, 0.0, 1.0));
+    return mix(c, ubuf.snPop5, clamp(i - 4.0, 0.0, 1.0));
+}
+// TWO divergence-free flow fields for the price of three texture taps.
+//
+// Curl noise (Bridson, Hourihan & Nordenstam, SIGGRAPH 2007): the curl of a
+// scalar potential is divergence-free by construction, so advecting by
+// v = (dpsi/dy, -dpsi/dx) never compresses the material into sinks the way a
+// raw vector-noise field does -- grains would pile into blobs and leave holes,
+// which is the one artefact that would make this read as a texture again.
+//
+// nebulaTap returns TWO decorrelated value-noise channels per fetch, so three
+// forward-differenced taps produce two independent potentials and therefore two
+// independent flows. Forward differences rather than central: central costs
+// four taps for a difference that is visually identical at this amplitude, and
+// the half-cell bias is a translation of the field, which nothing here can see.
+// The epsilon is half a lattice cell -- smaller reads the bilinear facet the
+// tap is built on and turns the flow into a grid of straight segments.
+void snCurl(vec2 p, out vec2 v0, out vec2 v1) {
+    vec2 c = nebulaTap(p);
+    vec2 cx = nebulaTap(p + vec2(0.5, 0.0));
+    vec2 cy = nebulaTap(p + vec2(0.0, 0.5));
+    vec2 g0 = (vec2(cx.x, cy.x) - c.x) * 2.0;
+    vec2 g1 = (vec2(cx.y, cy.y) - c.y) * 2.0;
+    v0 = vec2(g0.y, -g0.x);
+    v1 = vec2(g1.y, -g1.x);
+}
+// ONE DEPTH SLICE OF GRAINS. Returns (emission, opacity) for the plane at
+// line-of-sight depth z, in the slice's own frame, ready to be composited
+// back-to-front by the caller.
+//
+//   THE GRID IS LAID DOWN IN A FLOW-WARPED COORDINATE. That is what makes the
+//   grains move, and it is the only way a stateless grain can travel further
+//   than its own cell: the lattice itself is displaced by the curl field, so
+//   the cells stretch, shear and rotate the way a Lagrangian mesh does and the
+//   grains ride inside them. The displacement is held under one cell so the
+//   3x3 neighbourhood below is EXACT -- no grain that covers this pixel can be
+//   outside it -- and that bound is not a quality compromise because a grain
+//   only lives `lifeSec`: it is reborn long before it would have needed to
+//   travel further. Short lives are what make a one-step advection honest.
+//
+//   THE FIELD MORPHS, IT DOES NOT SLIDE. Translating a noise potential in time
+//   is the cheap way to animate a flow and it reads as one picture sliding
+//   across the screen -- which is half of what "too static" means: the shape
+//   never changes, it just arrives somewhere else. The curl is LINEAR in the
+//   potential, so cross-fading the two potentials the same three taps already
+//   produced gives a field that evolves in place and is still exactly
+//   divergence-free. Each slice cross-fades on its own phase, so no two slices
+//   are ever showing the same flow.
+//
+//   EVERY ATTRIBUTE IS FROZEN FOR THE GRAIN'S LIFE. `gen` is a floor(), so it
+//   steps only when the cell recycles; every hash downstream of it is constant
+//   between two births. That is the mechanical guarantee behind "for a tracked
+//   grain, hue is constant over its life".
+vec4 snSlice(vec2 q, float z, float slice, float t, float age, float edge,
+             float posHere, float posRate, float spread, float base,
+             vec4 cA, vec4 cB, vec4 cC, vec4 cD) {
+    // The slice's own annulus. |z| past the shell's inner radius makes it a
+    // filled disc: those are the near and far CAPS, and they are why the middle
+    // of the remnant carries material instead of being a hole.
+    float a = ubuf.snBody.x;
+    float zz = z * z;
+    float ro = sqrt(max(1.0 - zz, 0.0));
+    float ri = sqrt(max(a * a - zz, 0.0));
+    // PERSPECTIVE MAGNIFICATION is the parallax. A near slice is closer to the
+    // camera and subtends more, so the material coordinate it must be sampled
+    // at is the screen coordinate DIVIDED by its own magnification. It is the
+    // same effect the particle side already measures on the ejecta (the near
+    // cap magnified 2.16x against the far one by t+28 s), and because the
+    // magnification is fixed while R grows, the slices separate radially as the
+    // remnant expands -- which is layer parallax, for two multiplies.
+    vec2 qm = q / (1.0 + ubuf.snTurn2.w * z);
+    float nd = length(qm);
+    if (nd >= ro * edge) return vec4(0.0);
+    float env = smoothstep(ro * edge, ro * edge * 0.86, nd);
+    if (ri > 0.0) env *= smoothstep(ri * edge * 0.80, ri * edge, nd);
+    if (env <= 0.004) return vec4(0.0);
+    // Each slice on its own lattice axes, for the reason the sharp cartesian
+    // octaves are rotated 31 and 67 degrees: two lattices that share an
+    // orientation share their creases, and coincident creases read as a mesh.
+    float ang = 1.1781 * slice + 0.37;
+    float ca = cos(ang), sa = sin(ang);
+    vec2 qr = vec2(qm.x * ca - qm.y * sa, qm.x * sa + qm.y * ca);
+    vec2 f0, f1;
+    snCurl(qr * ubuf.snFlow.y + vec2(3.1 * slice, 7.9 * slice)
+           + vec2(0.09 * t, -0.06 * t), f0, f1);
+    float morph = 0.5 + 0.5 * sin(6.2831853 * (0.085 * t + 0.31 * slice));
+    vec2 flow = mix(f0, f1, morph) * ubuf.snFlow.x;
+    // THE FILAMENT AXIS IS MOSTLY TANGENTIAL. A shocked sheet seen edge-on lies
+    // ALONG the rim, and Cas A's filaments measure strongly polar-anisotropic
+    // (radial:tangential stretch ratios around 10 in the literature) -- which
+    // is also what sn_reference.py's `tangential` metric scores, and what the
+    // polar thread octave was put in for in v11. But shear ALSO draws a grain
+    // out along its own streamline, and where the flow is circulating the two
+    // agree. Blending 65 % tangent with 35 % streamline keeps the tangential
+    // majority the reference has while letting a fast radial finger stretch
+    // the way it is really moving. A still region with no flow falls back to
+    // pure tangent, so a grain is never stretched along a degenerate axis.
+    float fl = length(flow);
+    vec2 tang = nd > 1e-4 ? vec2(-qr.y, qr.x) / nd : vec2(0.0, 1.0);
+    vec2 fdir = fl > 1e-4 ? flow / fl : tang;
+    // THE SLICES ARE A SCALE HIERARCHY AS WELL AS A DEPTH STACK, and this is
+    // the single change that stopped the gas reading as a field of rice. Four
+    // slices at ONE lattice pitch give four sheets of identically sized grains,
+    // and a uniform grain size is a texture however many of them there are --
+    // it is the v11 spaghetti lesson ("THREE SCALES OF STRUCTURE, not one")
+    // arriving again for the grains. So the pitch doubles and a bit across the
+    // stack, a factor of 4.5 end to end: broad blobs, knots, fine knots and
+    // near-speckle, all superimposed.
+    //
+    // It is also the right way round physically. The NEAREST slice is closest
+    // to the camera, so its structure subtends the most and its grains are the
+    // coarsest; the far cap's are the finest. And because an eddy's turnover
+    // time goes as its size to the two-thirds (Kolmogorov), the fine slices
+    // live proportionally shorter -- the speckle boils while the blobs drift.
+    // `grainCells` is the MIDDLE of the hierarchy, not its floor: the pitch
+    // runs 2.3x finer to 1.5x coarser than the dial, a factor of 3.5 end to
+    // end. It is centred rather than one-sided because the bound at the fine
+    // end is the SCREEN -- a grain under about two pixels stops being a knot
+    // and starts being sparkle in motion -- and the bound at the coarse end is
+    // the remnant, which only holds so many blobs.
+    float sc = exp2((1.5 - slice) * 0.60);
+    vec2 p = qr * (ubuf.snGrain.y * sc) + flow;
+    vec2 cell = floor(p);
+    float life = max(ubuf.snGrain.z * exp2((slice - 1.5) * 0.40), 0.25);
+    float size = ubuf.snGrain.w;
+    float shrp = clamp(sc - 0.75, 0.0, 1.0);
+    float opw = min(sc, 1.6);
+    // MORE LIGHT AT THE LARGE SCALES. A turbulent cascade carries most of its
+    // energy in the biggest eddies (E(k) ~ k^-5/3), and the reference agrees
+    // with the physics: its defining feature is BROAD bright sheets with fine
+    // structure on them, not an even carpet of speckle. Weighting the slices
+    // by the same two-thirds power that sets their lifetimes puts the light
+    // where the material is and gives the gas a foreground.
+    float ew = exp2((slice - 1.5) * 0.40);
+    vec3 em = vec3(0.0);
+    float op = 0.0;
+    for (int j = -1; j <= 1; ++j) {
+        for (int i = -1; i <= 1; ++i) {
+            vec2 c = cell + vec2(float(i), float(j));
+            // Stagger, so the cells do not all turn over on the same frame --
+            // a synchronised field pulses, and a pulsing field is a texture.
+            vec4 h = hash4(c + vec2(11.37 * slice, 5.71 * slice));
+            float phase = age / life + h.x * 9.0;
+            float gen = floor(phase);
+            float age01 = phase - gen;
+            // The generation re-hash. The multipliers on `gen` are irrational
+            // so no (cell, generation) pair can ever land on another one's
+            // hash input -- an integer multiplier would make cell+1 at
+            // generation g collide with cell at generation g+k.
+            vec4 g = hash4(c * 1.7 + vec2(0.73171 * gen + 3.1 * slice,
+                                          1.37193 * gen + 7.9));
+            vec2 at = c + vec2(0.16 + 0.68 * g.x, 0.16 + 0.68 * g.y);
+            vec2 dd = p - at;
+            // Anisotropy: g.z runs a grain from a round KNOT to a long THREAD.
+            // Squared, so most grains are knots and the threads are the tail --
+            // the reference is a field of knots with filaments THROUGH it, and
+            // making every grain a thread is how the whole thing turns back
+            // into the curling worms v11 was made of.
+            float stretch = 1.0 + 2.3 * g.z * g.z;
+            float rad0 = size * (0.55 + 0.75 * g.z);
+            // ---- THE 3x3 NEIGHBOURHOOD IS EXACT, AND HERE IS WHY -----------
+            // A grain sits at its cell + [0.16, 0.84], so the nearest edge of
+            // the 3 cells either side is 1.16 cells away in every direction.
+            // If a grain's SUPPORT stays under 1.16 cells, no pixel outside the
+            // neighbourhood can ever be inside a grain, and the nine cells are
+            // not an approximation -- they are the complete answer.
+            //
+            // The first version violated that and it was the real cause of the
+            // straight-edged "facets": a Gaussian has no support bound at all,
+            // the reject cut it at 4.5 % of peak, and the stretch pushed a long
+            // grain 2.6 cells out. Every elongated grain was being sliced off
+            // square at the neighbourhood edge, so the gas was crossed by hard
+            // lines ON THE GRAIN LATTICE -- which is why it survived rotating
+            // the noise octaves and survived turning the curl off. Widening to
+            // 5x5 would have cost 2.8x the loop to move the same line further
+            // out; bounding the support removes it.
+            //
+            // So: a COMPACT kernel whose support is exactly `rad`, and a
+            // stretch capped so the semi-major axis cannot pass 1.16. Small
+            // grains may still be long threads, which is where the filaments
+            // come from; only the largest are held rounder.
+            float rad = rad0;
+            stretch = min(stretch, 1.16 / max(rad, 1e-4));
+            // EACH GRAIN PICKS ITS OWN AXIS, between the tangent and the local
+            // streamline. Stretching every grain along the tangent draws the
+            // whole remnant as concentric arcs -- which is the worms failure
+            // and the pinwheel failure wearing a third hat, and it is what the
+            // first version of this did. A per-grain mix keeps the tangential
+            // MAJORITY the reference measures while giving the field the
+            // crossing, branching filaments it actually has. hash4 channels are
+            // all spent, so the mix weight is a cheap decorrelation of two.
+            // Weighted toward the STREAMLINE. The flow is smooth, so grains
+            // that follow it align with their neighbours and lie end to end in
+            // long filaments -- which is the reference's defining structure and
+            // the thing a fully random per-grain axis destroys. The tangent
+            // stays in the mix because a shocked sheet seen edge-on really is
+            // tangential; what is gone is EVERY grain taking it, which drew the
+            // whole remnant as concentric arcs.
+            float ax = 0.40 + 0.60 * fract(g.y * 3.137 + g.z * 1.673);
+            vec2 am = tang * (1.0 - ax) + fdir * ax;
+            float aml = length(am);
+            vec2 fd = aml > 1e-4 ? am / aml : tang;
+            vec2 e = vec2(dot(dd, fd) / stretch, dot(dd, vec2(-fd.y, fd.x)));
+            float d2 = dot(e, e) / (rad * rad);
+            if (d2 >= 1.0) continue;
+            // Fast rise, slow fade, zero at both ends: a grain never appears or
+            // vanishes on a frame, which is the other half of "unnatural".
+            float live = 4.0 * age01 * (1.0 - age01);
+            // THE TONE, FROZEN AT BIRTH. `posHere` is where the birth-rate
+            // distribution sits at this radius NOW; a grain of age `bornAgo`
+            // sampled it at posHere - posRate*bornAgo, and that is the only
+            // time its colour is ever decided. Rounding to an integer is what
+            // makes it a POPULATION rather than a gradient -- the grain is one
+            // of six things, not 0.37 of the way between two of them.
+            float bornAgo = age01 * life;
+            float idx = floor(posHere - posRate * bornAgo
+                              + (g.w - 0.5) * spread + 0.5);
+            float k = clamp(idx - base, 0.0, 3.0);
+            vec4 tone = mix(mix(mix(cA, cB, clamp(k, 0.0, 1.0)),
+                                cC, clamp(k - 1.0, 0.0, 1.0)),
+                            cD, clamp(k - 2.0, 0.0, 1.0));
+            // A COMPACT KERNEL: (1 - r^2/rad^2)^2, reaching exactly zero with
+            // zero slope at the support radius. Zero AT the edge is what a
+            // Gaussian plus a reject could not give -- that pair leaves a step
+            // at the cut, and a step in a moving field is a crawling edge.
+            // The quartic version of this ((1-x^4)^2) is flatter-topped and
+            // scored better on knot count, and it looked like a bowl of beans:
+            // grains with that little skirt stop overlapping and the gas stops
+            // being gas (lit fraction 0.77 against the reference's 0.96). The
+            // picture won.
+            //
+            // The extra `b` on the coarse slices softens them further. A
+            // 20-pixel blob with a crisp edge and a dust fraction reads as a
+            // cut-out; a knot may have an edge, a cloud may not.
+            float b = 1.0 - d2;
+            float w = live * b * b * mix(b, 1.0, shrp);
+            // Brightness decorrelated from size and tone by hand: hash4 has
+            // four channels and this grain has spent all four.
+            em += tone.rgb * (w * (0.30 + 1.70 * fract(g.x + g.z + g.w)));
+            // A slice's TOTAL opacity per unit area is (grains per area) x
+            // (grain area) x (per-grain opacity), and the first two cancel the
+            // lattice pitch exactly -- so without this factor every slice
+            // contributes the same extinction and the coarse one does it in a
+            // handful of big opaque lumps. Scaling per-grain opacity by the
+            // pitch puts the extinction where the material actually is: a lot
+            // of small dense knots, a few large thin clouds.
+            op += w * tone.w * opw;
+        }
+    }
+    return vec4(em * (env * ew), op * env);
+}
 // rgb = linear emission, a = the dust column's opacity to whatever is behind.
-// Four texture fetches and about 110 ALU inside the bound, one compare outside.
 vec4 supernovaRemnant(vec2 pixel) {
     float gain = ubuf.snRemnant.w, shock = ubuf.snShell.y;
     if (gain <= 0.0 && shock <= 0.0) return vec4(0.0);
@@ -1225,6 +1577,12 @@ vec4 supernovaRemnant(vec2 pixel) {
     vec2 q = vec2(dot(d, ax), dot(d, vec2(-ax.y, ax.x))) / R;
     float nd = sqrt(r2) / R;
     float t = ubuf.snTone.w;
+    // The episode's age in SECONDS. snTone.w is that age scaled by 0.05 (the
+    // advection phase, chosen so float32 carries a 2000 s episode to five
+    // decimal places and so nothing ever wraps), and the grains need the
+    // unscaled one because their lifetimes are in seconds. One multiply, and
+    // the two can never drift apart because there is only one of them.
+    float age = t * 20.0;
     // Domain warp, three octaves on top of it. Each is advected at its own
     // velocity so the interior CHURNS through itself over tens of seconds
     // rather than sliding across as one picture, and the phase is the episode's
@@ -1262,6 +1620,20 @@ vec4 supernovaRemnant(vec2 pixel) {
     // here may go above 23 on R or 46 on G.
     // The rim's own radius, broken at two scales.
     float edge = 1.0 + 0.26 * w.x + 0.30 * (n1.x - 0.5) + 0.18 * (n2.y - 0.5);
+    // RAYLEIGH-TAYLOR FINGERS, put in by COUNT rather than left to the noise.
+    // At the contact discontinuity the decelerating ejecta is the heavy fluid
+    // pushing on the lighter shocked medium, the interface goes unstable, and
+    // the finger spacing is set by the shell thickness -- which for Cas A's
+    // R_CD/R_FS of about 0.80 works out at roughly 25 fingers around the limb,
+    // reaching 75-80 % of the way out to the forward shock. 25 is written here
+    // because a noise-only rim gets the raggedness and not the COUNT, and the
+    // count is what the eye reads as fingers rather than as fuzz. The amplitude
+    // is modulated by the coarse octave and the phase is warped by it, so it is
+    // never a regular scallop -- the pinwheel artefact (K3) is a periodic term
+    // drawing radial creases ACROSS the body; this one only moves the rim's own
+    // radius, and it is amplitude-zero over whole sectors.
+    float phi = atan(q.y, q.x);
+    edge += 0.10 * (0.35 + 0.65 * (n1.y)) * sin(phi * 25.0 + 6.3 * w.y + 2.1 * (n2.x - 0.5));
     edge = max(edge, 0.30);
     float u = nd / edge;
     // THREE SCALES OF STRUCTURE, not one. A single ridged octave gives one
@@ -1290,7 +1662,7 @@ vec4 supernovaRemnant(vec2 pixel) {
     // comment calls the same failure a pinwheel, and it is the spoke he
     // rejected wearing a different hat. The warp is a function of q, which is
     // continuous across the branch cut, so the exact wrap is untouched.
-    float turn = atan(q.y, q.x) * 0.15915494;
+    float turn = phi * 0.15915494;
     float spin = turn * 64.0 + 9.5 * w.x + 5.0 * (n1.y - 0.5);
     // ONE polar octave, not two. A second one at twice the angular rate put
     // 128 of the lattice's radial creases across the outer wisps and they read
@@ -1312,6 +1684,86 @@ vec4 supernovaRemnant(vec2 pixel) {
     vec3 emission = vec3(0.0);
     float opacity = 0.0;
     float body = 0.0;
+    // ---- v12: THE BIRTH-RATE SCHEDULE --------------------------------------
+    // One 1-D quantity, `pos`, decides which population a grain born here and
+    // now belongs to. It carries BOTH structures at once, which is why it is
+    // one number and not two:
+    //
+    //   the RADIAL one -- posLo at the centre walking to posLo+posSpan at the
+    //   rim, which is iron and bulk ejecta inside, shocked sheets at the limb,
+    //   calcium/sulphur knots on the rim and silicon wisps beyond it; and
+    //
+    //   the TIME one -- the reverse shock, at radius snTurn.z, walking INWARD
+    //   at snTurn2.x per second. Material it has already passed has advanced
+    //   snTurn.w further along the sequence. So the turnover starts at the rim
+    //   and travels in, which is both what Cas A does and what he described.
+    //
+    // `posRate` is the exact derivative of that with respect to time, and it is
+    // the only thing that lets a stateless grain know what the distribution
+    // looked like when it was born: a grain of age `a` sampled pos - posRate*a.
+    float sx = clamp((u - ubuf.snTurn.z) * 2.2222222, 0.0, 1.0);
+    float sweep = sx * sx * (3.0 - 2.0 * sx);
+    float posHere = ubuf.snTurn.x + ubuf.snTurn.y * u + ubuf.snTurn.w * sweep;
+    // THE INVERTED LAYER, and it is the most recognisable non-obvious thing
+    // about this object. Cas A's iron is NOT in the middle: in the south-east
+    // it sits OUTSIDE the silicon it was born under (Hughes et al. 2000), at a
+    // higher ionisation age because that material crossed the reverse shock
+    // earlier. So the populations are not clean nested shells. In ONE frozen
+    // sector -- the same seed angle the diffraction spikes use, so it is a
+    // property of this episode and not of the screen -- the schedule is pulled
+    // back toward the iron end at large radius, and a violet plume reaches the
+    // rim through the warm knots. One cosine, raised to the fourth for a ~90
+    // degree sector.
+    float pl = max(0.0, cos(phi - ubuf.snExtra.w));
+    pl *= pl;
+    posHere -= ubuf.snFlow.z * pl * pl * smoothstep(0.28, 0.86, u);
+    // THE POPULATIONS ARE CLUSTERED, NOT SHUFFLED. Element layers in a real
+    // remnant are coherent regions metres-per-second of turbulence has torn up,
+    // not a salt-and-pepper mix -- the reference's yellow is in PATCHES, its
+    // white-cyan in long RIBBONS. Shifting the schedule by a smooth field adds
+    // that second scale for free: every grain in a neighbourhood samples nearly
+    // the same offset, so a whole region comes out one population while the
+    // per-grain jitter still mixes two tones inside it. Two scales of mixing,
+    // and it costs nothing -- `n1` and `w` are already on the register from the
+    // structure octaves, and because this rides in `posHere` it is inside the
+    // hoisted window and never widens it.
+    //
+    // IT GETS ITS OWN WARPED, ROTATED TAP, AND THAT IS NOT OPTIONAL. The first
+    // version clustered off `w` directly and drew straight-edged polygons
+    // across the whole gas. `w` is the ONE octave in this kernel that is
+    // neither warped nor rotated -- it is what warps the others -- so its
+    // bilinear level sets are straight segments in screen space, and
+    // QUANTISING ANYTHING against them prints them. That is artefact family K2,
+    // the rectilinear mesh, arriving through the tone schedule instead of
+    // through a ridge, which is why rotating the sharp octaves did not stop it:
+    // the rule is about the lattice a hard edge is taken against, not about
+    // which octave is sharpest. Warped by the coarse octave and rotated 47
+    // degrees, this one has no straight contour left to print. Scale 3.3 spans
+    // 9 cells of R's 32-texel period, well inside the 23 the glyph rule allows.
+    //
+    // It is also deliberately COARSE. The offset is evaluated at the PIXEL and
+    // applied to every grain near it, so a field that changed quickly would
+    // hand one grain two different tones at its two edges and leave a colour
+    // seam down the middle of it. At 3.3 a lattice cell is about 8 grain cells
+    // wide, a grain covers ~4 % of one, and a grain only splits if its value
+    // lands inside that of a half-integer -- a few per cent, under the
+    // per-grain brightness variation, and it reads as more mixing.
+    vec2 q6 = vec2(q.x * 0.68200 - q.y * 0.73135, q.x * 0.73135 + q.y * 0.68200);
+    vec2 n6 = nebulaTap(q6 * 3.3 + w * 2.2 + vec2(12.9 - 0.05 * t, 27.3 + 0.04 * t));
+    posHere += 2.05 * (n6.x - 0.5) + 0.80 * (n1.y - 0.5);
+    float posRate = ubuf.snTurn.w * 6.0 * sx * (1.0 - sx) * 2.2222222 * ubuf.snTurn2.x;
+    // A FOUR-WIDE WINDOW, hoisted. Inside one 3x3 neighbourhood the grain
+    // indices span the birth-time spread (posRate * life), the per-grain
+    // jitter (`spread`), and the radial walk across three cells. Four adjacent
+    // populations cover all of it, so the palette is evaluated four times per
+    // pixel instead of once per grain -- 36 lookups become 4. The clamp inside
+    // the loop is the safety net, not the mechanism; test-particles asserts it
+    // never bites for the shipped schedule.
+    float spread = ubuf.snFlow.w;
+    float base = clamp(floor(posHere - posRate * ubuf.snGrain.z - spread * 0.5
+                             - ubuf.snTurn.y * 0.12 + 0.5), 0.0, 2.0);
+    vec4 cA = snPop(base), cB = snPop(base + 1.0);
+    vec4 cC = snPop(base + 2.0), cD = snPop(base + 3.0);
     if (gain > 0.0 && u < 1.0) {
         // The hollow-shell column, normalised so its limb peak is 1.
         float a = ubuf.snBody.x;
@@ -1339,13 +1791,26 @@ vec4 supernovaRemnant(vec2 pixel) {
         float knot = (1.0 - abs(2.0 * n5.y - 1.0)) * (1.0 - abs(2.0 * n3.y - 1.0))
             * (1.0 - abs(2.0 * n4.y - 1.0));
         knot *= knot;
-        // Colour by radius: blue-white inner knots -> orange/pink rim -> red
-        // outer wisps, with a patchy hot channel on top so a knot is hot OR
-        // cool rather than the average of the two, the same lesson the nebula
-        // passage learned about a saturation-capped palette.
-        vec3 tint = mix(hot, rim, smoothstep(0.04, 0.84, u));
-        tint = mix(tint, ubuf.snWisp.rgb, smoothstep(0.78, 1.10, u));
-        tint = mix(tint, hot, 0.35 * smoothstep(0.58, 0.84, n1.y));
+        // v12: the tint that used to colour the gas is DEMOTED to the diffuse
+        // underlay only. It was one tone crossfading over the whole cloud on
+        // the episode's clock, which is precisely "it feels unnatural and as
+        // just pure color fade transition" -- there was no other mechanism it
+        // could have been. The gas's colour now comes entirely from the grain
+        // populations below, which is the point of the whole pass; this term
+        // survives as the faint sheet they sit ON, and it reads the same
+        // schedule so it can never disagree with them.
+        // NOT cB/cC. The hoisted window's `base` is a floor() of a smooth
+        // field, and a floor() of a bilinear field DRAWS THAT FIELD'S LATTICE:
+        // the level sets of a bilinear interpolant are straight inside each
+        // cell, so the underlay snapped from one population to the next along
+        // visible polygons -- artefact family K2 (the rectilinear mesh)
+        // arriving by a route the octave rotations cannot reach, because this
+        // one is a quantisation and not an octave. The GRAINS are immune by
+        // construction (a grain's index is absolute, and cA..cD shift with
+        // `base` so the reconstructed tone does not move), which is why only
+        // the wash showed it. A wash may legitimately blend, so it reads the
+        // schedule CONTINUOUSLY and the quantisation stays where it belongs.
+        vec3 tint = snPop(clamp(posHere + 0.9 * u, 0.0, 5.0)).rgb;
         // The interior is NOT empty: a remnant seen through is translucent
         // layered gas, and the 0.34 floor is the sheets projected through the
         // middle. The band multiplies only the filigree, so the rim is where
@@ -1357,13 +1822,56 @@ vec4 supernovaRemnant(vec2 pixel) {
         // interior smooth, and the reference comparison caught it as an edge
         // density of 1.96 against 0.91 and 1.20 in the references -- a rim too
         // detailed for its own interior rather than an interior too dim.
-        emission += tint * (gain * body * (0.26 + 1.30 * ubuf.snBody.z * fil * (0.78 + 1.22 * band)));
+        emission += tint * (gain * ubuf.snTurn2.y * body
+            * (0.26 + 1.30 * ubuf.snBody.z * fil * (0.78 + 1.22 * band)));
         emission += hot * (gain * ubuf.snHot.w * knot * body * (0.45 + 1.55 * band) * 5.5);
+        // ---- THE GRAINS ---------------------------------------------------
+        // Four depth slices, composited BACK TO FRONT: each one's emission is
+        // dimmed by the accumulated opacity of everything nearer to the camera,
+        // so near material occludes and extincts far material and the stack
+        // reads as a volume rather than as four transparencies added together.
+        // The two outer slices are past the shell's inner radius and project as
+        // filled caps; the two inner ones project as annuli.
+        //
+        // The loop is bounded and it is the only unbounded-looking thing in the
+        // kernel: 4 slices x 9 cells x 1 grain, every iteration a straight-line
+        // block with one early `continue`, and it is reached only inside
+        // u < 1 -- an idle sky pays the same single compare it always did.
+        // OPTICALLY THIN. A young remnant's plasma emits and does not reabsorb
+        // its own light; only the DUST in it takes light away. So the slices'
+        // emission ADDS and the over-operator is the wrong tool for the glow --
+        // the far cap has to shine THROUGH the near one, dimmed by its dust,
+        // which is the whole translucency claim. `s` walks 3 -> 0, i.e. near to
+        // far, so `gAcc` always holds the dust of everything NEARER than the
+        // slice being added, which is exactly what should attenuate it.
+        float gAcc = 0.0;
+        vec3 gEm = vec3(0.0);
+        for (int s = 3; s >= 0; --s) {
+            float z = (float(s) - 1.5) * 0.52;
+            vec4 sl = snSlice(q, z, float(s), t, age, edge,
+                              posHere, posRate, spread, base, cA, cB, cC, cD);
+            gEm += sl.rgb * (1.0 - gAcc);
+            gAcc = gAcc + sl.a * (1.0 - gAcc);
+        }
+        // snGrain.x is an ABSOLUTE linear gain, not a fraction of `gain`. The
+        // gas and the diffuse underlay are two different things now and each
+        // one is calibrated against its own measured percentile, the way the
+        // nebula passage's 0.36 and the body's 0.34 were: tying the grains to
+        // the body's dial would mean one number setting two brightnesses and
+        // neither of them landing where it was measured to.
+        emission += gEm * (ubuf.snGrain.x * (0.34 + 0.66 * body));
         // The dust column. Densest where the gas is dense and NOT in a cavity
         // and NOT on a bright filament, which is what leaves the sheets grey
-        // and brown between the lit threads.
-        opacity = clamp(ubuf.snBody.w * body * (0.30 + 0.90 * (0.5 + w.x)) * (1.0 - 0.55 * ridge), 0.0, 0.88);
-        emission += ubuf.snDust.rgb * (opacity * 0.26 * gain);
+        // and brown between the lit threads. The grains carry their own share
+        // of it -- a population's w is how much of it absorbs rather than
+        // emits -- so the two add before the cap.
+        opacity = clamp(ubuf.snBody.w * body * (0.30 + 0.90 * (0.5 + w.x)) * (1.0 - 0.55 * ridge)
+                        + ubuf.snTurn2.z * gAcc, 0.0, 0.92);
+        // v12: 0.26 -> 0.12. This term is a flat grey-blue wash proportional to
+        // the dust column, and with the grains carrying the colour it was
+        // mostly diluting them -- measured, it cost about 0.03 of mean
+        // saturation for light the grains already provide.
+        emission += ubuf.snDust.rgb * (opacity * 0.12 * gain);
     }
     // The outer wisps: fast material beyond the rim, faint and stringy, the red
     // wisps and the outer shock of the Chandra composite.
@@ -1379,7 +1887,14 @@ vec4 supernovaRemnant(vec2 pixel) {
         float jet = exp2(-1.4426950 * across * across / (wj * wj))
             * smoothstep(0.16, 0.58, along)
             * max(0.0, 1.0 - along / max(ubuf.snJet.z, 0.1));
-        emission += mix(hot, rim, 0.45) * (gain * ubuf.snDust.w * jet * (0.30 + 1.60 * ridge));
+        // v12: the jets are drawn in the SILICON population's own colour. In
+        // Cas A the NE and SW jets are the fastest, outermost, Si- and S-rich
+        // material, which is the same population the outer wisps are made of
+        // and the last one the schedule reaches -- so taking their tone from
+        // snPop5 rather than from a mix of two unrelated uniforms is both the
+        // physics and the one palette.
+        emission += mix(ubuf.snPop5.rgb, ubuf.snPop4.rgb, 0.30)
+            * (gain * ubuf.snDust.w * jet * (0.30 + 1.60 * ridge));
     }
     // The shock front, in PIXELS: it has its own Sedov radius and runs through
     // the comoving field rather than with it, which is what a blast wave into a
