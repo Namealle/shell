@@ -47,8 +47,12 @@ function previewShader() {
     // layer this sheet never composites, so it is not lifted here and neither
     // is snPolar, which went with it.
     const kernels = ["hash4", "lightCurve", "naProfile", "ablationStreak", "tailSegment", "cometHash", "cometGrain", "cometField", "supernovaField", "radialField", "stormHash", "trainPoint", "trainShear", "stormTrainRay", "stormTrainSegment", "stormFireball", "meteorStorm", "eventSlot"]
-        .filter(n => src.indexOf(n + "(") >= 0)
+        .filter(n => new RegExp("^(?:float|vec2|vec3|vec4)\\s+" + n + "\\s*\\(", "m").test(src))
         .map(n => fragFunction(src, n)).join("\n\n");
+    // v11's eventSlot took eight arguments; v12's takes ten.
+    const v12 = /vec3 eventSlot\([^)]*vec4 burn/.test(src);
+    const slotArgs = i => `ubuf.event${i}Head, ubuf.event${i}Colour, ubuf.event${i}Tail01, ubuf.event${i}Tail23, ubuf.event${i}Tail4, ubuf.event${i}Shape, ubuf.event${i}Bounds`
+        + (v12 ? `, ubuf.event${i}Burn, ubuf.meteorTone` : "");
     return `#version 450 core
 layout(location = 0) in vec2 qt_TexCoord0;
 layout(location = 0) out vec4 fragColor;
@@ -84,9 +88,9 @@ void main() {
     // main() adds the storm into the far-field accumulator, which is display-
     // encoded before the sky decode; on a #000000 sky that is exactly this.
     vec3 sky = meteorStorm(pixel);
-    vec3 events = eventSlot(pixel, ubuf.event0Head, ubuf.event0Colour, ubuf.event0Tail01, ubuf.event0Tail23, ubuf.event0Tail4, ubuf.event0Shape, ubuf.event0Bounds, ubuf.event0Burn, ubuf.meteorTone);
-    events += eventSlot(pixel, ubuf.event1Head, ubuf.event1Colour, ubuf.event1Tail01, ubuf.event1Tail23, ubuf.event1Tail4, ubuf.event1Shape, ubuf.event1Bounds, ubuf.event1Burn, ubuf.meteorTone);
-    events += eventSlot(pixel, ubuf.event2Head, ubuf.event2Colour, ubuf.event2Tail01, ubuf.event2Tail23, ubuf.event2Tail4, ubuf.event2Shape, ubuf.event2Bounds, ubuf.event2Burn, ubuf.meteorTone);
+    vec3 events = eventSlot(pixel, ${slotArgs(0)});
+    events += eventSlot(pixel, ${slotArgs(1)});
+    events += eventSlot(pixel, ${slotArgs(2)});
     fragColor = vec4(clamp(encodeDisplay(decodeDisplay(sky) + decodeDisplay(events)), 0.0, 1.0), 1.0);
 }
 `;
@@ -166,7 +170,9 @@ function main() {
         const name = "t" + Math.round(age).toString().padStart(3, "0");
         const u = join(outDir, name + ".uniforms");
         const raw = join(outDir, label + "-" + name + ".f32");
-        writeFileSync(u, uniformText(W, H, { storm, slots, tone: h.meteorToneVector(3) }));
+        // v11 has no tone block; the shader then reads zeros and draws the
+        // shape change only, which is what the "before" should be.
+        writeFileSync(u, uniformText(W, H, { storm, slots, tone: h.meteorToneVector ? h.meteorToneVector(3) : [0, 0, 0, 4.5] }));
         execFileSync(bhrender, [frag, String(W), String(H), u, raw], { stdio: ["ignore", "ignore", "pipe"] });
         manifest.push({
             name, raw, age: Number(age.toFixed(2)),
