@@ -226,11 +226,12 @@ function bounds(s) {
 // eighteen properties per instance per frame is the single most expensive thing
 // this file can do in QML's JS engine. The field order is the contract shared
 // with Binning.js and Packing.js (and documented in PARTICLES.md).
-var STRIDE = 21;
+var STRIDE = 23;
 var IX = 0, IY = 1, IVX = 2, IVY = 3, ICORE = 4, ISUPPORT = 5, ISTREAK = 6, IR = 7,
     IG = 8, IB = 9, ILUM = 10, IFLAGS = 11, IPHASE = 12, IP0 = 13, IAGE = 14,
     ICAPTURED = 15, IID = 16, IGENERATION = 17, IBOXX = 18, IBOXY = 19,   // 18/19: half-extents along and across the streak
-    ISTRETCH = 20;                                                        // 20: continuous tidal deformation 0..1
+    ISTRETCH = 20,                                                        // 20: continuous tidal deformation 0..1
+    IUX = 21, IUY = 22;   // 21/22: the unit velocity, once, for the binner and the packer
 // Test and fixture helper: the same flat form from an array of plain objects.
 function instances(list) {
     if (list && list.data) return list;
@@ -250,6 +251,10 @@ function instances(list) {
         out.data[b + IBOXX] = p.halfMajor === undefined ? (p.support || 0) : p.halfMajor;
         out.data[b + IBOXY] = p.halfMinor === undefined ? (p.support || 0) : p.halfMinor;
         out.data[b + ISTRETCH] = p.stretch || 0;
+        // Same rule render() uses, so a fixture binds and packs like a frame.
+        var fvx = p.vx || 0, fvy = p.vy || 0, fs = Math.sqrt(fvx * fvx + fvy * fvy);
+        out.data[b + IUX] = fs > 0.01 ? fvx / fs : 1;
+        out.data[b + IUY] = fs > 0.01 ? fvy / fs : 0;
     }
     return out;
 }
@@ -527,16 +532,30 @@ function render(previous, s, style) {
         binaries += components - 1;
         var flare = FLARE[i] > 0.5 && flares + components <= flareCap ? 1 : 0;
         flares += flare * components;
-        var support = supportFor(core, streak, flare);
+        // supportFor(), inlined -- twice per streaked particle per frame, and a
+        // call that wraps this much arithmetic costs more than the arithmetic.
+        // KEEP IN STEP WITH supportFor() ABOVE; tools/test-particles.mjs checks
+        // the bin radius against the rendered kernel, so a divergence fails it.
+        var sigma = core / 2.354820045;
+        var support = 3.5 * Math.sqrt(sigma * sigma + 1 / 12 + streak * streak / 12) + 0.20;
+        if (streak > 0) support += 6;
+        var flareFloor = flare ? FLARE_SUPPORT * FLARE_OPTICS * (core < FLARE_CORE_MAX ? core : FLARE_CORE_MAX) : 0;
+        if (support < flareFloor) support = flareFloor;
+        support = Math.ceil(support * 2) / 2;
         // The bin footprint is the streak's own capsule, not the box around it:
         // a long diagonal trail passes through a handful of bins, while its
         // bounding box covers five times as many. The binner walks the capsule;
         // the packer turns the same two half-extents into the shader's reject.
         var halfMajor = support, halfMinor = support;
-        if (streak > 2 * core && speed > 0.01)
+        if (streak > 2 * core && speed > 0.01) {
             // The minor extent carries the curved kernel's transverse sagitta,
             // which supportFor already reserved, so it stays inside the support.
-            halfMinor = Math.min(support, supportFor(core, 0, flare) + bendSag * stretch);
+            // supportFor(core, 0, flare), inlined; same note as above.
+            var bare = 3.5 * Math.sqrt(sigma * sigma + 1 / 12) + 0.20;
+            if (bare < flareFloor) bare = flareFloor;
+            bare = Math.ceil(bare * 2) / 2 + bendSag * stretch;
+            halfMinor = support < bare ? support : bare;
+        }
         // Both fades are inlined smoothsteps and both are 1 almost everywhere:
         // a particle is only inside the rim fade or younger than 0.35 s rarely.
         // The fade is a tenth of the shadow rather than a couple of core radii:
@@ -623,15 +642,21 @@ function render(previous, s, style) {
         // kernel and the sagitta headroom by the stretch scalar itself.
         var flags = kind + 8 * flare + (DEPTH[i] > 0.5 ? 16 : 0) + (FRONT[i] > 0.5 ? 32 : 0)
             + (stretch > 0.002 ? 64 : 0);
+        // The unit velocity, computed once here instead of once in render, once
+        // in Binning.build and once in Packing.pack: three square roots and six
+        // divisions per particle per frame for one number. Same guard all three
+        // used, so the binner's capsule and the packer's box are unchanged.
+        var ux = 1, uy = 0;
+        if (speed > 0.01) { ux = vx / speed; uy = vy / speed; }
         for (var component = 0; component < components; ++component) {
-            if ((count + 1) * 21 > out.length) {
-                var grown = new Float64Array(Math.max((count + 1) * 21, out.length * 2));
+            if ((count + 1) * 23 > out.length) {
+                var grown = new Float64Array(Math.max((count + 1) * 23, out.length * 2));
                 grown.set(out);
                 out = items.data = grown;
             }
             // Literal offsets: a module-scope name costs a dictionary lookup
             // per write in QML's JS engine. Order is the STRIDE contract above.
-            var b = count * 21, sign = component === 0 ? 1 : -1;
+            var b = count * 23, sign = component === 0 ? 1 : -1;
             out[b] = X[i] + sign * ox; out[b + 1] = Y[i] + sign * oy;
             out[b + 2] = vx; out[b + 3] = vy; out[b + 4] = core;
             out[b + 5] = support; out[b + 6] = streak;
@@ -641,6 +666,7 @@ function render(previous, s, style) {
             out[b + 15] = captured; out[b + 16] = i; out[b + 17] = GEN[i];
             out[b + 18] = halfMajor; out[b + 19] = halfMinor;
             out[b + 20] = stretch;
+            out[b + 21] = ux; out[b + 22] = uy;
             ++count;
         }
     }

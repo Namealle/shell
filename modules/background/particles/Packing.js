@@ -165,9 +165,9 @@ function pack(previous, bins, items, meta, allocate, probe) {
         // shader can reject on the streak's box instead of a disc of its
         // half-length: a long thin trail fills a tenth of that disc.
         var major = src[f + 18], minor = src[f + 19];
-        var sp = Math.sqrt(src[f + 2] * src[f + 2] + src[f + 3] * src[f + 3]);
-        var ex = 1, ey = 0;
-        if (sp > 0.01) { ex = src[f + 2] / sp; ey = src[f + 3] / sp; }
+        // 21/22: the unit velocity render() already resolved, with the same
+        // 0.01 px/s guard this used to reproduce here.
+        var ex = src[f + 21], ey = src[f + 22];
         var m2 = major * major, n2 = minor * minor;
         var bx = Math.sqrt(m2 * ex * ex + n2 * ey * ey) * 2;
         var by = Math.sqrt(m2 * ey * ey + n2 * ex * ex) * 2;

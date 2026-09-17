@@ -52,35 +52,55 @@ function build(previous, items, width, height, probe) {
         if (!(radius >= 0 && radius <= 127.5) || !Number.isFinite(px + py + radius + major + minor)
             || !(minor >= 0 && minor <= radius + 1e-9) || !(major >= 0 && major <= radius + 1e-9))
             throw new Error("Invalid or unbounded particle support");
-        var vx = data[base + 2], vy = data[base + 3];
-        var speed = Math.sqrt(vx * vx + vy * vy);
-        var ux = 1, uy = 0;
-        if (speed > 0.01) { ux = vx / speed; uy = vy / speed; }
+        // Offsets 21/22 are the unit velocity, written once by render().
+        var ux = data[base + 21], uy = data[base + 22];
         var reach = major - minor;                     // segment half-length
         var ax = px - ux * reach, ay = py - uy * reach;
         var bx2 = px + ux * reach, by2 = py + uy * reach;
-        var y0 = Math.max(0, Math.floor((Math.min(ay, by2) - minor) / 32));
-        var y1 = Math.min(ny - 1, Math.floor((Math.max(ay, by2) + minor) / 32));
-        var spanBase = 2 * i;
+        var loY = (ay < by2 ? ay : by2) - minor, hiY = (ay > by2 ? ay : by2) + minor;
+        var y0 = Math.max(0, Math.floor(loY / 32));
+        var y1 = Math.min(ny - 1, Math.floor(hiY / 32));
         if (b.rows.length < (y1 - y0 + 1) * 2 + b.rowCount)
             b.rows = growRows(b.rows, ((y1 - y0 + 1) * 2 + b.rowCount) * 2);
+        var rows = b.rows;
         b.ranges[4 * i] = y0; b.ranges[4 * i + 1] = y1; b.ranges[4 * i + 2] = b.rowCount;
+        if (reach === 0) {
+            // An unstreaked particle's capsule is a disc, and a disc's x-span is
+            // the same in every row it touches: ax == bx2 == px makes both
+            // branches below collapse to sx0 = sx1 = px. Most of the field is
+            // this, and it skips the per-row interpolation entirely.
+            var dx0 = Math.max(0, Math.floor((px - minor) / 32));
+            var dx1 = Math.min(nx - 1, Math.floor((px + minor) / 32));
+            for (y = y0; y <= y1; ++y) {
+                rows[b.rowCount++] = dx0;
+                rows[b.rowCount++] = dx1;
+                var discBase = y * nx;
+                for (x = dx0; x <= dx1; ++x) {
+                    k = discBase + x;
+                    if (counts[k]++ === 0) touched[tc++] = k;
+                }
+            }
+            continue;
+        }
+        var span = by2 - ay || 1e-12, runX = bx2 - ax;
+        var flat = Math.abs(uy) < 1e-6;
+        var flatLo = ax < bx2 ? ax : bx2, flatHi = ax > bx2 ? ax : bx2;
         for (y = y0; y <= y1; ++y) {
             // x-range of the capsule inside this bin row, then the bin span.
-            var lo = Math.max(y * 32, Math.min(ay, by2) - minor);
-            var hi = Math.min(y * 32 + 32, Math.max(ay, by2) + minor);
             var sx0, sx1;
-            if (Math.abs(uy) < 1e-6) { sx0 = Math.min(ax, bx2); sx1 = Math.max(ax, bx2); }
+            if (flat) { sx0 = flatLo; sx1 = flatHi; }
             else {
-                var t0 = (lo - ay) / (by2 - ay || 1e-12), t1 = (hi - ay) / (by2 - ay || 1e-12);
-                var c0 = ax + (bx2 - ax) * Math.max(0, Math.min(1, t0));
-                var c1 = ax + (bx2 - ax) * Math.max(0, Math.min(1, t1));
-                sx0 = Math.min(c0, c1); sx1 = Math.max(c0, c1);
+                var lo = y * 32 > loY ? y * 32 : loY;
+                var hi = y * 32 + 32 < hiY ? y * 32 + 32 : hiY;
+                var t0 = (lo - ay) / span, t1 = (hi - ay) / span;
+                var c0 = ax + runX * (t0 > 1 ? 1 : (t0 > 0 ? t0 : 0));
+                var c1 = ax + runX * (t1 > 1 ? 1 : (t1 > 0 ? t1 : 0));
+                sx0 = c0 < c1 ? c0 : c1; sx1 = c0 > c1 ? c0 : c1;
             }
             var bx0 = Math.max(0, Math.floor((sx0 - minor) / 32));
             var bx1 = Math.min(nx - 1, Math.floor((sx1 + minor) / 32));
-            b.rows[b.rowCount++] = bx0;
-            b.rows[b.rowCount++] = bx1;
+            rows[b.rowCount++] = bx0;
+            rows[b.rowCount++] = bx1;
             var rowBase = y * nx;
             for (x = bx0; x <= bx1; ++x) {
                 k = rowBase + x;

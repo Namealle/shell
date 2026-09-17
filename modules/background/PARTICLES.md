@@ -540,9 +540,11 @@ peculiar-velocity channel) and `transient`/`glows`/`cloud`/`nova` alongside them
 `counters` gained `debris`, `impulses`, `kicked` and `consumed`/`supernova`.
 `rescale()` scales the kick channel, the glow sources and the cloud with the
 other lengths.
-Render instances are one flat Float64Array, stride 21: x y vx vy core support
+Render instances are one flat Float64Array, stride 23: x y vx vy core support
 streak r g b lum flags phase p0 age captured id generation halfMajor halfMinor
-stretch; flags is the archetype in the low three bits (v10 adds **kind 7, the
+stretch unitVx unitVy; 21/22 are the unit velocity, resolved once by `render()`
+because the binner and the packer both used to recompute it from vx/vy (three
+square roots and six divisions per particle per frame for one number); flags is the archetype in the low three bits (v10 adds **kind 7, the
 ember**), bit 3 flare, bit 4 near
 layer, bit 5 in front of the disk, bit 6 a nonzero tidal deformation. The binner walks the streak's
 capsule (half-extents at 18/19) rather than its bounding box; the packer turns
