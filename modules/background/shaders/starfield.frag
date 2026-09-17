@@ -1243,6 +1243,15 @@ vec4 supernovaRemnant(vec2 pixel) {
     vec2 q4 = vec2(q.x * 0.39073 - q.y * 0.92050, q.x * 0.92050 + q.y * 0.39073);
     vec2 n3 = nebulaTap(q3 * 19.0 + w * 1.1 + vec2(21.7 - 0.11 * t, 11.3 + 0.13 * t));
     vec2 n4 = nebulaTap(q4 * 27.0 + w * 0.6 + vec2(5.9 + 0.08 * t, 17.3 - 0.07 * t));
+    // A fifth tap that exists only for the KNOTS. The reference comparison put
+    // the first version at 22.6 knots per radian of rim against 50 in the
+    // Chandra composite and 101 in the JWST frame, and its knots at 0.025 rim
+    // radii across against 0.017 and 0.012: too few and twice too big, which is
+    // one fault, not two -- they were being drawn off octaves chosen for the
+    // threads. 40 on G spans 55 cells of its 64 period, which is as fine as
+    // this texture goes before it repeats.
+    vec2 q5 = vec2(q.x * 0.97437 - q.y * 0.22495, q.x * 0.22495 + q.y * 0.97437);
+    vec2 n5 = nebulaTap(q5 * 38.0 + w * 0.35 + vec2(31.1 - 0.06 * t, 3.7 + 0.05 * t));
     // WHICH CHANNEL EACH OCTAVE READS IS NOT ARBITRARY. blackhole-noise.png's R
     // channel has an x period of 32 texels and G one of 64 (nebulaTap's own
     // comment), so an octave whose coordinate spans more cells than its
@@ -1319,8 +1328,16 @@ vec4 supernovaRemnant(vec2 pixel) {
         // and point-like instead of another texture: hundreds per frame, the
         // way Cas A's bright knots are hundreds and not thousands.
         float band = exp2(-1.4426950 * (u - a) * (u - a) / 0.0225);
-        float knot = (1.0 - abs(2.0 * n3.y - 1.0)) * (1.0 - abs(2.0 * n2.x - 1.0));
-        knot *= knot;
+        // THREE channels off THREE DIFFERENT LATTICES -- 13, 31 and 67 degrees,
+        // at 38, 19 and 27 cells -- squared once. Two channels of the SAME tap
+        // share a lattice exactly, and the product of two ridges on one lattice
+        // is locked to it: at gain it drew a circuit board, legible as repeated
+        // glyphs under magnification, and it buried the filaments it was
+        // supposed to sit on. Three independent lattices have no common
+        // structure to lock to, and a triple product is sparse enough that it
+        // needs half the sharpening a double one did.
+        float knot = (1.0 - abs(2.0 * n5.y - 1.0)) * (1.0 - abs(2.0 * n3.y - 1.0))
+            * (1.0 - abs(2.0 * n4.y - 1.0));
         knot *= knot;
         // Colour by radius: blue-white inner knots -> orange/pink rim -> red
         // outer wisps, with a patchy hot channel on top so a knot is hot OR
@@ -1333,8 +1350,15 @@ vec4 supernovaRemnant(vec2 pixel) {
         // layered gas, and the 0.34 floor is the sheets projected through the
         // middle. The band multiplies only the filigree, so the rim is where
         // the detail is and the middle is where the light comes through.
-        emission += tint * (gain * body * (0.34 + 1.30 * ubuf.snBody.z * fil * (0.30 + 1.70 * band)));
-        emission += hot * (gain * ubuf.snHot.w * knot * body * (0.30 + 1.70 * band) * 3.2);
+        // The BAND weights the filigree toward the limb, but it must not switch
+        // it off through the middle: looking through the centre of a shell you
+        // see its near cap and its far cap superposed, both full of filaments,
+        // at lower surface brightness. Weighting them 0.30 there made the
+        // interior smooth, and the reference comparison caught it as an edge
+        // density of 1.96 against 0.91 and 1.20 in the references -- a rim too
+        // detailed for its own interior rather than an interior too dim.
+        emission += tint * (gain * body * (0.26 + 1.30 * ubuf.snBody.z * fil * (0.78 + 1.22 * band)));
+        emission += hot * (gain * ubuf.snHot.w * knot * body * (0.45 + 1.55 * band) * 5.5);
         // The dust column. Densest where the gas is dense and NOT in a cavity
         // and NOT on a bright filament, which is what leaves the sheets grey
         // and brown between the lit threads.
