@@ -101,20 +101,41 @@ function pack(previous, bins, items, meta, allocate, probe) {
     var written = previous && previous.occupied ? previous.occupied : [];
     var writtenCount = 0;
     var used = 0;
-    for (var bin = 0; bin < binCount; ++bin) {
-        var remaining = counts[bin], cursor = bins.offsets[bin];
+    // Only the bins the binner actually filled. Walking the whole grid meant
+    // 14400 iterations a frame on the portrait output to find about two
+    // thousand that had anything in them. header() and rgb() are inlined for
+    // the same reason smooth() is in Appearance: a call costs more here than
+    // the three byte writes inside it.
+    var touched = bins.touched, tc = bins.touchedCount, offsets = bins.offsets, indices = bins.indices;
+    // A bins object that did not come from Binning.build (a fixture, a future
+    // caller) has no list; derive it once rather than keeping a second hot path.
+    if (touched === undefined) {
+        touched = []; tc = 0;
+        for (var b2 = 0; b2 < binCount; ++b2)
+            if (counts[b2]) touched[tc++] = b2;
+    }
+    var listBase = out.listBase;
+    for (var t = 0; t < tc; ++t) {
+        var bin = touched[t];
+        var remaining = counts[bin], cursor = offsets[bin];
         var target = headersBase + bin;
         if (!remaining) continue;
         written[writtenCount++] = bin;
         while (remaining) {
-            var take = Math.min(16, remaining);
-            header(target, used, take, remaining > take);
+            var take = remaining < 16 ? remaining : 16;
+            var jh = target * 4;
+            bytes[jh] = used % 256;
+            bytes[jh + 1] = Math.floor(used / 256) % 256;
+            bytes[jh + 2] = take + (used >= 65536 ? 64 : 0) + (remaining > take ? 128 : 0);
             for (var j = 0; j < take; ++j) {
-                var index = bins.indices[cursor++];
-                rgb(out.listBase + used++, index % 256, Math.floor(index / 256), 0);
+                var index = indices[cursor++];
+                var jl = (listBase + used++) * 4;
+                bytes[jl] = index % 256;
+                bytes[jl + 1] = Math.floor(index / 256);
+                bytes[jl + 2] = 0;
             }
             remaining -= take;
-            if (remaining) target = out.listBase + used++;
+            if (remaining) target = listBase + used++;
         }
     }
     out.occupied = written;

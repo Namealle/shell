@@ -20,7 +20,12 @@ function build(previous, items, width, height, probe) {
         b = { nx: nx, ny: ny, width: width, height: height,
             counts: new Uint16Array(n), offsets: new Uint32Array(n + 1),
             cursor: new Uint32Array(n), indices: new Uint16Array(0),
-            ranges: new Int32Array(0), rows: new Int32Array(0) };
+            ranges: new Int32Array(0), rows: new Int32Array(0),
+            // Which bins this publication actually put something in. A 4K
+            // portrait output has 14400 bins and six hundred particles reach
+            // perhaps a sixth of them; the prefix sum, and the packer's header
+            // pass, used to walk all of them every frame.
+            touched: new Int32Array(n), touchedCount: 0 };
     }
     // Flat render instances (particles/Appearance.js): stride 21, x/y/support at
     // offsets 0/1/5. The same field order the packer reads.
@@ -29,10 +34,14 @@ function build(previous, items, width, height, probe) {
         throw new Error("Particle render-instance limit exceeded");
     if (b.ranges.length < count * 4)
         b.ranges = new Int32Array(Math.max(count * 4, b.ranges.length * 2));
-    b.counts.fill(0);
+    // Only the bins this buffer filled last time need clearing; a full fill() of
+    // a 14400-entry grid is a memset, but the prefix sum over it is not.
+    var touched = b.touched, tc = b.touchedCount, counts = b.counts, i, x, y, k;
+    if (tc > n * 0.4) counts.fill(0);
+    else for (i = 0; i < tc; ++i) counts[touched[i]] = 0;
+    tc = 0;
     b.rowCount = 0;
     if (clk) { pt1 = clk.elapsedNs(); probe.binClear += pt1 - pt0; pt0 = pt1; }
-    var counts = b.counts, i, x, y, k;
     for (i = 0; i < count; ++i) {
         var base = i * stride, px = data[base], py = data[base + 1], radius = data[base + 5];
         // Offsets 18/19 are the half-extents along and across the streak. The
@@ -72,33 +81,48 @@ function build(previous, items, width, height, probe) {
             var bx1 = Math.min(nx - 1, Math.floor((sx1 + minor) / 32));
             b.rows[b.rowCount++] = bx0;
             b.rows[b.rowCount++] = bx1;
-            for (x = bx0; x <= bx1; ++x) ++counts[y * nx + x];
+            var rowBase = y * nx;
+            for (x = bx0; x <= bx1; ++x) {
+                k = rowBase + x;
+                if (counts[k]++ === 0) touched[tc++] = k;
+            }
         }
     }
+    b.touchedCount = tc;
     if (clk) { pt1 = clk.elapsedNs(); probe.binWalk += pt1 - pt0; pt0 = pt1; }
-    b.references = 0; b.maxOccupants = 0; b.overflowBins = 0; b.overflowPages = 0;
-    for (k = 0; k < n; ++k) {
+    // The prefix sum runs over the OCCUPIED bins only, in the order they were
+    // first touched. Nothing downstream needs ascending bin order: the packer
+    // walks the same list and reads offsets[bin] for the bins in it, and an
+    // empty bin's offset is never read. `references` and the overflow counts
+    // are unchanged, because an empty bin contributes nothing to either.
+    var refs = 0, maxOcc = 0, overBins = 0, overPages = 0;
+    var offsets = b.offsets, cursor = b.cursor;
+    for (i = 0; i < tc; ++i) {
+        k = touched[i];
         var occupants = counts[k];
-        b.offsets[k] = b.references;
-        b.cursor[k] = b.references;
-        b.references += occupants;
-        if (occupants > b.maxOccupants) b.maxOccupants = occupants;
+        offsets[k] = refs;
+        cursor[k] = refs;
+        refs += occupants;
+        if (occupants > maxOcc) maxOcc = occupants;
         if (occupants > 16) {
-            ++b.overflowBins;
-            b.overflowPages += Math.ceil(occupants / 16) - 1;
+            ++overBins;
+            overPages += Math.ceil(occupants / 16) - 1;
         }
     }
-    b.offsets[n] = b.references;
+    b.references = refs; b.maxOccupants = maxOcc;
+    b.overflowBins = overBins; b.overflowPages = overPages;
+    b.offsets[n] = refs;
     if (b.indices.length < b.references)
         b.indices = new Uint16Array(Math.max(b.references, b.indices.length * 2));
     if (clk) { pt1 = clk.elapsedNs(); probe.binGrid += pt1 - pt0; pt0 = pt1; }
-    var cursor = b.cursor, indices = b.indices, ranges = b.ranges, rows = b.rows;
+    var indices = b.indices, ranges = b.ranges, rows = b.rows;
     for (i = 0; i < count; ++i) {
         var at = ranges[4 * i + 2];
         for (y = ranges[4 * i]; y <= ranges[4 * i + 1]; ++y) {
             var from = rows[at++], to = rows[at++];
+            var insertBase = y * nx;
             for (x = from; x <= to; ++x) {
-                k = y * nx + x;
+                k = insertBase + x;
                 indices[cursor[k]++] = i;
             }
         }
