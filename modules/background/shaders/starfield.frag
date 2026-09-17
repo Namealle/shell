@@ -866,7 +866,12 @@ vec3 ablationStreak(vec2 pixel, vec2 a, vec2 b, float travelled, vec4 head, vec4
     // Gaussian's own sigma and the taper below finishes it.
     float support = sigma * 34.0;
     if (r2 >= support * support) return vec3(0.0);
-    float w = sigma * (1.4 + 3.2 * du);
+    // 2.6 sigma at the head end, not 1.4. Next to the closeup reference the
+    // trail at 1.4 was under one head diameter wide where the photograph's is
+    // three to four; the along-trail RATIO was already in spec, so what was
+    // wrong was the base and not the taper. Widening the base keeps the ratio
+    // (2.6 -> 7.0 is 2.7x) and fixes the thing the ratio could not see.
+    float w = sigma * (2.6 + 4.4 * du);
     float pu = burn.y - du * burn.z;
     float L = lightCurve(pu, burn.x, max(tone.w, 0.5));
     float age = 1.0 - du;
