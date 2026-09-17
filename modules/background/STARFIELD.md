@@ -66,8 +66,8 @@ FORWARDED like `blackHole`/`particles` (an absent key keeps the renderer's defau
   "starBirth":{"enabled":true,"everyMinutes":[8,16],"durationSec":[80,170],"gain":0.60,"condenseSec":[25,55],"haloPx":[40,9],"paletteMix":0.30},
   "nova":{"enabled":true,"everyMinutes":[6,13],"riseSec":[1.2,2.4],"holdSec":[0.6,1.6],"decaySec":[20,45],"gain":0.90,"shellShortSide":[0.035,0.06],"shellGain":0.26,"paletteMix":0.30},
   "redGiant":{"enabled":true,"everyMinutes":[18,34],"durationSec":[140,280],"gain":0.60,"swellSec":[45,80],"collapseSec":[30,55],"nebulaShortSide":0.030,"nebulaGain":0.16},
-  "supernova":{"enabled":true,"everyHours":[0.5,1],"precursorSec":[10,20],"riseSec":[0.8,1.5],"holdSec":[0.6,1.6],"decaySec":[25,60],
-    "flashShortSide":[0.15,0.25],"skyLift":0.35,"spikeGain":0.55,"gain":1.35,"shellSec":[30,90],"shellShortSide":[0.25,0.40],"shellGain":0.55,
+  "supernova":{"enabled":true,"everyHours":[0.5,1],"precursorSec":[10,20],"riseSec":[0.8,1.5],"holdSec":[0.16,0.28],"decaySec":[25,60],
+    "flashShortSide":[0.08,0.12],"spikeGain":0.55,"gain":1.35,"shellSec":[30,90],"shellShortSide":[0.25,0.40],"shellGain":0.55,
     "filaments":0.55,"remnantSec":[120,300],"remnantGain":0.26,"pulsarGain":0.30,"pulsarPeriodSec":1.4,
     "hypernovaShare":0.15,"hypernovaGain":1.60,"hypernovaCooldownSec":10800,"paletteMix":0.35},
   "kilonova":{"enabled":true,"everyHours":[0.6,1.4],"flashSec":0.6,"gain":1.10,"ringShortSide":0.05,"ringGain":0.34,"ringSec":[8,15]},
@@ -274,7 +274,8 @@ that keeps all three true at once.
 - **Style ids.** `eventSlot` dispatches from the top down: **7** is the storm's fireball (`stormFireball`), **6** is the supernova (`supernovaField`, reached through
   `radialField`), 5 the comet, 3-4 radial, 0-2 the point kernels. Both v9 tests are bounded on BOTH sides (`> 5.5 && < 6.5` for the supernova, `> 6.5` for the
   fireball), so neither can shadow the other and a slot carrying one can never fall into the other's kernel.
-- **One UBO block, in this order:** supernova `snRemnant/snTone/snShell/snExtra` (64 B), storm `stormHead/Shape/Colour/Span` (64 B), nebula
+- **One UBO block, in this order:** supernova `snRemnant/snTone/snShell/snExtra/snBody/snHot/snWisp/snDust/snJet` (**144 B since v11**, block 1840 → **1920 B**;
+  offsets read off the baked `.qsb`: snBody 1360 … snJet 1424, stormHead 1440, bhDepth 1824 → 1904), storm `stormHead/Shape/Colour/Span` (64 B), nebula
   `nebulaHead/Shape/Tone0/Tone1/Stars/Stars2/Bounds` (112 B). **1600 → 1840 B of 16384**, read off the driver's own reflection
   (`BHRENDER_LAYOUT=1 bhrender frag 4 4 /dev/null /dev/null` prints the block size and every member's offset), never added up by hand. The same order is written into
   `Starfield.qml`'s ShaderEffect properties and into every offline tool that re-declares the block.
@@ -355,7 +356,7 @@ cloud (`Physics.setCloud`): material inside it is held back — with the camera 
 depth cues together — and takes `tint` of the cloud's own colour. Measured: **89.7 %** of a control run's speed inside a `drag` 0.9 cloud over twelve seconds, **99.8 %**
 outside it, 77 particles in the cloud at once.
 
-**NEW CONFIG.** `events.supernova.debrisCount` (pair, 0–480, default [180, 370]) and `events.supernova.shockShortSide` (0–2, default 0.32); `events.nebula.drag` (0–2,
+**NEW CONFIG.** `events.supernova.debrisCount` (pair, 0–480, default [300, 400] since v11) and `events.supernova.shockShortSide` (0–2, default 0.32); `events.nebula.drag` (0–2,
 default 0.55) and `events.nebula.tint` (0–1, default 0.30); `particles.debris.maxAlive` (integer 0–480, default 400) and `particles.debris.relaxSec` (0.05–12, default
 1.6). Every one of them is carried by the defaults, so `starfield.json` needs no edit; 0 on either `debris` key turns the footprint off and gives the atlas rows back.
 
@@ -382,7 +383,7 @@ every 0.42 s:
   `[0.9, 3.1] x optics` to `[0.8, 2.6] x sqrt(optics)` after the first live run: particle sizes are physical pixels and are not optics-scaled, so the full optical
   factor made the fragments 2.7-9.2 px against a 2.4-4.8 px near star and they read as bubbles.
 
-**HARNESSES.** `tools/supernova_harness.qml` (27 checks) and `tools/comet_harness.qml` (18) load the real `Starfield.qml` with its real pool, fire through `pushEvent`
+**HARNESSES.** `tools/supernova_harness.qml` (32 checks since v11) and `tools/comet_harness.qml` (18) load the real `Starfield.qml` with its real pool, fire through `pushEvent`
 and measure the pool, in both regimes. Run them the way the others are run:
 ```
 cd modules/background && QT_ASSUME_STDERR_HAS_CONSOLE=1 QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qml tools/supernova_harness.qml
@@ -405,16 +406,14 @@ one supernova is alive at a time: `dramaCooldownSec` is 900 s against a ~290 s l
 3.2 s to 1.0 s without the pulse ever jumping, and its amplitude eases to nothing over the last 1.5 s — a swing left mid-stroke when the collapse takes over would be a
 step. The field's own stars cannot be addressed individually (they are a procedural hash grid), so this star is DRAWN at the site the shell will use; it is the same
 object one phase earlier, and it is the one phase that carries his palette, because a star is where a palette belongs.
-**2 Core collapse** (`riseSec` ≥0.8 s eased, then `holdSec`): a white-blue flash `flashShortSide` across (0.15–0.25 short sides at the 64/255 contour) with eight
-diffraction spikes (`spikeGain`), and `skyLift` — a GLOBAL lift that reaches every pixel. It SCALES the sky already there by 1 + 2.5·lift and adds a flat
-0.09·lift haze on top, so it lights the whole screen and still returns to exactly #000000: a multiply leaves a black pixel black, and both terms ease to zero with the
-flash. Its falloff is 0.55 of the long side, so the corners sit at 56 % of the centre — global, but with a gradient, so it reads as light arriving. `main()` gains four
-lines for it; nothing else in the shader knows about it.
+**2 Core collapse** (`riseSec` ≥0.8 s eased, then `holdSec`): a white-blue flash `flashShortSide` across with eight diffraction spikes (`spikeGain`), and — until
+v11 — `skyLift`, a GLOBAL lift that reached every pixel of the screen. **Both the lift and the key are GONE (v11, ledger 2286: "I don't like that my screen flashes
+during the explosion"); `flashShortSide` is 0.08–0.12 and `holdSec` 0.16–0.28.** See V11 SUPERNOVA below.
 **3 Shell** (`shellSec` 30–90 s): a rim-brightened filamentary shock. Sedov-Taylor, r ∝ t^0.4 (measured 0.400), reaching `shellShortSide` (0.25–0.40 short sides
 across), broadening as it goes, cooling white → yellow → orange-red, with a hotter, narrower inner rim that dies first. `filaments` is how deeply the web breaks the
 front's radius AND its brightness — a ring broken only in brightness still reads as a circle.
-**4 Remnant** (`remnantSec` 2–5 min): a two-tone teal/red filament web, `remnantGain` faint, advected by its own noise and fading to nothing, with the neutron star the
-collapse left behind blinking at the centre (`pulsarGain`, `pulsarPeriodSec` ≥0.8 s, trough ≥0.55 of peak — the pulsar family's own anti-strobe floors). It grows out of
+**4 Remnant** (`remnantSec` 2–5 min): in v9/v10 a two-tone teal/red filament web, `remnantGain` faint, advected by its own noise and fading to nothing — **replaced
+in v11 by `supernovaRemnant()`, a far-field gas layer; the teal is gone and so is `snPolar`** — with the neutron star the collapse left behind blinking at the centre (`pulsarGain`, `pulsarPeriodSec` ≥0.8 s, trough ≥0.55 of peak — the pulsar family's own anti-strobe floors). It grows out of
 the shell's last 40 % rather than replacing it, so there is no moment where one ends and the other begins.
 **The filament field** is value noise on a POLAR grid: `snPolar`, N cells around the circle so the angular index wraps exactly and nothing tears at atan's branch cut,
 two octaves (24 and 48 cells), ridged into filaments, two channels per call so the ridge and the two-tone pick share four hashes. Angular harmonics were tried first and
@@ -428,11 +427,10 @@ radius, and is FIXED with the hole on, since `_state.camFlow` carries the regime
 the drift: that flow is area-preserving (tangential stretch r′/r, radial squash r/r′), so its isotropic magnification is exactly 1 and the remnant's apparent size is its
 own expansion — which is the truth for a source that far away. The particles' z/z′ perspective was the other candidate and cannot carry a life cycle at all: at the
 shipped `speed` 6 and `depth` 16 the camera crosses the whole depth in 60 active seconds, so a 3-D-anchored event would leave the screen before its shell finished.
-Channels: head=(x, y, coreSigmaPx, peak), colour=(r, g, b, 6), tail01=(haloSigmaPx, haloGain, coreGain, shellGain), shape=(shellRadiusPx, shellWidthPx, filamentAmp,
-toneWeight), plus `snRemnant`=(x, y, skyLiftGain, skyLiftRadiusPx), `snTone`=(secondR, secondG, secondB, advectionPhase), `snShell`=(innerRadiusPx, innerGain,
-nebulaRadiusPx, nebulaGain), `snExtra`=(spikeGain, spikeLengthPx, pulsarGain, seedAngle). Every gain except the sky lift is a fraction of head.w, the same convention
-style 3 uses. The advection phase is the episode's own age × 0.05 and is NEVER wrapped: it indexes a noise field, where a wrap is a jump.
-v9 supernova key changes: `precursorSec`, `flashShortSide`, `skyLift`, `spikeGain`, `shellSec`, `filaments`, `remnantGain`, `pulsarGain`, `pulsarPeriodSec` are new;
+Channels (v11 layout): head=(x, y, coreSigmaPx, peak), colour=(r, g, b, 6), tail01=(haloSigmaPx, haloGain, coreGain, unused), shape=(shellRadiusPx, shellWidthPx,
+filamentAmp, toneWeight) — `shape.xy` is published for the harnesses and the sheets, the shock itself is drawn from `snShell` — plus nine vectors of its own, listed
+under V11 SUPERNOVA below. The point-source gains are fractions of head.w, the same convention style 3 uses; the far-layer gains are ABSOLUTE and LINEAR. The advection phase is the episode's own age × 0.05 and is NEVER wrapped: it indexes a noise field, where a wrap is a jump.
+v9 supernova key changes: `precursorSec`, `flashShortSide`, `skyLift` (RETIRED in v11), `spikeGain`, `shellSec`, `filaments`, `remnantGain`, `pulsarGain`, `pulsarPeriodSec` are new;
 `everyHours` becomes [0.5, 1] (one every 30–60 min at rateScale 1), `shellShortSide` [0.25, 0.40], `shellGain` 0.55 (cap 0.80), `decaySec` [25, 60] and `remnantSec`
 [120, 300]; `shellShortSide` and `flashShortSide` are the drawn DIAMETER as a share of the short side, not a radius. `echoGain` and `echoDelaySec` are DROPPED — the
 remnant replaces the light echo — and a file carrying either warns with its index and is otherwise unaffected.
@@ -667,3 +665,162 @@ thread and put 0.6 points more on `QSGRenderThread` for the command buffer. Reve
 **The shell is not the sky's problem.** Measured 2026-09-17 with the sky killed AND all three outputs uncovered (no fullscreen window anywhere), `qs -c caelestia`
 used **0.1 % of one core** over five minutes: 3.1 s of CPU in 56 minutes of uptime, three child processes, no growth. The 21–28 % seen on 2026-09-14 does not
 reproduce in any state reachable from his current configuration.
+
+---
+
+## V11 SUPERNOVA — no flash, and a remnant made of material (2026-09-17)
+
+His three sentences on the v10 supernova (ledger 2286) and what each one cost:
+
+1. *"This part looks flat: the cloud of the supernova is static and not moving with the rest. It should behave like a gas moving in a 3-D plane."*
+2. *"I don't like that my screen flashes during the explosion."*
+3. *"It looks nothing like a real supernova. I want it hyper-detailed."*
+
+His screenshot of what he rejected is `starfield-v2/evidence/v10-remnant-his-screenshot-flat.png`: a teal and dark-red wheel of radial spokes, brightest at the hub,
+with a hard circular edge, frozen while the stars around it moved. The references are `starfield-v2/reference/sa0225Mosk01.jpg` (Chandra + Hubble) and
+`casa-JWST-supernova.webp`. Neither is a texture to paste; they are the target STRUCTURE.
+
+### A. Nothing global is left
+
+Three things flashed the screen and all three are gone.
+
+- **The sky lift.** `main()` multiplied every pixel by 1 + 2.5·gauss(0.55 of the long side) and added a flat haze. Measured on the tablet before it went, the
+  whole-frame mean went **12.7 → 54.0 of 255 in one second**. Deleted, with the hand copy of it in `events-sheet.mjs`. `skyLift` is retired from `rules.js`; a document
+  still carrying the key is accepted and the key dropped.
+- **`brightenNear` at 0.55 of the LONG side** — 1584 px on his tablet, every star on the screen at once, a sky flash made of particles. Now **1.5 shell radii**
+  (373 px), gain 1.7 → 2.4.
+- **A bloom a fifth of the screen across for half a minute.** `flashShortSide` 0.15–0.25 → **0.08–0.12**, `holdSec` 0.6–1.6 → **0.16–0.28**, and the bloom's SIZE now
+  collapses over 0.45 s while its light still fades over `decaySec`. A real photosphere shrinks too.
+
+Measured, not asserted. `tools/sn_flash.py` renders all fourteen phases through the real kernels and reports what reaches the far half of the buffer:
+**0 lit pixels, 0.0000/255, on every phase**, and nothing outside the bounds box the shader rejects on. `tools/sn_bloom.mjs` sweeps the shipped envelope at 120 Hz:
+**hard core 3.4 % of the short side, bloom 9.1 %, above 9 % for 0.350 s** (requirement: 3–6 %, ~10 %, ≤ 0.4 s). On live frames, `tools/sn_live.py`: far-half mean
+**0.2004 → 0.1975 of 255 across the detonation, a step of −0.0029 against a frame-to-frame noise of 0.0058** measured on the same frames.
+
+### B. The ejecta is a hollow sphere of filaments
+
+`spawnBurst` gained three options and the supernova now makes **three calls, not one** (`debrisCount` 300–400 total):
+
+| population | share | speed | life | drawn |
+|---|---|---|---|---|
+| shell | 55 % | 0.78–1.62 × mid | 0.45–1.05 × shellSpan | TANGENTIAL (curl 62–118°), streak 48 px |
+| jets | 11 % | 2.0–3.2 × mid | 0.70–1.25 × shellSpan | RADIAL (curl 0–15°), streak 72 px, bipolar 16° cone |
+| knots | 34 % | 0.42–1.15 × mid | 0.55·shellSpan + 0.8·remnant … | tangential, streak 22 px — **alive through the whole remnant** |
+
+- **`dome: true`** stores each fragment's LINE-OF-SIGHT direction cosine in `p3` (a transient never used it). `Appearance.render` grows and brightens the near cap and
+  shrinks and reddens the far one as the shell expands: measured near/far drawn core **1.02× at t+2 s, 2.16× at t+28 s**. Five flops per ember. The isotropic draw is
+  unchanged to the bit, so every other burst in the shell (comet motes, fireball spray) is untouched.
+- **`curl: [lo, hi]`** freezes a DRAWN orientation at birth — the launch direction rotated by a random angle in that range. A remnant's optical filaments are sheets of
+  shocked gas seen edge-on: they MOVE radially and they LIE tangentially. v10 drew every streak along its own velocity, and a few hundred radial dashes converging on a
+  point is the sunburst in his screenshot. Measured: **293/293 embers drawn tangentially while 293/293 still move radially.** It costs less per frame than the division
+  it replaced (two array reads), because fields 21/22 were already resolved once.
+- **`cone: [x, y, z, cosHalf]`** launches inside a BIPOLAR 3-D cone: `cos(psi)` uniform on `[cosHalf, 1]` is the correct solid-angle draw, and a uniform psi would pile
+  the material on the axis. The particle jets and the drawn jet lobes share one frozen axis, so they are one object.
+- **The knots are why the remnant is made of anything at all.** Measured on the live tablet, v10 had 162 transients at t+28 s and **ZERO from t+55 s**, so the thing he
+  watched for the next four minutes was a sprite with nothing in it. v11 holds **125 embers alive mid-remnant**.
+
+### C. `supernovaRemnant()` — the gas is a SKY LAYER, not a sprite
+
+It returns `(emission, opacity)` like `nebulaField` and composites INTO THE FAR FIELD — under the particles, under the disk, before the shadow, at the LENSED source
+coordinate. That is what lets the dust column multiply the stars behind it so they shine THROUGH the remnant. No additive sprite can do that.
+
+- **Comoving.** Everything is in `q = (pixel − site)/R`. The site rides the far layer's streamline and `R` follows the ejecta's own t^0.4 expansion (floored at 0.34 of
+  the shell so the first frames never sample the noise at a degenerate scale, then creeping 40 % through the remnant phase), so the pattern travels, grows and shears
+  with the debris. The frame is rotated into the episode's own axis, which is `snJet.xy`, a unit vector, so `q.x` is along the jets and the rotation is two dot products.
+- **Hollow.** The body is the projected COLUMN through a spherical shell, `sqrt(1−u²) − sqrt(a²−u²)`, normalised to 1 at the limb. `a` is 0.84 falling to 0.72 as the
+  ejecta fills in behind the front. That one term is the difference between a sphere and a disc.
+- **Broken.** The outer radius is itself modulated ±25 % by the coarse octaves, and `lobe` kills whole sectors of rim. A shell broken only in brightness still reads as
+  a drawn circle.
+- **Three scales.** Broad SHEETS (one squaring), curling THREADS (two) and a near-speckle GRAIN (three), ADDED not averaged, plus KNOTS where three independent fine
+  channels all ridge. One octave gives one thread width everywhere.
+- **Tangential.** The thread octave is sampled on a POLAR grid — 64 cells around the circle, a multiple of both of the noise texture's x periods, so the angular index
+  wraps exactly and nothing tears at atan's branch cut — whose cells are ~2.4× longer around the rim than across it.
+- **Colour (requirement E).** Blue-white inner knots (`snHot`), orange/pink rim (`snTone`), deep red outer wisps (`snWisp`), grey-brown dust (`snDust`). The v10 teal is
+  gone; neither reference has a teal pixel in it.
+
+**FOUR ARTEFACTS, all found by looking at 4K crops rather than at contact-sheet tiles** (`tools/sn_crop.py` exists because of this):
+
+1. An octave at `q*43` exceeded `blackhole-noise.png`'s own x period (**32 on R, 64 on G**) and repeated as a row of identical glyphs. At this bound nothing may go
+   above **23 on R or 46 on G**, and that is written next to the taps.
+2. Three squarings turn `nebulaTap`'s bilinear creases into a straight rectilinear mesh over the whole remnant. The sharp cartesian octaves are rotated **31 and 67°**.
+3. A second polar octave put 128 radial lattice creases across the outer wisps and they read as a comb of hairs pointing at the centre — v9's `snPolar` comment calls the
+   same failure a pinwheel. One polar octave, with its ANGULAR coordinate warped by the coarse noise so the creases wander.
+4. Taking the knots from two channels of ONE tap locks them to that tap's lattice; at gain it drew a legible circuit board. Three channels off three lattices (13, 31,
+   67°) have no common structure to lock to.
+
+### D. The uniform block
+
+```
+snRemnant = (siteX, siteY, radiusPx, bodyGain)      the comoving frame; bodyGain is LINEAR
+snTone    = (rimR, rimG, rimB, turbulencePhase)     phase = age*0.05, never wrapped
+snShell   = (shockRadiusPx, shockGain, shockWidthPx, innerGain)
+snExtra   = (spikeGain, spikeLengthPx, pulsarGain, seedAngle)
+snBody    = (hollowFrac, cavityGain, filigreeGain, dustOpacity)
+snHot     = (hotR, hotG, hotB, knotGain)
+snWisp    = (wispR, wispG, wispB, wispGain)
+snDust    = (dustR, dustG, dustB, jetGain)
+snJet     = (axisX, axisY, jetReach, jetWidth)      axis unit; reach/width in remnant radii
+```
+
+`snFlash` was renamed `snRemnant`: it carried the sky lift's gain and radius, and what replaced the lift is the frame the remnant is drawn in. Gains that reach the far
+field are converted display → linear on the CPU (`linearGain`), because every dial in `Starfield.qml` is a display-unit number and the far field is not; the remnant's
+body additionally carries a **0.34 calibration**, the same idea as the nebula passage's 0.36. Block 1840 → **1920 B** of 16384, offsets verified off the baked `.qsb`.
+
+**Tools kept in step:** `events-sheet.mjs` and `storm-sheet.mjs` UBO blocks and kernel lists, `events-sheet.mjs`'s `main()` composite (the remnant joins the sky the way
+the nebula does, so it is the shipped composite and not a third hand copy of one), and `supernova-sheet.mjs` now BINDS `blackhole-noise.png` — it called bhrender with
+no textures at all, which was fine while the supernova was pure arithmetic and is a black remnant now.
+
+### E. Measured against Cas A
+
+`tools/sn_reference.py` resamples every image — render or photograph — into the same polar grid normalised to its own rim radius, sRGB-decoding the photographs first.
+Remnant at mid-life, 2880×1800:
+
+| | edge dens | knots/rad | knot diam | tangential | radial jets | cavities | through |
+|---|---|---|---|---|---|---|---|
+| v10 | 1.23 | 2.7 | 0.0732 | 0.84 | 0.18 | 0.01 | 0.00 |
+| **v11** | **1.50** | **28.8** | **0.0224** | **0.52** | **0.78** | **0.12** | **1.70** |
+| Chandra + Hubble | 0.91 | 50.5 | 0.0170 | 0.58 | 0.77 | 0.14 | 1.34 |
+| JWST | 1.20 | 101.4 | 0.0117 | 0.28 | 1.00 | 0.09 | 2.60 |
+
+Colour by radius, (R−B)/(R+B) in six bins: v10 `+0.04 +0.07 +0.04 −0.04 −0.04 +0.01` — flat. v11 `−0.13 −0.06 +0.05 +0.08 +0.10 +0.20` against the JWST frame's
+`−0.15 −0.04 +0.00 +0.08 +0.07 +0.20`.
+
+A version scoring **45.4** knots/rad exists in the history and looks worse than this one: the knots buried the filaments they were supposed to sit on. The number went
+up and the picture went down, so the picture won.
+
+### F. Is it alive?
+
+`tools/sn_flow_offscreen.py` renders a sequence 5 s apart at mid-remnant through the same rig, with the site pinned and no camera flow, so bulk motion is zero by
+construction and everything left is the structure moving through itself:
+
+| | internal | radial | interpretation |
+|---|---|---|---|
+| v10 | 1.05 px/s | **−0.06 px/s** | it churns and goes nowhere: a texture sliding under a fixed aperture |
+| v11 | 0.53 px/s | **+0.45 px/s** | 85 % of it is coherent expansion; homologous prediction 0.48 px/s |
+
+On live frames, inside the remnant: **2.41 px/frame** of motion, of which **+0.73 to +1.20 px/frame** is radial expansion about its own site and **−0.00, −0.78
+px/frame** is the whole object travelling with the regime.
+
+### G. What it costs
+
+Tablet, everything else as he leaves it, `starfield-shell perf` + `nvidia-smi`:
+
+| | idle | shell 10–30 s | mid-remnant 100–130 s | budget |
+|---|---|---|---|---|
+| main thread | 12.3 % | 18.5 % (+6.2) | **14.4 % (+2.1)** | idle + 3 |
+| worst frame | 6.33 ms | 5.93 ms | **6.04 ms** | < 8 ms |
+| GPU | 4.0 % | 5.1 % | **4.0 %** | ≤ 8 % |
+| alive / transient | 600 / 0 | 887 / 299 | 721 / 125 | |
+
+The long-lived share is a COST dial: each long-lived ember is **0.023 points of a core**, and 38 % put mid-remnant at idle + 3.2, so it is 34 %. Idle itself reads
+11.4–12.3 % across runs, so every delta carries about half a point of noise. The remnant kernel — four texture taps and ~110 ALU over a tenth of the buffer — does not
+move the GPU at all.
+
+**New config keys** (`events.supernova`): `cavities` 0.80, `dustOpacity` 0.55, `knotGain` 0.55, `wispGain` 0.30, `jetGain` 0.34, `jetReach` 1.30, `jetWidth` 0.10;
+`filaments` 0.55 → 0.70 (cap 1 → 1.5), `debrisCount` [180, 370] → [300, 400], `flashShortSide` [0.15, 0.25] → [0.08, 0.12], `holdSec` [0.6, 1.6] → [0.16, 0.28].
+`skyLift` REMOVED.
+
+**Evidence** (`starfield-v2/evidence/`): `v11-supernova-live-*.png` (150 frames, a whole life cycle a second apart on an uncovered tablet), `v11-supernova-sheet.png`,
+`v11-supernova-trails.png` (the max composite — the ejecta's orange tracks fan out of the detonation point across the sky's own white streamlines, which is the one
+picture that shows it is a separate object with its own 3-D velocity distribution), `v11-supernova-phases.png`, and
+`v11-supernova-{reference.json,reference.csv,flash.json,live.json,cost.json,internal-flow.json}` plus `v10-supernova-internal-flow.json`.

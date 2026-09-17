@@ -335,7 +335,7 @@ construction instead of by two pieces of code being kept in step.
 | call | what it does |
 |---|---|
 | `applyImpulse(s, x, y, strength, radiusPx, profile)` | a radial shove on the particles already there |
-| `spawnBurst(s, x, y, count, speedRange, traits)` | debris born at a point, integrated like everything else |
+| `spawnBurst(s, x, y, count, speedRange, traits)` | debris born at a point, integrated like everything else; v11 traits `dome`/`cone`/`curl` give it a 3-D shell, jets and a filament axis |
 | `spawnBody(s, x, y, vx, vy, traits)` | one body under its own proper motion (a comet's nucleus) |
 | `brightenNear(s, x, y, radius, gain, decaySec)` | a transient luminosity lift on the stars around a flash |
 | `pickStar(s, opts)` / `markNova(s, i, opts)` | the existing particle an event happens TO, and its precursor |
@@ -407,6 +407,48 @@ flag changes four things:
 
 `p2` carries the event's group id (1 supernova, 2 comet, 3 storm fireball) so
 `driftGroup` can move one event's material and leave another's alone.
+
+**v11: `p3` is the LINE-OF-SIGHT direction cosine**, −1 (going away from the
+camera) to +1 (coming at it), written by `spawnBurst` when the caller passes
+`dome: true` and zero for everything else. A star has no use for it and a
+transient has no archetype parameters to keep in `p3`, so it was zero and unread.
+It is what turns a burst from a disc into a hollow sphere: `render()` grows and
+brightens the near cap and shrinks and reddens the far one as the shell expands
+(`core *= 1 + 0.62·los·ember(2−ember)`, `light *= 1 + 0.55·…`, and the ember's
+colour ramp is offset by `−0.16·…` so the receding hemisphere reads older — which
+is its own dust reddening it, and is brown in both Cas A references). Five flops
+per ember per frame, and exactly zero for anything that does not set it.
+Measured near/far drawn core: **1.02× at t+2 s, 2.16× at t+28 s**.
+
+**v11: `spawnBurst` takes three more traits.**
+
+| trait | what it does |
+|---|---|
+| `dome: true` | store the LOS cosine in `p3` (above) |
+| `cone: [x, y, z, cosHalf]` | launch inside a BIPOLAR 3-D cone about that axis. `cos(psi)` uniform on `[cosHalf, 1]` is the correct solid-angle draw; a uniform psi piles the material on the axis. Half the fragments go each way, because a jet has two ends |
+| `curl: [lo, hi]` | freeze a DRAWN orientation at birth: the launch direction rotated by ±U(lo, hi) |
+
+`launchDirection()` returns the whole unit 3-vector so the kick and `p3` cannot
+describe different fragments. **Without a cone the draw is v10's exactly** — a
+uniform screen angle and `project = sqrt(u)` — and only the component that
+projection always implied is added, so every existing burst in the shell (comet
+motes, fireball spray) is unchanged to the bit.
+
+**v11: the FILAMENT AXIS.** `Appearance.transient` stores `axisC`/`axisS`, the
+frozen drawn orientation, when `curl` is given. A supernova remnant's optical
+filaments are sheets of shocked gas seen edge-on: they MOVE radially and they LIE
+tangentially. v10 drew every streak along its own velocity, and a few hundred
+radial dashes converging on a point is a sunburst — which is exactly what he
+rejected (ledger 2286, `evidence/v10-remnant-his-screenshot-flat.png`).
+`render()` writes `axisC·speed, axisS·speed` into instance fields **2/3** and the
+same unit vector into **21/22**, because the shader re-derives the streak's
+direction from the packed `vx/vy` while the binner's capsule and the packer's
+reject box come from 21/22 — all three have to be the rotated vector or the trail
+is drawn outside the box that admits it. The particle's own `vx/vy` in `s.*` are
+untouched: it still moves radially, it is only drawn lying across its own motion.
+It costs LESS per frame than the division it replaced (two array reads), and a
+caller that passes no `curl` leaves both at zero and gets v10's behaviour.
+Measured: **293/293 embers drawn tangentially while 293/293 still move radially.**
 
 `Appearance.transient(s, i, traits)` is the optical half, wired up once by the
 renderer (`pool.transientBirth`) exactly the way `birthCallback` is: Physics
@@ -544,7 +586,12 @@ Render instances are one flat Float64Array, stride 23: x y vx vy core support
 streak r g b lum flags phase p0 age captured id generation halfMajor halfMinor
 stretch unitVx unitVy; 21/22 are the unit velocity, resolved once by `render()`
 because the binner and the packer both used to recompute it from vx/vy (three
-square roots and six divisions per particle per frame for one number); flags is the archetype in the low three bits (v10 adds **kind 7, the
+square roots and six divisions per particle per frame for one number). **2/3 are
+the DRAWN velocity, which is the true one for everything except a v11 supernova
+ember with a filament axis:** the shader takes the streak's ORIENTATION from this
+pair and its LENGTH from field 6, so a fragment that moves radially can be drawn
+lying across its own motion without touching the physics, and 21/22 carry the
+matching unit vector so the binner's capsule and the packer's box agree with it. flags is the archetype in the low three bits (v10 adds **kind 7, the
 ember**), bit 3 flare, bit 4 near
 layer, bit 5 in front of the disk, bit 6 a nonzero tidal deformation. The binner walks the streak's
 capsule (half-extents at 18/19) rather than its bounding box; the packer turns
