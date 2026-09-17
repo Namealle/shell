@@ -65,6 +65,7 @@ layout(std140, binding = 0) uniform buf {
     vec4 stormHead; vec4 stormShape; vec4 stormColour; vec4 stormSpan;
     vec4 event0Burn; vec4 event1Burn; vec4 event2Burn;
     vec4 meteorTone; vec4 stormTone; vec4 stormBurn; vec4 stormTrain; vec4 stormWind;
+    vec4 cometIon; vec4 cometEvent; vec4 cometNa; vec4 cometExtra;
     float qt_Opacity;
 } ubuf;
 
@@ -137,15 +138,23 @@ function main() {
     const span = e.duration + (e.offset || 0);
     // Across the hump, with five closely-spaced samples inside the plateau so
     // the on-screen count is a measurement and not one lucky frame.
-    const ages = [0.04, 0.16, 0.28].map(x => x * e.duration)
+    // STORM_DENSE=n samples the plateau every 1/n seconds instead of the
+    // hump's landmarks. A fragmenting streak that is ALSO bright is a few per
+    // cent of the population and lives about a second, so fourteen landmark
+    // frames can miss every one of them -- which is how "the fragments are
+    // not drawn" and "the fragments are drawn and rare" look identical.
+    const dense = Number(process.env.STORM_DENSE) || 0;
+    const ages = dense
+        ? Array.from({ length: Math.round(e.peakSec * dense) }, (_, i) => e.ramp + 0.5 + i / dense)
+        : [0.04, 0.16, 0.28].map(x => x * e.duration)
         .concat([0, 1, 2, 3, 4].map(i => (e.ramp + 1 + i * 3.5)))
         .concat([0.78, 0.90, 0.98].map(x => x * e.duration))
         .concat(e.children.map(c => c.at + c.flight * 0.90))      // each terminal flash
-        .concat(e.offset > 1 ? [e.duration + e.offset * 0.6] : [])
-        .filter(x => x < span).sort((a, b) => a - b);
+        .concat(e.offset > 1 ? [e.duration + e.offset * 0.6] : []);
+    const sorted = ages.filter(x => x < span).sort((a, b) => a - b);
 
     const manifest = [];
-    for (const age of ages) {
+    for (const age of sorted) {
         h._state.clock = e.start + age;
         const storm = h.stormState() || h.stormOff();
         const slots = [];

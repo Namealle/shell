@@ -1092,7 +1092,10 @@ Item {
             const look = cometLook(family);
             event.coma = optics * 2.6 * look[0];
             event.ionLength = event.tail * look[1];
-            event.ionWidth = Math.max(1.2, shortSide * 0.0030 * (0.7 + 0.6 * random(index, salt + 24)));
+            // v12: 0.0030 short sides was 5-10 px on his tablet -- a hairline,
+            // and a hairline cannot carry structure however much of it is
+            // written into the kernel.
+            event.ionWidth = Math.max(1.6, shortSide * 0.008 * (0.7 + 0.6 * random(index, salt + 24)));
             event.ionGain = look[2];
             event.dustLength = event.tail * look[3];
             event.dustWidth = Math.max(2, shortSide * 0.0075 * (0.75 + 0.5 * random(index, salt + 25)));
@@ -1129,6 +1132,27 @@ Item {
             event.striaeOffsetRad = 0.16;
             event.striaeBands = 12;
             event.dustReddening = 0.12;
+            // ---- v12 ion structure, the disconnection, sodium, anti-tail --
+            event.ionRays = 3 + Math.floor(random(index, salt + 41) * 4);      // 3-6
+            event.ionRayAngle = 0.20 + 0.14 * random(index, salt + 42);
+            event.knots = 3;
+            event.knotSpeed = 0.18 + 0.10 * random(index, salt + 43);
+            event.knotAccel = 0.07 + 0.07 * random(index, salt + 44);
+            event.ionWidthShortSide = 0.008;
+            // A DISCONNECTION is the comet's special event: slow, large,
+            // silent and spectacular, with no flash anywhere in it. Cause:
+            // crossing the heliospheric current sheet, and for Halley 19 of
+            // them correlated one-to-one with HCS crossings and with nothing
+            // else. Once per pass at most, after perihelion, because that is
+            // where the crossings cluster.
+            event.disconnectAt = random(index, salt + 45) < 0.30
+                ? duration * (0.52 + 0.26 * random(index, salt + 46)) : -1;
+            event.disconnectSec = 3 + 3 * random(index, salt + 47);
+            event.sodiumShare = 0.25;
+            event.sodium = random(index, salt + 48) < event.sodiumShare;
+            event.sodiumGain = 0.30;
+            event.antiTail = random(index, salt + 49) < 0.15;
+            event.antiTailAt = duration * (0.60 + 0.20 * random(index, salt + 50));
             // A PASS HAS TO CONTAIN ITS PERIHELION, or nothing happens on it:
             // a comet that only recedes from the light is one you watch
             // nothing change on, and "every property is a function of r" then
@@ -3326,13 +3350,72 @@ Item {
         const coma = e.coma * (0.08 + 0.92 * act * act) * breath * share;
         const dust = e.dustLength * dustOn * (0.25 + 0.75 * actDust) * (branch === 0 ? 1 : 0.5);
         const ion = e.ionLength * ionOn * (0.20 + 0.80 * act) * share;
+        // ---- v12 THE DISCONNECTION, and it is a SEVERING, not a fade -----
+        // The old tail keeps its SHAPE and is displaced outward, accelerating
+        // and then levelling off at the measured ~40 km/s, while a new one
+        // grows from the coma over disconnectSec -- full regrowth is about
+        // 24 h at 86 +- 7 km/s, and early regrowth shows ray structure right
+        // behind the coma before it folds into a new axis. The dark run
+        // between the two is the event. If it ever reads as a uniform dim,
+        // this is wrong.
+        let detachPx = 0, detachGain = 0, regrowU = 1;
+        const deAt = e.disconnectAt === undefined ? -1 : e.disconnectAt;
+        if (deAt >= 0 && age >= deAt) {
+            const T = Math.max(0.5, e.disconnectSec || 4);
+            const tau = age - deAt;
+            regrowU = clamp(ease(tau / T), 0, 1);
+            detachPx = ion * 0.62 * (1 - Math.exp(-tau / (0.42 * T)));
+            detachGain = Math.exp(-tau / (0.95 * T));
+            if (detachGain < 0.02) detachGain = 0;
+        }
+        // The ray fan FOLDS toward the axis with the comet's own clock, at the
+        // measured ~0.9 degrees per minute; a fresh tail after a disconnection
+        // starts wide again, which is what "early regrowth shows rays" means.
+        const foldAge = deAt >= 0 && age >= deAt ? age - deAt : age;
+        const rayAngle = (e.ionRayAngle === undefined ? 0.26 : e.ionRayAngle)
+            * (0.35 + 0.65 * Math.exp(-foldAge / 14));
+        // SODIUM, inside 1.55 perihelion radii only, and the direction sits
+        // between the ion tail's and the dust tail's.
+        let naGain = 0, naLen = 0, naX = ix, naY = iy;
+        if (e.sodium && ratio < 1 + span * 0.22) {
+            const on = clamp((1 + span * 0.22 - ratio) / Math.max(1e-3, span * 0.12), 0, 1);
+            naGain = (e.sodiumGain === undefined ? 0.30 : e.sodiumGain) * on * share;
+            naLen = ion * 0.55;
+            const bx = ix + dx, by = iy + dy;
+            const bl = Math.hypot(bx, by) || 1;
+            naX = bx / bl;
+            naY = by / bl;
+        }
+        // The ANTI-TAIL: a brief window at the plane crossing, a narrow
+        // sunward spike while the main fan is still there.
+        let antiGain = 0, antiLen = 0;
+        if (e.antiTail) {
+            const wdw = Math.exp(-Math.pow((age - e.antiTailAt) / (0.10 * e.duration), 2));
+            if (wdw > 0.03) {
+                antiGain = 0.22 * wdw * share;
+                antiLen = dust * 0.26;
+            }
+        }
+        const ionBlock = {
+            ion: [e.ionRays === undefined ? 4 : e.ionRays, e.knots === undefined ? 3 : e.knots,
+                e.knotSpeed === undefined ? 0.22 : e.knotSpeed, e.knotAccel === undefined ? 0.10 : e.knotAccel],
+            event: [rayAngle, detachPx, regrowU, detachGain],
+            na: [naGain, naLen, naX, naY],
+            extra: [antiGain, antiLen, modulo(age / 2.6, 1), 0]
+        };
         // A tail reaches one way only, so the box follows the two tails rather
         // than squaring the longer of them: the slow family's box halves.
         const pad = Math.max(9 * e.dustWidth, 3 * coma, 6 * width);
         const tipX = head[0] + dx * dust - dy * e.curve * side * dust;
         const tipY = head[1] + dy * dust + dx * e.curve * side * dust;
-        const xs = [head[0], head[0] + ix * ion, tipX];
-        const ys = [head[1], head[1] + iy * ion, tipY];
+        // The box holds every v12 component too, or the kernel's own bounds
+        // test cuts one on a straight line: the DETACHED piece reaches
+        // ion + detachPx, the sodium tail and the sunward anti-tail leave the
+        // nucleus in directions of their own.
+        const xs = [head[0], head[0] + ix * (ion + detachPx), tipX,
+            head[0] + naX * naLen, head[0] - ix * antiLen];
+        const ys = [head[1], head[1] + iy * (ion + detachPx), tipY,
+            head[1] + naY * naLen, head[1] - iy * antiLen];
         return {
             head: [head[0], head[1], width, gain],
             colour: e.colour.concat(5),
@@ -3347,6 +3430,7 @@ Item {
             // dustReddening). The phase is what turns a decal into a flow --
             // the shipped striation had no time term at all, so the pattern
             // was welded to the tail and could not move.
+            ion: ionBlock,
             burn: [age * 6.2831853 / Math.max(1, e.striaeDriftSec === undefined ? 7 : e.striaeDriftSec),
                 e.striaeOffsetRad === undefined ? 0.16 : e.striaeOffsetRad,
                 e.striaeBands === undefined ? 12 : e.striaeBands,
@@ -3669,6 +3753,15 @@ Item {
         const mt = meteorToneVector(0), st = meteorToneVector(3);
         shader.meteorTone = Qt.vector4d(mt[0], mt[1], mt[2], mt[3]);
         shader.stormTone = Qt.vector4d(st[0], st[1], st[2], st[3]);
+        // The comet's four shared vectors, from whichever slot carries it. A
+        // fragmenting comet puts its branches in several slots but they are
+        // one object, so branch 0 owns these and the others scale by `share`.
+        const cometSlot = slots.find(x => x && x.ion) || null;
+        const ci = cometSlot ? cometSlot.ion : null;
+        shader.cometIon = ci ? Qt.vector4d(ci.ion[0], ci.ion[1], ci.ion[2], ci.ion[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.cometEvent = ci ? Qt.vector4d(ci.event[0], ci.event[1], ci.event[2], ci.event[3]) : Qt.vector4d(0.26, 0, 1, 0);
+        shader.cometNa = ci ? Qt.vector4d(ci.na[0], ci.na[1], ci.na[2], ci.na[3]) : Qt.vector4d(0, 0, 1, 0);
+        shader.cometExtra = ci ? Qt.vector4d(ci.extra[0], ci.extra[1], ci.extra[2], ci.extra[3]) : Qt.vector4d(0, 0, 0, 0);
         publishPhenomena();
     }
 
@@ -5025,6 +5118,13 @@ Item {
         property vector4d stormBurn: Qt.vector4d(0.52, 0.09, 0, 0)
         property vector4d stormTrain: Qt.vector4d(0, 0, 0, 0)
         property vector4d stormWind: Qt.vector4d(0, 0, 0, 0)
+        // v12 comet, shared: (rays, knots, knotSpeed, knotAccel),
+        // (rayHalfAngle, detachPx, regrowU, detachGain),
+        // (sodiumGain, sodiumLen, dirX, dirY), (antiGain, antiLen, knotPhase, -)
+        property vector4d cometIon: Qt.vector4d(0, 0, 0, 0)
+        property vector4d cometEvent: Qt.vector4d(0.26, 0, 1, 0)
+        property vector4d cometNa: Qt.vector4d(0, 0, 1, 0)
+        property vector4d cometExtra: Qt.vector4d(0, 0, 0, 0)
         property vector2d activeStamp: Qt.vector2d(0, 0)
         property var bhTransfer: root._hole.bhTransfer
         property var bhNoise: root._hole["bhNoise"] || root._hole.bhTransfer

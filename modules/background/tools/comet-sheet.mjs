@@ -68,6 +68,7 @@ layout(std140, binding = 0) uniform buf {
     vec4 stormHead; vec4 stormShape; vec4 stormColour; vec4 stormSpan;
     vec4 event0Burn; vec4 event1Burn; vec4 event2Burn;
     vec4 meteorTone; vec4 stormTone; vec4 stormBurn; vec4 stormTrain; vec4 stormWind;
+    vec4 cometIon; vec4 cometEvent; vec4 cometNa; vec4 cometExtra;
     float qt_Opacity;
 } ubuf;
 
@@ -92,6 +93,9 @@ void main() {
 function uniformText(width, height, s) {
     const lines = ["resolution " + width + " " + height, "qt_Opacity 1",
         "stormShape 1 0 0 0", "stormHead 0 0 0 0", "stormTrain 0 0 0 0"];
+    const ion = s.ion || { ion: [0, 0, 0, 0], event: [0.26, 0, 1, 0], na: [0, 0, 1, 0], extra: [0, 0, 0, 0] };
+    for (const [name, vec] of [["cometIon", ion.ion], ["cometEvent", ion.event], ["cometNa", ion.na], ["cometExtra", ion.extra]])
+        lines.push(name + " " + vec.map(x => x.toFixed(6)).join(" "));
     const v = (n, a) => lines.push("event0" + n + " " + a.map(x => x.toFixed(6)).join(" "));
     v("Head", s.head); v("Colour", s.colour); v("Tail01", s.tail01);
     v("Tail23", s.tail23); v("Tail4", s.tail4); v("Shape", s.shape);
@@ -174,6 +178,35 @@ function measure(path, w, h, s) {
     let half = 0, comaR = 0;
     for (let i = 0; i < 64; ++i) { half += bins[i]; if (half >= 0.5 * total) { comaR = (i + 0.5) * R / 64; break; } }
     const ionLen = s.shape[0] > 0 ? tailReach(f, w, h, hx, hy, s.tail01[0], s.tail01[1], Math.max(8, s.tail01[2]), Math.max(4, s.tail01[3] * 3)) : 0;
+    // THE ION AXIS PROFILE, sampled over the tail's PUBLISHED length plus the
+    // detachment room, so a severed tail's far piece is inside the window and
+    // the dark run between the two shows up as a run of zeros rather than as
+    // a shorter tail.
+    const ionSpan = Math.max(8, s.tail01[2] + (s.ion ? s.ion.event[1] : 0));
+    const ionProf = [];
+    if (s.shape[0] > 0) {
+        const nrm = Math.max(4, s.tail01[3] * 3);
+        for (let i = 0; i < 128; ++i)
+            ionProf.push(ridgeAt(f, w, h, hx, hy, s.tail01[0], s.tail01[1], (i + 0.5) / 128 * ionSpan, nrm * (0.4 + 0.9 * (i + 0.5) / 128)));
+    }
+    // THE GAP, and the definition matters: dark BETWEEN two lit stretches, not
+    // dark past the end of the tail. Measured against a fixed window that
+    // includes the detachment room, every ordinary comet scores a huge "gap"
+    // made entirely of the empty space beyond its own tip. So the run is
+    // bounded by the first and last lit sample, which is the only way it can
+    // mean a severing.
+    const top = ionProf.length ? Math.max(...ionProf) : 0;
+    const lit = ionProf.map(x => x >= 0.10 * top);
+    const first = lit.indexOf(true), last = lit.lastIndexOf(true);
+    let gapRun = 0, run = 0;
+    if (first >= 0 && last > first) {
+        for (let i = first; i <= last; ++i) {
+            if (!lit[i]) { run++; if (run > gapRun) gapRun = run; } else run = 0;
+        }
+    }
+    const litSpan = Math.max(1, last - first + 1);
+    let ionLit = 0;
+    for (const x of ionProf) if (x >= FLOOR) ionLit++;
     const dustLen = s.shape[1] > 0 ? tailReach(f, w, h, hx, hy, s.tail23[0], s.tail23[1], Math.max(8, s.tail23[2]), Math.max(6, s.tail23[3] * 4)) : 0;
     // The along-axis ridge profile of the DUST tail, for the synchrone shift.
     // Sampled from 0.12 of the tail out, because the coma sits on the base of
@@ -191,6 +224,8 @@ function measure(path, w, h, s) {
     return {
         litPx, flux: Number(flux.toFixed(3)), peak255: Number((peak * 255).toFixed(1)),
         comaR: Number(comaR.toFixed(2)), ionLen: Number(ionLen.toFixed(1)), dustLen: Number(dustLen.toFixed(1)),
+        ionLit, gapFrac: Number((gapRun / litSpan).toFixed(4)), gapRun,
+        frameMean: Number((flux / (w * h)).toExponential(4)),
         prof: prof.map(x => Number(x.toFixed(6)))
     };
 }
@@ -255,6 +290,13 @@ function main() {
     const h = makeHost(document, { width: W, height: H, screenSeed: 20260917, hole: false });
     h._state.clock = 0;
     const e = h.captureEvent(1, 3, 0, family);
+    // COMET_DISCONNECT=1 forces the severing to happen, and at a known moment,
+    // so M12 is a measurement and not a wait for a 30 % draw.
+    const forceDE = Number(process.env.COMET_DISCONNECT) || 0;
+    if (forceDE) {
+        e.disconnectAt = e.duration * 0.45;
+        e.disconnectSec = 4.5;
+    }
     // Off the light source, so the anti-sunward tails are not degenerate --
     // the same placement events-sheet.mjs uses.
     const dx = Math.cos(e.angle), dy = Math.sin(e.angle);
@@ -267,8 +309,14 @@ function main() {
 
     const frames = [];
     let rendered = 0;
-    for (let a = 0; a < AGES; ++a) {
-        const u = (a + 0.5) / AGES;
+    const us = [];
+    for (let a = 0; a < AGES; ++a) us.push((a + 0.5) / AGES);
+    if (forceDE)
+        for (let i = -2; i <= 16; ++i)
+            us.push(Math.min(0.998, Math.max(0.002, (e.disconnectAt + i * 0.5) / e.duration)));
+    us.sort((x, y) => x - y);
+    for (let a = 0; a < us.length; ++a) {
+        const u = us[a];
         // Two frames a second apart at each age, so the synchrone shift is a
         // measurement over a KNOWN interval and not over an age step.
         const pair = [];
@@ -282,7 +330,7 @@ function main() {
             execFileSync(bhrender, [frag, String(W), String(H), uni, raw], { stdio: ["ignore", "ignore", "pipe"] });
             rendered++;
             const rec = measure(raw, W, H, s);
-            const keep = dt === 0 && a % Math.max(1, Math.floor(AGES / 6)) === 0;
+            const keep = dt === 0 && a % Math.max(1, Math.floor(us.length / 7)) === 0;
             if (!keep) { rmSync(raw, { force: true }); rmSync(uni, { force: true }); }
             else rec.raw = raw;
             pair.push(rec);
@@ -320,6 +368,7 @@ function main() {
             head: [Math.round(h.eventState(e, 0, false, 3).head[0]), Math.round(h.eventState(e, 0, false, 3).head[1])],
             range: Number(h.cometRange(e, u).toFixed(1)),
             ratio: Number((h.cometRange(e, u) / e.rPeri).toFixed(3)),
+            deAge: Number((u * e.duration - (e.disconnectAt === undefined ? -1 : e.disconnectAt)).toFixed(2)),
             activity: Number(h.cometActivity(e, u).toFixed(4)),
             synchroneShift: lag === null ? null : lag,
             synchronePhase: p0 === null ? null : Number(p0.toFixed(4)),

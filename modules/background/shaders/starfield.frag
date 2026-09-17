@@ -203,6 +203,21 @@ layout(std140, binding = 0) uniform buf {
     vec4 stormBurn;
     vec4 stormTrain;
     vec4 stormWind;
+    // ---- v12 COMET, 64 B. SHARED, not per-slot: one comet is alive at a
+    // time, and a fragmenting one puts its branches in several slots but they
+    // are all the same object and scale by their own `share`.
+    //   cometIon   = (rays, knots, knotSpeed, knotAccel)
+    //   cometEvent = (rayHalfAngleRad, detachPx, regrowU, detachGain)
+    //   cometNa    = (sodiumGain, sodiumLengthPx, dirX, dirY)
+    //   cometExtra = (antiGain, antiLengthPx, knotPhase, unused)
+    // The DISCONNECTION lives in cometEvent: a DE is a SEVERING, so the old
+    // tail keeps its shape and is displaced outward by detachPx at its own
+    // decaying detachGain, while the new one grows from the coma to regrowU.
+    // The gap between them is what makes it read as a severing and not a fade.
+    vec4 cometIon;
+    vec4 cometEvent;
+    vec4 cometNa;
+    vec4 cometExtra;
     // -------------------------------------------------------------------
 #define BH_UNIFORMS
 #include "blackhole.glsl"
@@ -966,18 +981,119 @@ vec3 cometField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, ve
     float inner = exp2(-0.7213475 * r2 / coma2);
     float outer = exp2(-0.1000000 * r2 / coma2);
     vec3 sum = (nucleus * 1.30 + shape.z * (inner * 0.72 + outer * 0.26)) * mix(colour.rgb, vec3(1.0), 0.55);
+    // ---- v12 ION TAIL ---------------------------------------------------
+    // It was ONE Gaussian about 5-10 px wide with a corrugation inside it:
+    // `1 + amp*0.75*cos(9*across/w + 3.1u)`. A corrugation inside a hairline
+    // cannot make distinct streamers, and the reference photograph of
+    // Hale-Bopp shows six or more of them diverging with distance. It is also
+    // EMISSION, not reflection -- CO+ at 400-460 nm with the strong band at
+    // 420 -- so it is a narrowband saturated blue-cyan and not the dust
+    // tail's ramp at another intensity. Rendering both tails from one colour
+    // ramp is the mistake that makes CG comets look fake.
     if (shape.x > 0.0 && tail01.z > 0.0) {
         vec2 d = tail01.xy;
         float along = dot(p, d);
-        if (along > 0.0 && along < tail01.z) {
-            float u = along / tail01.z;
-            float across = dot(p, vec2(-d.y, d.x));
+        vec2 nrm = vec2(-d.y, d.x);
+        float across = dot(p, nrm);
+        // THE DISCONNECTION. Two tails are evaluated, not one dimmed: the NEW
+        // one grows from the coma out to regrowU, and the OLD one keeps its
+        // shape and is displaced OUTWARD by detachPx at its own decaying gain.
+        // The dark run between them is the severing, and if it ever reads as
+        // a uniform fade the event is wrong.
+        for (int piece = 0; piece < 2; ++piece) {
+            float shift = piece == 0 ? 0.0 : ubuf.cometEvent.y;
+            float g = piece == 0 ? 1.0 : ubuf.cometEvent.w;
+            if (g <= 0.0) continue;
+            float a2 = along - shift;
+            if (a2 <= 0.0 || a2 >= tail01.z) continue;
+            float u = a2 / tail01.z;
+            // The new tail exists only as far as it has grown -- and its
+            // growing TIP is tapered, not cut. A hard stop at regrowU draws a
+            // straight edge across the tail, which reads as a polygon rather
+            // than as a tail that has not reached that far yet.
+            if (piece == 0 && u > ubuf.cometEvent.z + 0.02) continue;
+            float grow = piece == 0
+                ? 1.0 - smoothstep(max(0.0, ubuf.cometEvent.z - 0.10), ubuf.cometEvent.z + 0.02, u)
+                : 1.0;
+            if (grow <= 0.0) continue;
             float w = max(tail01.w * (0.8 + 1.7 * u), 0.5);
-            // Ion rays: near-parallel streamers, so the modulation is in the
-            // across coordinate and drifts slowly down the tail.
-            float ray = 1.0 + shape.w * 0.75 * cos(9.0 * across / w + 3.1 * u);
-            sum += shape.x * exp2(-1.4426950 * across * across / (w * w)) * pow(1.0 - u, 1.5)
-                 * max(ray, 0.0) * smoothstep(0.0, 0.06, u) * mix(vec3(0.50, 0.69, 1.0), colour.rgb, 0.32);
+            float body = exp2(-1.4426950 * across * across / (w * w));
+            // RAYS: discrete streamers, each leaving the coma on its own
+            // frozen angle, so their separation GROWS with distance the way
+            // the reference shows. They fold toward the axis with the comet's
+            // own clock at the measured ~0.9 degrees per minute, which is what
+            // cometEvent.x carries -- the CPU shrinks the half-angle, so the
+            // fan closes over the pass instead of being frozen at birth.
+            float rays = 0.0;
+            int nr = int(ubuf.cometIon.x);
+            for (int r = 0; r < 6; ++r) {
+                if (r >= nr) break;
+                float fr = float(r) + 1.0;
+                float th = (fract(sin(fr * 12.9898 + 4.1) * 43758.5453) * 2.0 - 1.0) * ubuf.cometEvent.x;
+                float dr = across - th * a2;
+                float wr = max(tail01.w * 0.50 * (0.65 + 1.1 * u), 0.5);
+                rays += exp2(-1.4426950 * dr * dr / (wr * wr));
+            }
+            // KNOTS. Condensations run down the tail and ACCELERATE -- Halley
+            // averaged 58 km/s with 29 +- 1 cm/s^2 -- so the spacing STRETCHES
+            // downstream and a constant-velocity scroll is wrong. Knot j was
+            // born j intervals ago, so its distance is v*tau + a*tau^2/2 with
+            // tau = (j + phase) and the gaps widen with j by construction.
+            float knots = 0.0;
+            int nk = int(ubuf.cometIon.y);
+            for (int kk = 0; kk < 6; ++kk) {
+                if (kk >= nk) break;
+                float tau = float(kk) + ubuf.cometExtra.z;
+                float uk = ubuf.cometIon.z * tau + 0.5 * ubuf.cometIon.w * tau * tau;
+                if (uk > 1.05) continue;
+                float du = (u - uk) * tail01.z;
+                float wk = max(tail01.w * 1.6, 2.0);
+                knots += exp2(-1.4426950 * du * du / (wk * wk)) * (1.0 - smoothstep(0.7, 1.05, uk));
+            }
+            float value = body * (0.45 + 0.85 * min(rays, 3.0)) + 0.55 * knots * body;
+            sum += (shape.x * g * grow) * value * pow(1.0 - u, 1.5)
+                 * smoothstep(0.0, 0.06, u) * mix(vec3(0.42, 0.66, 1.0), colour.rgb, 0.22);
+        }
+    }
+    // ---- v12 SODIUM TAIL, drawn only near perihelion ----------------------
+    // A THIRD tail type, discovered on Hale-Bopp: neutral atomic sodium, the
+    // Na D doublet at 589 nm, so monochromatic orange-yellow. beta = 82-100 --
+    // one to two orders above dust -- which is precisely why it is
+    // ruler-straight: radiation pressure utterly dominates, so it is the pure
+    // antisolar synchrone, PARALLEL-EDGED and non-flaring at about 40:1.
+    // It is the clearest possible statement of his colour rule: a new tail of
+    // a new colour ARRIVES at perihelion and leaves again afterwards, and
+    // nothing anywhere interpolates to make it happen.
+    if (ubuf.cometNa.x > 0.0 && ubuf.cometNa.y > 0.0) {
+        vec2 d = vec2(ubuf.cometNa.z, ubuf.cometNa.w);
+        float along = dot(p, d);
+        if (along > 0.0 && along < ubuf.cometNa.y) {
+            float u = along / ubuf.cometNa.y;
+            float across = dot(p, vec2(-d.y, d.x));
+            // Parallel edges: the width does NOT grow with u, which is the
+            // one thing that distinguishes it from the other two tails.
+            float w = max(ubuf.cometNa.y * 0.0125, 1.2);
+            sum += ubuf.cometNa.x * exp2(-1.4426950 * across * across / (w * w))
+                 * (1.0 - 0.55 * u) * smoothstep(0.0, 0.05, u) * vec3(1.00, 0.62, 0.20);
+        }
+    }
+    // ---- v12 ANTI-TAIL ----------------------------------------------------
+    // NOT a sunward tail: a pure projection effect. Large low-beta grains
+    // released long before perihelion stay near the orbital plane, and when
+    // the Earth crosses that plane the flat sheet is seen edge-on and part of
+    // it projects SUNWARD. Arend-Roland's was gone in four to five days, and
+    // a typical spike is under half a degree -- so this is a narrow spike
+    // drawn for a brief window while the main fan is still there, never a
+    // mirrored second tail.
+    if (ubuf.cometExtra.x > 0.0 && ubuf.cometExtra.y > 0.0) {
+        vec2 d = -tail01.xy;
+        float along = dot(p, d);
+        if (along > 0.0 && along < ubuf.cometExtra.y) {
+            float u = along / ubuf.cometExtra.y;
+            float across = dot(p, vec2(-d.y, d.x));
+            float w = max(ubuf.cometExtra.y * 0.020 * (0.5 + 0.9 * u), 1.0);
+            sum += ubuf.cometExtra.x * exp2(-1.4426950 * across * across / (w * w))
+                 * pow(1.0 - u, 1.8) * smoothstep(0.0, 0.08, u) * vec3(1.0, 0.90, 0.72);
         }
     }
     if (shape.y > 0.0 && tail23.z > 0.0) {
@@ -1354,7 +1470,23 @@ vec3 meteorStorm(vec2 pixel) {
         // side spans about fifty degrees here, so a faster streak would cross it
         // in a third of its life and the storm would look emptier than its rate.
         float omega = mix(0.30 + 0.60 * h.y, 0.08 + 0.10 * h.y, grazer);
-        float life = mix(0.65 + 1.30 * h.z, 3.0 + 2.5 * h.z, grazer);
+        // v12 EARTHGRAZER. It was the same streak at a third of the angular
+        // speed with a longer life, so it read as a slow ordinary meteor.
+        // The measured shower-earthgrazer range is 5-10 s: it enters at a
+        // shallow angle, covers 57 km of path per 5 km of altitude drop,
+        // stays in thin air and ablates slowly, and spends a long time in the
+        // 95-100 km band where sodium and potassium go -- which is the whole
+        // mechanism behind its "colourful and gracefully slow" reputation.
+        //
+        // THE LIFE YIELDS TO THE WINDOW, and that is the honest limit here.
+        // The candidate window is the storm's entire GPU cost, and covering
+        // a 10 s life at the validated 8 streaks a second would need 83
+        // candidates against a loop bounded at 48. A streak that vanishes
+        // because the loop stopped looking for it is worse than a shorter
+        // one, so the drawn range is 3.0-7.5 s, clamped to whatever the
+        // window can actually hold at the rate currently running.
+        float life = mix(0.65 + 1.30 * h.z, 3.0 + 4.5 * h.z, grazer);
+        life = min(life, (float(window) - 1.0) / rate);
         float age = (frac + float(j)) / rate;
         if (age > life) continue;
         // A fast streak starts nearer the radiant, so it has room to run before
@@ -1409,13 +1541,93 @@ vec3 meteorStorm(vec2 pixel) {
         float value = 1.45 * L * exp2(-0.7213475 * r2 / variance) * sigma2 / variance
                     + (0.10 + 0.55 * glare) * exp2(-r2 / (sigma2 * (7.0 + 70.0 * glare)))
                     + 0.85 * body;
-        if (g.z < ubuf.stormSpan.z) {
-            // Fragmenting: two siblings separate from the head after the split
-            // and keep flying on their own slightly divergent rays.
-            float split = smoothstep(0.40 * life, 0.95 * life, age);
-            vec2 n = vec2(-dir.y, dir.x) * (split * focal * 0.010);
-            float left = dot(q - n, q - n), right = dot(q + n, q + n);
-            value += 0.60 * split * (exp2(-0.7213475 * left / variance) + exp2(-0.7213475 * right / variance)) * sigma2 / variance;
+        // v12 FRAGMENTATION THAT ACTUALLY SEPARATES. The shipped version put
+        // two siblings at a FIXED lateral offset that never decelerated, so
+        // the group flew rigidly and a "fragmenting" meteor was a wider
+        // meteor. Two different laws, and they are different on purpose:
+        //
+        //   transverse    BALLISTIC. ~100 m/s in 8 of 9 faint CAMO events
+        //                 with negligible transverse acceleration, so the
+        //                 separation is LINEAR in t.
+        //   longitudinal  DRAG. A smaller fragment has more area per unit
+        //                 mass and falls behind as t^2 -- CAMO routinely
+        //                 shows one leading fragment decelerating less than
+        //                 the material behind it. The picture is a bright
+        //                 leader with a comb of dimmer heads fanning out.
+        //
+        // The splay is scaled by the streak's own brightness draw, because
+        // 100 m/s for 1 s at 100 km range is 0.057 degrees: a visible fan
+        // only for a bright, long fireball. A faint shower streak has to stay
+        // a single line, and this is what keeps it one.
+        //
+        // An earthgrazer fragments three times as readily: it flies a long
+        // shallow path through thin air, so there is more of it left to break.
+        if (g.z < ubuf.stormSpan.z * (1.0 + 2.0 * grazer)) {
+            // Gross fragmentation is late in a real light curve, but a split at
+            // 0.42 of the life leaves the comb separating exactly while the
+            // streak's own entry/exit envelope is closing it down: measured,
+            // the whole difference a fragmenting streak made was 500 pixels in
+            // a 25 px box. It splits at 0.22 instead, which is where there is
+            // still flight left to separate in.
+            float splitAge = 0.22 * life;
+            // NORMALISED to the streak's own flight, not in seconds, and the
+            // reason is the same one the train's clock has: a storm streak
+            // lives 0.65-1.95 s and an earthgrazer up to 7.5, so a separation
+            // in metres per second gives a comb that is invisible on one and
+            // scattered across the sky on the other. Physically it is worse
+            // than that -- 100 m/s for a second at 100 km range is 0.057
+            // degrees, which on a short side spanning about fifty degrees is
+            // 1.6 PIXELS. The laws below are the measured ones (linear across,
+            // quadratic along); the scale is what makes them visible, and it
+            // is stated here rather than buried.
+            float dtn = max(0.0, (age - splitAge) / max(life, 0.05));
+            vec4 fh = hash4(vec2(k * 0.017 + 9.13, seed + 5.71));
+            int pieces = 2 + int(floor(fh.x * 3.99));
+            // THE TRANSVERSE SPLAY IS BOUNDED BY THE CANDIDATE'S OWN CORRIDOR,
+            // and that is not a taste choice. The angle reject above -- the one
+            // compare that IS the cost of a storm for every pixel no streak
+            // crosses -- runs before the hashes are even drawn, at a fixed
+            // support of base*17+4, about 63 px. A sibling further across than
+            // that is never evaluated, because its pixel was rejected for the
+            // whole candidate. Widening the corridor to fit a wide fan would
+            // roughly double the accepted area of every streak in the storm.
+            // So the fan stays inside it, at about 46 px at full separation,
+            // and the COMB -- the leader with dimmer heads falling behind it --
+            // carries the picture, which is what CAMO sees anyway and what the
+            // radial reject lets through for free.
+            float splay = focal * 0.042 * (0.10 + 0.90 * g.y * g.y);
+            vec2 nrm = vec2(-dir.y, dir.x);
+            for (int s = 0; s < 5; ++s) {
+                if (s >= pieces) break;
+                float fs = float(s) + 1.0;
+                float hs = fract(fh.y * 7.31 + fs * 0.3714);
+                float hl = fract(fh.z * 11.73 + fs * 0.6137);
+                float hz = fract(fh.w * 5.19 + fs * 0.2271);
+                // A LADDER, not an independent draw per piece. sizeShare has
+                // to reach the drawn SIGMA or the comb reads as clones at
+                // different offsets -- but with each piece's size drawn
+                // independently, a whole streak's pieces come out the same
+                // size often enough to matter, and then they carry the same
+                // drag and sit on top of the leader. Measured before this
+                // changed: the entire difference a fragmenting streak made
+                // was one 25 px blob, on every frame of a whole storm. Piece 0
+                // is the leader and the rest descend, which is also the
+                // dustball picture -- outer grains first, then smaller ones.
+                float ladder = float(s) / max(1.0, float(pieces) - 1.0);
+                float size = mix(0.92, 0.30, ladder) * (0.86 + 0.28 * hz);
+                float side = mod(float(s), 2.0) * 2.0 - 1.0;
+                float lateral = splay * side * (0.30 + 0.70 * hs) * (0.35 + 0.65 * ladder);
+                float drag = focal * 0.300 * (1.0 - size) * (0.5 + 0.5 * hl);
+                vec2 qq = q + dir * (drag * dtn * dtn) - nrm * (lateral * dtn);
+                float ss = sigma * size;
+                float sv = ss * ss, vv = sv + 0.0833333;
+                // The smallest die first: less mass, sooner gone. The edges are
+                // never equal -- smoothstep with edge0 == edge1 is undefined in
+                // GLSL, and at size 1.0 the old form hit exactly that.
+                float alive = 1.0 - smoothstep(mix(0.62, 1.05, size) * life, life * 1.06, age);
+                value += 0.55 * size * alive * smoothstep(0.0, 0.10, dtn)
+                       * exp2(-0.7213475 * dot(qq, qq) / vv) * sv / vv;
+            }
         }
         // Colour by speed: a fast streak is green-teal, a slow one orange, and
         // the sky's own palette is mixed into both by the same paletteMix the
@@ -1431,8 +1643,15 @@ vec3 meteorStorm(vec2 pixel) {
             float puHere = pHead - u * pSpan;
             float fadeHere = 0.30 + 0.70 * (1.0 - u);
             float wn = w * 1.15, wt = w * 1.8;
+            // An earthgrazer's sodium sheath is long and strong, and that is
+            // not a taste dial: at a 5 degree path angle it covers 57 km of
+            // path per 5 km of altitude drop, so it SPENDS ITS FLIGHT in the
+            // 95-100 km band where Na and K ablate. The whole colour sequence
+            // has time to play out visibly instead of inside 0.4 s, which is
+            // the documented mechanism behind "colorful and gracefully slow".
+            float naHere = ubuf.stormTone.x * (1.0 + 1.1 * grazer);
             vec3 extra = vec3(1.00, 0.58, 0.19)
-                * (ubuf.stormTone.x * naProfile(puHere, F)
+                * (naHere * naProfile(puHere, F)
                    * exp2(-1.4426950 * across2 / (wn * wn))
                    * (0.10 + 0.90 * (1.0 - u) * (1.0 - u)));
             extra += vec3(0.48, 1.00, 0.58)
@@ -1440,7 +1659,7 @@ vec3 meteorStorm(vec2 pixel) {
                    * exp2(-1.4426950 * across2 / (wt * wt)) * (0.62 + 0.38 * (1.0 - u)) * 1.0);
             // The head runs warm before maximum for the same reason the slot
             // meteors do -- the sodium is where the head is.
-            extra += vec3(1.00, 0.58, 0.19) * (ubuf.stormTone.x * naProfile(pHead, F)
+            extra += vec3(1.00, 0.58, 0.19) * (naHere * naProfile(pHead, F)
                    * 1.2 * exp2(-0.7213475 * r2 / variance) * sigma2 / variance);
             sum += extra * bright * 0.70;
         }
@@ -1479,7 +1698,9 @@ vec3 meteorStorm(vec2 pixel) {
             vec4 g = hash4(vec2(seed + 7.31, k * 0.017));
             float grazer = step(h.x, ubuf.stormSpan.y);
             float omega = mix(0.30 + 0.60 * h.y, 0.08 + 0.10 * h.y, grazer);
-            float life = mix(0.65 + 1.30 * h.z, 3.0 + 2.5 * h.z, grazer);
+            // The same draw the streak loop makes, including the window
+            // clamp, or a train would hang where no streak ever ended.
+            float life = min(mix(0.65 + 1.30 * h.z, 3.0 + 4.5 * h.z, grazer), (ubuf.stormSpan.x - 1.0) / rate);
             // Slow and deep: the train's life and gain both follow it.
             float slow = 1.0 - clamp((omega - 0.08) / 0.82, 0.0, 1.0);
             float tLife = mix(ubuf.stormTrain.z, ubuf.stormTrain.w, 0.20 + 0.80 * slow * (0.4 + 0.6 * g.y));

@@ -73,6 +73,7 @@ layout(std140, binding = 0) uniform buf {
     vec4 stormHead; vec4 stormShape; vec4 stormColour; vec4 stormSpan;
     vec4 event0Burn; vec4 event1Burn; vec4 event2Burn;
     vec4 meteorTone; vec4 stormTone; vec4 stormBurn; vec4 stormTrain; vec4 stormWind;
+    vec4 cometIon; vec4 cometEvent; vec4 cometNa; vec4 cometExtra;
     float qt_Opacity;
 } ubuf;
 

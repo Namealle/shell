@@ -77,6 +77,7 @@ layout(std140, binding = 0) uniform buf {
     vec4 nebulaStars; vec4 nebulaStars2; vec4 nebulaBounds;
     vec4 event0Burn; vec4 event1Burn; vec4 event2Burn;
     vec4 meteorTone; vec4 stormTone; vec4 stormBurn; vec4 stormTrain; vec4 stormWind;
+    vec4 cometIon; vec4 cometEvent; vec4 cometNa; vec4 cometExtra;
     float qt_Opacity;
 } ubuf;
 layout(binding = 2) uniform sampler2D bhNoise;
