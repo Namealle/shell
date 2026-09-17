@@ -50,7 +50,7 @@ export function previewShader() {
     // one shader in main()'s own composite order. The filter keeps this list
     // valid against an older frag.
     const kernels = ["hash4", "lightCurve", "naProfile", "ablationStreak", "tailSegment", "cometField", "supernovaField", "radialField",
-        "stormHash", "stormTrainRay", "stormTrainSegment", "stormFireball", "meteorStorm", "nebulaTap", "nebulaStar",
+        "stormHash", "trainPoint", "stormTrainRay", "stormTrainSegment", "stormFireball", "meteorStorm", "nebulaTap", "nebulaStar",
         "nebulaField", "snPop", "snCurl", "snSlice", "supernovaRemnant", "eventSlot"]
         .filter(n => src.indexOf(n + "(") >= 0)
         .map(n => fragFunction(src, n)).join("\n\n");

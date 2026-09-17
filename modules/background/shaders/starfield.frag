@@ -1096,6 +1096,81 @@ float stormHash(float k, float salt) {
     x *= x + x;
     return fract(x);
 }
+// ---- v12: THE PERSISTENT TRAIN, which is the "deform" he asked for by name
+//
+// WHAT IT WAS. Four points on the head's own path, each pulled along its own
+// frozen bearing by at most shortSide * 0.045. Swept on his tablet, a 20 s
+// train turned through 1.8 to 7.5 degrees over its WHOLE LIFE with a sagitta
+// of 0.3-2.3 % of its chord: a straight line, and structurally so -- three
+// segments admit at most one inflection, so it could bow and could never kink,
+// S-bend or loop. The offscreen sheet shows it: a featureless grey bar, fading.
+//
+// WHAT A REAL ONE DOES, from the six-panel evolution of one real train
+// (Cordonnier 2024 Fig. 1; that train lasted at least 22 minutes):
+//   0-5 s      essentially straight, brightest, GREEN ([O I] 557.7 + metals)
+//   5-30 s     first visible bend or S-kink; colour shifting off green
+//   30 s-2 m   pronounced kinks, one or two LOOPS, bright knots at the folds
+//   2-10 m     corkscrew or a split pair; dull ORANGE FeO continuum; widening
+//   > 10 m     turbulent diffusion, and the HIGH end blurs out first
+//
+// THE MECHANISM IS WIND SHEAR, and it is measured: horizontal winds at 90 km
+// run to a few tens of m/s, and 27 m/s to 81 m/s were measured at different
+// points OF ONE REAL PERSEID TRAIN. That DIFFERENTIAL is the shear. The config
+// key is therefore a wind speed and the pixel amplitude is derived from it
+// through the storm's own gnomonic focal length; see captureStorm.
+//
+// THE FOLD IS THE POINT. A displacement across the track is a graph over the
+// along-track coordinate and can never double back on itself, however large it
+// is made -- so a pure shear gives kinks and never a loop. Warping the ALONG
+// coordinate makes v -> along non-monotonic, and a non-monotonic centreline is
+// exactly what a loop is. The train is therefore evaluated as an eight-segment
+// polyline whose vertices are warped in both coordinates, not as a displaced
+// straight ray: the vertices are free, so the curve can cross itself.
+//
+//   frame = (o, d, n, lengthPx)     the train's own frame
+//   warp  = (shearPx, fold, phase, clockSec)
+vec2 trainPoint(vec2 o, vec2 d, vec2 n, float len, float v, vec4 warp) {
+    float ph = warp.z;
+    // Held at zero until the fold time and then grown, so loops appear LATE --
+    // which is when real ones show them.
+    float kF = 1.15 + 1.35 * fract(ph * 0.6180339);
+    float uu = v + warp.y * sin(6.2831853 * kF * v + ph * 6.2831853 + 0.17 * warp.w);
+    // Three terms of a wind spectrum, amplitude ~ 1/k so the long wavelengths
+    // carry it, each creeping at its OWN small rate: the shape then morphs
+    // instead of sliding, which is the difference between a train deforming
+    // and a train being dragged. 0.4288 normalises the three amplitudes to 1.
+    float s = 1.66667 * sin(3.769911 * uu + ph * 4.1 + 0.031 * warp.w)
+            + 0.47619 * sin(13.19469 * uu + ph * 7.7 + 0.053 * warp.w)
+            + 0.18868 * sin(33.30088 * uu + ph * 11.3 + 0.079 * warp.w);
+    s *= warp.x * 0.4288 * (0.22 + 0.78 * clamp(uu, 0.0, 1.2));
+    return o + d * (len * uu) + n * s;
+}
+// The drawn train: eight capsules on the warped centreline, max-combined so a
+// fold crossing itself brightens like a fold and not like a sum.
+//   widen  the diffusion factor; diffusivity goes as 1/pressure, so the HIGH
+//          end of a train -- the end nearest where the head died, which was
+//          highest -- blurs out first. One term, and almost nobody renders it.
+float stormTrainRay(vec2 pixel, vec2 o, vec2 d, float len, float width, vec4 warp, float widen) {
+    vec2 n = vec2(-d.y, d.x);
+    float best = 0.0;
+    vec2 prev = trainPoint(o, d, n, len, 0.0, warp);
+    for (int i = 1; i <= 8; ++i) {
+        vec2 cur = trainPoint(o, d, n, len, float(i) * 0.125, warp);
+        vec2 ab = cur - prev;
+        float L2 = dot(ab, ab);
+        float t = L2 > 1e-6 ? clamp(dot(pixel - prev, ab) / L2, 0.0, 1.0) : 0.0;
+        vec2 delta = pixel - (prev + ab * t);
+        float r2 = dot(delta, delta);
+        float u = (float(i - 1) + t) * 0.125;
+        float w = width * (0.55 + 1.4 * u) * (1.0 + (widen - 1.0) * (1.0 - 0.55 * u));
+        if (r2 < w * w * 20.25)
+            best = max(best, exp2(-1.4426950 * r2 / (w * w)) * (1.0 - 0.45 * u));
+        prev = cur;
+    }
+    return best;
+}
+// SUPERSEDED by stormTrainRay above, kept because the v9/v11 offscreen sheets
+// and their committed numbers are rendered through the lifted kernel by name.
 // Style 7, a storm fireball's persistent train. Wider and softer than a
 // meteor's streak, and it does not taper to a point: a train is what is LEFT
 // after the head has gone, so its brightness falls with age (on the CPU) and
@@ -1119,10 +1194,12 @@ float stormTrainSegment(vec2 pixel, vec2 a, vec2 b, float travelled, float total
 // points in the slot's existing vectors, so it needs no uniform of its own.
 //   head   = (x, y, headSigmaPx, gain)
 //   colour = (r, g, b, 7)
-//   tail01 = (p0.xy, p1.xy)   p0 is the head end of the train
-//   tail23 = (p2.xy, p3.xy)
+// v12 re-laid the vectors: the train is a RAY with a warp, not four points.
+//   tail01 = (originX, originY, dirX, dirY)   origin is the head end
+//   tail23 = (lengthPx, shearPx, fold, phase)
 //   tail4  = (trainWidthPx, trainGain)
-//   shape  = (trainLengthPx, flashSigmaPx, nucleusGain, flashGain)
+//   shape  = (diffuseWiden, flashSigmaPx, nucleusGain, flashGain)
+//   burn   = (greenWeight, metalWeight, feoWeight, trainClockSec)
 vec3 stormFireball(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec2 tail4, vec4 shape, vec4 burn, vec4 tone) {
     vec2 p = pixel - head.xy;
     float r2 = dot(p, p);
@@ -1131,15 +1208,28 @@ vec3 stormFireball(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23,
     float value = shape.z * exp2(-0.7213475 * r2 / variance) * sigma2 / variance;
     if (shape.w > 0.0 && shape.y > 0.0)
         value += shape.w * exp2(-0.7213475 * r2 / (shape.y * shape.y));
-    if (tail4.y > 0.0 && shape.x > 0.0) {
-        float train = stormTrainSegment(pixel, tail01.xy, tail01.zw, 0.0, shape.x, tail4.x);
-        float travelled = length(tail01.zw - tail01.xy);
-        train = max(train, stormTrainSegment(pixel, tail01.zw, tail23.xy, travelled, shape.x, tail4.x));
-        travelled += length(tail23.xy - tail01.zw);
-        train = max(train, stormTrainSegment(pixel, tail23.xy, tail23.zw, travelled, shape.x, tail4.x));
-        value += tail4.y * train;
+    vec3 sum = value * mix(colour.rgb, vec3(1.0), 0.40);
+    if (tail4.y > 0.0 && tail23.x > 0.0) {
+        float train = stormTrainRay(pixel, tail01.xy, tail01.zw, tail23.x, tail4.x,
+                                    vec4(tail23.y, tail23.z, tail23.w, burn.w), shape.x);
+        // THREE TONES ON THREE CLOCKS, and this is his colour rule stated by
+        // the chemistry. A persistent train has three phases and they are
+        // three different emitters, not one hue sliding into another:
+        //   afterglow      a few seconds, several thousand K -- the forbidden
+        //                  [O I] 557.7 nm green with the neutral metals
+        //   recombination  tens of seconds -- Mg I 383, Fe I, OH, O2
+        //   continuum      the rest of its life -- a broad molecular band, the
+        //                  leading candidate FeO, giving the "orange arc" at
+        //                  570-630 nm, measured at ~40x the Na D lines. A late
+        //                  train is DISTINCTLY ORANGE, not grey.
+        // The weights are the CPU's, one per phase, computed on the train's
+        // own clock.
+        vec3 trainTone = burn.x * vec3(0.50, 1.00, 0.60)
+                       + burn.y * vec3(1.00, 0.92, 0.72)
+                       + burn.z * vec3(1.00, 0.52, 0.16);
+        sum += (tail4.y * train) * trainTone;
     }
-    return head.w * max(value, 0.0) * mix(colour.rgb, vec3(1.0), 0.40);
+    return head.w * max(sum, vec3(0.0));
 }
 // The storm itself. Nothing about an ordinary storm streak reaches the CPU:
 // this kernel generates all of them from the storm's seed and its phase.

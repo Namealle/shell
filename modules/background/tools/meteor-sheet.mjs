@@ -51,7 +51,7 @@ function fragFunction(src, name) {
 // The same lift storm-sheet.mjs uses: eventSlot dispatches every style, so the
 // whole chain has to compile even though a meteor lights none of the others.
 const KERNELS = ["hash4", "lightCurve", "naProfile", "ablationStreak", "tailSegment", "cometField", "supernovaField", "radialField",
-    "stormHash", "stormTrainRay", "stormTrainSegment", "stormFireball", "meteorStorm", "eventSlot"];
+    "stormHash", "trainPoint", "stormTrainRay", "stormTrainSegment", "stormFireball", "meteorStorm", "eventSlot"];
 
 function previewShader() {
     const src = readFileSync(FRAG, "utf8");
@@ -457,9 +457,16 @@ function main() {
             trainFrames.push(Object.assign(rec, {
                 age: Number(age.toFixed(2)), trainAge: Number(Math.max(0, age - child.flight).toFixed(2)),
                 head: [Math.round(slot.head[0]), Math.round(slot.head[1])],
+                // v12: the train is a ray. p0/p3 are its UNWARPED axis, which
+                // is only the frame the ridge walk measures in -- the drawn
+                // centreline comes from where the light actually is.
                 p0: [Math.round(slot.tail01[0]), Math.round(slot.tail01[1])],
-                p3: [Math.round(slot.tail23[2]), Math.round(slot.tail23[3])],
-                trainLen: Number(slot.shape[0].toFixed(1)), trainWidth: Number(slot.tail4[0].toFixed(2)),
+                p3: [Math.round(slot.tail01[0] + slot.tail01[2] * slot.tail23[0]),
+                Math.round(slot.tail01[1] + slot.tail01[3] * slot.tail23[0])],
+                trainLen: Number(slot.tail23[0].toFixed(1)), trainWidth: Number(slot.tail4[0].toFixed(2)),
+                shearPx: Number(slot.tail23[1].toFixed(1)), fold: Number(slot.tail23[2].toFixed(4)),
+                widen: Number(slot.shape[0].toFixed(3)),
+                tone: [Number(slot.burn[0].toFixed(3)), Number(slot.burn[1].toFixed(3)), Number(slot.burn[2].toFixed(3))],
                 trainGain: Number((slot.head[3] * slot.tail4[1]).toFixed(5))
             }));
         }

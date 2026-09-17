@@ -212,19 +212,61 @@ for (const out of OUTPUTS) {
     check("the fireball is 2x an ordinary storm head", c.sigma / e.headSigma >= 1.7 && c.sigma / e.headSigma <= 2.4,
         `${c.sigma.toFixed(2)} px against ${e.headSigma.toFixed(2)} px`);
 
-    // The train drifts and distorts: the four points do not move rigidly.
-    h._state.clock = e.start + c.at + c.flight + 0.05;
-    const early = h.stormFireballState(e, c);
-    h._state.clock = e.start + c.at + c.flight + c.train * 0.9;
-    const late = h.stormFireballState(e, c);
-    const shifts = [0, 1, 2, 3].map(i => {
-        const a = i < 2 ? early.tail01 : early.tail23, b = i < 2 ? late.tail01 : late.tail23;
-        const k = (i % 2) * 2;
-        return Math.hypot(b[k] - a[k], b[k + 1] - a[k + 1]);
-    });
-    check("the train drifts", Math.min(...shifts) > 0.005 * shortSide, shifts.map(s => s.toFixed(0) + " px").join(", "));
-    check("the train distorts, it does not slide", Math.max(...shifts) - Math.min(...shifts) > 0.004 * shortSide,
-        `spread ${(Math.max(...shifts) - Math.min(...shifts)).toFixed(0)} px between its ends`);
+    // v12: the train is a RAY WITH A WARP, not four points, so what is checked
+    // here is the contract the shader reads -- the origin drifts bodily, the
+    // shear amplitude grows and saturates, the fold is held at zero and then
+    // opens late, and the three tone weights run green -> metal -> orange and
+    // always sum to one. What the deformation LOOKS like is not assertable
+    // from uniforms and is measured on rendered frames instead, by the ridge
+    // walk in tools/meteor_curve.py (M4).
+    const at = f => {
+        h._state.clock = e.start + c.at + c.flight + f * c.train;
+        return h.stormFireballState(e, c);
+    };
+    const early = at(0.01), mid = at(0.5), late = at(0.9);
+    const drift = Math.hypot(late.tail01[0] - early.tail01[0], late.tail01[1] - early.tail01[1]);
+    check("the train drifts bodily", drift > 0.005 * shortSide && drift < 0.09 * shortSide,
+        `${drift.toFixed(0)} px = ${(100 * drift / shortSide).toFixed(1)} % of the short side, against the 6 % M5 bound`);
+    check("the shear grows and saturates",
+        early.tail23[1] < 0.25 * late.tail23[1] && mid.tail23[1] > 0.55 * late.tail23[1],
+        `${early.tail23[1].toFixed(0)} -> ${mid.tail23[1].toFixed(0)} -> ${late.tail23[1].toFixed(0)} px, derived from ${(e.trainShearPx).toFixed(0)} px at full envelope`);
+    check("the fold opens late, or not at all on a short train",
+        early.tail23[2] === 0 && late.tail23[2] >= mid.tail23[2],
+        `fold ${early.tail23[2].toFixed(3)} -> ${mid.tail23[2].toFixed(3)} -> ${late.tail23[2].toFixed(3)}, starts at ${e.trainFoldSec} s of a ${c.train.toFixed(0)} s train`);
+    const weights = s => [s.burn[0], s.burn[1], s.burn[2]];
+    const sums = [early, mid, late].map(s => weights(s).reduce((a, b) => a + b, 0));
+    check("the train's three tones always sum to one", sums.every(x => Math.abs(x - 1) < 1e-6),
+        sums.map(x => x.toFixed(4)).join(", "));
+    check("the tone sequence is green -> metal -> orange",
+        weights(early)[0] > weights(late)[0] && weights(late)[2] > weights(early)[2]
+        && weights(late)[2] > weights(late)[0],
+        `green ${weights(early)[0].toFixed(2)} -> ${weights(late)[0].toFixed(2)}, `
+        + `FeO ${weights(early)[2].toFixed(2)} -> ${weights(late)[2].toFixed(2)}`);
+    check("the train widens as it diffuses", late.shape[0] > 1.4 * early.shape[0],
+        `widen ${early.shape[0].toFixed(2)} -> ${late.shape[0].toFixed(2)}`);
+    // M13 is spatial, so the box has to hold the WARPED ray, not the straight
+    // one. The warp's own worst case is analytic: the three shear terms sum to
+    // 2.332 and the 0.4288 normalises them, so the across displacement tops
+    // out at 1.156 x shear, and the fold moves the ends by 0.16 of the length.
+    let contained = true, worst = Infinity;
+    for (let f = 0; f <= 1.0001; f += 0.02) {
+        const s2 = at(f);
+        if (!s2) continue;
+        const [ox, oy, dx2, dy2] = s2.tail01;
+        const [len, shear, fold] = s2.tail23;
+        const across = 1.156 * shear + 9 * s2.tail4[0] * s2.shape[0];
+        for (const v of [-fold, 1 + fold]) {
+            const px = ox + dx2 * len * v, py = oy + dy2 * len * v;
+            for (const sgn of [-1, 1]) {
+                const qx = px - dy2 * across * sgn, qy = py + dx2 * across * sgn;
+                const m = Math.min(qx - s2.bounds[0], qy - s2.bounds[1], s2.bounds[2] - qx, s2.bounds[3] - qy);
+                if (m < worst) worst = m;
+                if (m < 0) contained = false;
+            }
+        }
+    }
+    check("the warped train stays inside its own bounds box", contained,
+        `worst margin ${worst.toFixed(0)} px over the whole train life`);
 
     // Fireballs travel the SAME ray out of the radiant the streaks do.
     const place = h.stormRadiant(e);

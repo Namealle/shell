@@ -1276,19 +1276,30 @@ Item {
         e.doublePeakShare = stormValue(cfg, "doublePeakShare", 0.18, 0, 0.5);
         e.trainShare = stormValue(cfg, "trainShare", 0.13, 0, 0.40);
         e.trainGain = stormValue(cfg, "trainGain", 0.40, 0, 1);
-        e.trainFoldSec = stormValue(cfg, "trainFoldSec", 26, 4, 120);
+        e.trainFoldSec = stormValue(cfg, "trainFoldSec", 22, 4, 120);
         e.trainDiffuseSec = stormValue(cfg, "trainDiffuseSec", 34, 4, 240);
-        // The wind at 90 km is a few tens of m/s, and the SHEAR is the
-        // difference along one train: 27 to 81 m/s were measured at different
-        // points of one real Perseid train. A 30 m/s difference displaces one
-        // end 1 km relative to the other in 33 s, which at 100 km range is
-        // 0.57 degrees. Mapped through the storm's own gnomonic focal length
-        // (the short side at the 45 degree reference), that is the pixels a
-        // second the shear accumulates -- so the CONFIG key is a wind speed and
-        // the pixel amount is derived, never typed.
+        // THE SHEAR, derived from a wind speed rather than typed as pixels.
+        //
+        // Horizontal winds at 90 km run to a few tens of m/s, and the shear is
+        // the DIFFERENTIAL along one train: 27 m/s to 81 m/s were measured at
+        // different points of one real Perseid train, a 54 m/s spread, which
+        // is 1.2x the 45 m/s this key defaults to.
+        //
+        // THE ONE HONEST APPROXIMATION IN HERE, stated rather than hidden: the
+        // drawn train lives `trainSec` seconds and a real one deforms this
+        // much over MINUTES. Its clock is compressed onto the three-minute
+        // panel of Cordonnier's six -- "pronounced kinks, one or two loops" --
+        // because that is the picture, and playing the real rate would give a
+        // straight bar for the whole of a 30 s train, which is precisely what
+        // the shipped one did. Everything else below is arithmetic:
+        //   metres  = differential * 180 s
+        //   radians = metres / 100 km            (the range)
+        //   pixels  = radians * focal            (focal = shortSide, gnomonic,
+        //                                         taken at theta = 0, which is
+        //                                         the conservative end)
         const windMs = stormValue(cfg, "trainWindSpeed", 45, 0, 160);
-        e.trainWindPx = shortSide * Math.atan(windMs * 1.0 / 100000) / (Math.PI / 4) * 0.5;
-        const trainRange = parameterRange(cfg, "trainSec", [12, 26], 0, 180);
+        e.trainShearPx = shortSide * (windMs * 1.2 * 180) / 100000;
+        const trainRange = parameterRange(cfg, "trainSec", [16, 44], 0, 180);
         e.trainSecLo = trainRange[0];
         e.trainSecHi = trainRange[1];
         // The shader's train loop is bounded; the joint bound
@@ -1329,7 +1340,10 @@ Item {
         // they carry a terminal flash and a train that outlives them by half a
         // minute, so they need the CPU's clock and a real slot each. One to
         // three of them, spread across the peak, on the free transient heads.
-        const trainSpan = parameterRange(cfg, "trainSec", [12, 26], 0, 60);
+        // v12: trainSec is now the general train life and is the same key
+        // the procedural stream reads. 12-26 s never reached the fold time,
+        // so no train in the sky could ever loop.
+        const trainSpan = [e.trainSecLo, e.trainSecHi];
         const count = Math.round(span("fireballs", [1, 3], 0, 6, 3));
         const from = e.ramp * 0.55;
         const to = e.ramp + e.peakSec + e.decay * 0.45;
@@ -1493,7 +1507,7 @@ Item {
             // one uniform block.
             burn: [e.curveF, e.curveSpread, e.flareShare, e.doublePeakShare],
             train: [e.trainShare, e.trainWindow, e.trainSecLo, e.trainSecHi],
-            wind: [e.trainWindPx, e.trainFoldSec, e.trainGain, e.trainDiffuseSec]
+            wind: [e.trainShearPx, e.trainFoldSec, e.trainGain, e.trainDiffuseSec]
         };
     }
 
@@ -1532,20 +1546,43 @@ Item {
         const head = at(flown);
         const trainAge = Math.max(0, age - c.flight);
         const life = clamp(trainAge / Math.max(0.001, c.train), 0, 1);
-        // The train is the path the head took. Each of its four points drifts
-        // on its OWN frozen bearing, slowly turning, so the train shears and
-        // bends instead of sliding rigidly: that is what a real persistent
-        // train does in the high-altitude wind.
-        const points = [];
-        for (let i = 0; i < 4; ++i) {
-            const p = at(flown * (1 - i / 3));
-            const bearing = c.drift[0] + c.drift[1] * i / 3 + 0.30 * Math.sin(0.42 * trainAge + c.drift[0] + i * 0.5);
-            const pull = shortSide * 0.045 * life * (0.30 + 0.70 * i / 3);
-            points.push([p[0] + Math.cos(bearing) * pull, p[1] + Math.sin(bearing) * pull]);
+        // v12. The train is a RAY with a warp, not four drifting points. It
+        // runs from where the head is (or died) back down the path it flew;
+        // the shader deforms it. See stormTrainRay() for why the fold is the
+        // part that matters and why four points could never produce one.
+        const foot = at(0);
+        let vx = foot[0] - head[0], vy = foot[1] - head[1];
+        let trainLen = Math.hypot(vx, vy);
+        if (trainLen < 1) {
+            vx = -dx;
+            vy = -dy;
+            trainLen = 1;
         }
-        let length = 0;
-        for (let i = 0; i < 3; ++i)
-            length += Math.hypot(points[i + 1][0] - points[i][0], points[i + 1][1] - points[i][1]);
+        const tdx = vx / trainLen, tdy = vy / trainLen;
+        // THE SHEAR ENVELOPE, linear then saturating, and the BODILY DRIFT,
+        // which is the mean wind against the shear's differential. The train
+        // drifts; it does not teleport.
+        const shearEnv = (1 - Math.exp(-2.5 * life)) / (1 - Math.exp(-2.5));
+        const shear = (e.trainShearPx || 0) * shearEnv;
+        const bearing = c.drift[0] + 0.25 * Math.sin(0.11 * trainAge + c.drift[0]);
+        const drift = (e.trainShearPx || 0) * 0.50 * shearEnv;
+        const ox = head[0] + Math.cos(bearing) * drift;
+        const oy = head[1] + Math.sin(bearing) * drift;
+        // The fold is held at zero until trainFoldSec of the train's own life
+        // and then grown, so loops appear LATE -- which is when real ones show
+        // them. A short train never loops, and that is correct.
+        const foldStart = clamp(Number(e.trainFoldSec) || 22, 0, 1e6);
+        const fold = 0.16 * ease(clamp((trainAge - foldStart) / Math.max(2, 0.55 * c.train), 0, 1));
+        // Diffusion widens it as it ages; the high end goes first (shader).
+        const widen = 1 + 1.9 * (1 - Math.exp(-trainAge / Math.max(2, Number(e.trainDiffuseSec) || 34)));
+        // The three phases of a persistent train, each on its own clock, in
+        // the train's own seconds. Normalised so the SUM is 1: the brightness
+        // is trainGain's business, the colour is theirs.
+        const green = Math.exp(-trainAge / 4.5);
+        const metal = Math.exp(-Math.pow((trainAge - 9) / 13, 2));
+        const feo = 1 - Math.exp(-Math.max(0, trainAge - 3) / 16);
+        const toneSum = Math.max(1e-4, green + metal + feo);
+        const length = trainLen;
         // Nucleus: alive through the flight only. Flash: a Gaussian in time at
         // the end of it. Train: rises with the flight and then fades over its
         // own lifetime.
@@ -1562,18 +1599,27 @@ Item {
         const peak = Math.max(coreAbs + flashAbs, trainAbs);
         if (peak <= 0.0004)
             return null;
-        const pad = Math.max(3 * c.flashSigma, 9 * c.trainWidth, 6 * c.sigma);
-        const xs = points.map(p => p[0]).concat([head[0]]);
-        const ys = points.map(p => p[1]).concat([head[1]]);
+        // The box has to hold the warped ray, not the straight one: the shear
+        // moves the centreline by up to `shear` px sideways and the fold moves
+        // it along by up to 0.16 of its length, and outside this box the
+        // kernel returns before it reads anything.
+        // 1.156 is the warp's own worst case: the three shear terms sum to
+        // 2.332, the 0.4288 normalises them, and the along-track envelope
+        // tops out at 1.156. 1.25 is that with room, and the fold's 0.16 of
+        // the length is covered by the 1.2 reach below.
+        const pad = Math.max(3 * c.flashSigma, 9 * c.trainWidth * widen, 6 * c.sigma) + shear * 1.25;
+        const reach = trainLen * 1.2;
+        const xs = [head[0], ox, ox + tdx * reach];
+        const ys = [head[1], oy, oy + tdy * reach];
         return {
             head: [head[0], head[1], c.sigma, peak],
             colour: c.colour.concat(7),
-            tail01: points[0].concat(points[1]),
-            tail23: points[2].concat(points[3]),
+            tail01: [ox, oy, tdx, tdy],
+            tail23: [trainLen, shear, fold, c.drift[0] * 0.159154 + 0.37],
             tail4: [c.trainWidth, trainAbs / peak],
-            shape: [length, c.flashSigma, coreAbs / peak, flashAbs / peak],
+            shape: [widen, c.flashSigma, coreAbs / peak, flashAbs / peak],
             bounds: [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad],
-            burn: [c.curveF === undefined ? 0.72 : c.curveF, Math.min(1, age / Math.max(0.05, c.flight)), 0, 1]
+            burn: [green / toneSum, metal / toneSum, feo / toneSum, trainAge]
         };
     }
 
@@ -3398,18 +3444,41 @@ Item {
         if (showerActive && s.clock <= shower.start + shower.duration && s.mood[0] === 3)
             shader.mood = Qt.vector4d(0, 0, 0, 0);
         const slots = [];
+        // v12 SLOT PRIORITY, decided here rather than discovered on the screen.
+        //
+        // There are three transient heads. v9 filled them with storm fireballs
+        // FIRST and a fireball holds its head for `trainSec` AFTER its own head
+        // has died, so three fireballs could silently drop the comet, the
+        // satellite and the wanderer for the better part of a minute -- and
+        // v12 makes trains longer, which would have made it worse.
+        //
+        // Two rules, and they are the whole policy:
+        //   1. an event's FIRST head competes for any free slot; only its
+        //      EXTRA heads (a fragment's branches, a meteor's companion) are
+        //      capped at two. v9 capped the first head too, so a meteor with a
+        //      companion already blocked the comet completely.
+        //   2. a fireball whose head is still burning is the loudest thing in
+        //      the sky and takes a slot first, but never more than two of the
+        //      three. A fireball that is only carrying a TRAIN -- dim, slow,
+        //      and the thing that lasts longest -- drops BELOW the comet, the
+        //      satellite and the wanderer and takes whatever is left.
         function append(e) {
             if (!e || s.clock < e.start || s.clock > e.start + e.duration + e.offset)
                 return;
             const fragment = e.family === "fragmenting";
-            const ceiling = Math.min(e.headCap, fragment ? 3 : 2);
-            const branches = fragment ? [0, -1, 1].slice(0, ceiling) : [0];
+            const extras = Math.min(e.headCap, fragment ? 3 : 2);
+            const branches = fragment ? [0, -1, 1].slice(0, extras) : [0];
+            let taken = 0;
             for (const branch of branches) {
-                if (slots.length < ceiling)
+                if (slots.length < transientSlotCount && taken < extras) {
                     slots.push(eventState(e, branch, false, fragment ? 2 : 3));
+                    taken++;
+                }
             }
-            if (e.pair && slots.length < ceiling)
+            if (e.pair && slots.length < transientSlotCount && taken < extras) {
                 slots.push(eventState(e, 0, true, 3));
+                taken++;
+            }
         }
         // The storm's ordinary streaks are the shader's, not a slot's. What the
         // CPU still owns is the four vectors that describe the storm and the
@@ -3423,19 +3492,32 @@ Item {
         shader.stormBurn = Qt.vector4d(storm.burn[0], storm.burn[1], storm.burn[2], storm.burn[3]);
         shader.stormTrain = Qt.vector4d(storm.train[0], storm.train[1], storm.train[2], storm.train[3]);
         shader.stormWind = Qt.vector4d(storm.wind[0], storm.wind[1], storm.wind[2], storm.wind[3]);
+        const ceiling = Math.min(Math.round(clamp(eventHeadCap, 0, 3)), transientSlotCount);
+        const trainsWaiting = [];
         if (showerActive && shower.children) {
-            const ceiling = Math.min(Math.round(clamp(eventHeadCap, 0, 3)), 3);
+            // Never more than two of the three, so the rest of the catalogue
+            // always has somewhere to go while a storm is running.
+            const liveCeiling = Math.min(ceiling, transientSlotCount - 1);
             for (const child of shower.children) {
                 const slot = stormFireballState(shower, child);
-                if (slot)
-                    stormFireballParticles(shower, child, slot.head);
-                if (slot && slots.length < ceiling)
-                    slots.push(slot);
+                if (!slot)
+                    continue;
+                stormFireballParticles(shower, child, slot.head);
+                const burning = s.clock - shower.start - child.at <= child.flight + 0.35;
+                if (burning) {
+                    if (slots.length < liveCeiling)
+                        slots.push(slot);
+                } else {
+                    trainsWaiting.push(slot);
+                }
             }
         }
         append(s.events[0]);
         for (const kind of [1, 2, 4])
             append(s.events[kind]);
+        for (const slot of trainsWaiting)
+            if (slots.length < ceiling)
+                slots.push(slot);
         for (let i = 0; i < 3; ++i) {
             const slot = slots[i] || eventOff();
             shader["event" + i + "Tail4"] = Qt.vector2d(slot.tail4[0], slot.tail4[1]);

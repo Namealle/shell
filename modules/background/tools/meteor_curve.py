@@ -331,7 +331,9 @@ def main():
         if not f.get("raw") or not os.path.exists(f["raw"]):
             continue
         img = load(f["raw"], w, h)
-        reach = max(40.0, 14.0 * f.get("trainWidth", 4))
+        # Wide enough to hold the shear: the warp moves the centreline off
+        # its own axis by up to the published shear amplitude.
+        reach = max(50.0, 1.35 * f.get("shearPx", 0) + 16.0 * f.get("trainWidth", 4))
         r = ridge(img, f["p0"], f["p3"], reach)
         d = deformation(r)
         row = dict(age=f["age"], trainAge=f["trainAge"], litPx=f["litPx"], flux=f["flux"],
@@ -339,6 +341,9 @@ def main():
         if d:
             row.update(d)
         rows.append(row)
+        row["shearPx"] = f.get("shearPx", 0)
+        row["fold"] = f.get("fold", 0)
+        row["tone"] = f.get("tone")
         print(f"  {f['age']:6.2f}  {f['trainAge']:8.2f}  {f['litPx']:6d}  {f['flux']:8.1f}   "
               + (f"{d['turnDeg']:8.2f}   {d['sagChord']:9.4f}   {d['inflections']:4d}   "
                  f"{d['widthMid']:8.2f}   {d['chordPx']:8.0f}   {f.get('trainLen', 0):6.0f}" if d else "        --"))
