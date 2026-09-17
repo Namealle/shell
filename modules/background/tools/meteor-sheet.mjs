@@ -50,7 +50,7 @@ function fragFunction(src, name) {
 
 // The same lift storm-sheet.mjs uses: eventSlot dispatches every style, so the
 // whole chain has to compile even though a meteor lights none of the others.
-const KERNELS = ["hash4", "ablationStreak", "tailSegment", "cometField", "supernovaField", "radialField",
+const KERNELS = ["hash4", "lightCurve", "naProfile", "ablationStreak", "tailSegment", "cometField", "supernovaField", "radialField",
     "stormHash", "stormTrainRay", "stormTrainSegment", "stormFireball", "meteorStorm", "eventSlot"];
 
 function previewShader() {
@@ -71,6 +71,8 @@ layout(std140, binding = 0) uniform buf {
     vec4 snRemnant; vec4 snTone; vec4 snShell; vec4 snExtra;
     vec4 snBody; vec4 snHot; vec4 snWisp; vec4 snDust; vec4 snJet;
     vec4 stormHead; vec4 stormShape; vec4 stormColour; vec4 stormSpan;
+    vec4 event0Burn; vec4 event1Burn; vec4 event2Burn;
+    vec4 meteorTone; vec4 stormTone; vec4 stormBurn; vec4 stormTrain; vec4 stormWind;
     float qt_Opacity;
 } ubuf;
 
@@ -87,24 +89,29 @@ vec3 decodeDisplay(vec3 c) {
 void main() {
     vec2 pixel = qt_TexCoord0 * ubuf.resolution;
     vec3 sky = meteorStorm(pixel);
-    vec3 events = eventSlot(pixel, ubuf.event0Head, ubuf.event0Colour, ubuf.event0Tail01, ubuf.event0Tail23, ubuf.event0Tail4, ubuf.event0Shape, ubuf.event0Bounds);
-    events += eventSlot(pixel, ubuf.event1Head, ubuf.event1Colour, ubuf.event1Tail01, ubuf.event1Tail23, ubuf.event1Tail4, ubuf.event1Shape, ubuf.event1Bounds);
-    events += eventSlot(pixel, ubuf.event2Head, ubuf.event2Colour, ubuf.event2Tail01, ubuf.event2Tail23, ubuf.event2Tail4, ubuf.event2Shape, ubuf.event2Bounds);
+    vec3 events = eventSlot(pixel, ubuf.event0Head, ubuf.event0Colour, ubuf.event0Tail01, ubuf.event0Tail23, ubuf.event0Tail4, ubuf.event0Shape, ubuf.event0Bounds, ubuf.event0Burn, ubuf.meteorTone);
+    events += eventSlot(pixel, ubuf.event1Head, ubuf.event1Colour, ubuf.event1Tail01, ubuf.event1Tail23, ubuf.event1Tail4, ubuf.event1Shape, ubuf.event1Bounds, ubuf.event1Burn, ubuf.meteorTone);
+    events += eventSlot(pixel, ubuf.event2Head, ubuf.event2Colour, ubuf.event2Tail01, ubuf.event2Tail23, ubuf.event2Tail4, ubuf.event2Shape, ubuf.event2Bounds, ubuf.event2Burn, ubuf.meteorTone);
     fragColor = vec4(clamp(encodeDisplay(decodeDisplay(sky) + decodeDisplay(events)), 0.0, 1.0), 1.0);
 }
 `;
 }
 
-const OFF = { head: [0, 0, 1, 0], colour: [0, 0, 0, 0], tail01: [0, 0, 0, 0], tail23: [0, 0, 0, 0], tail4: [0, 0], shape: [0, 0, 0, 0], bounds: [0, 0, 0, 0] };
-const STORM_OFF = { head: [0, 0, 0, 0], shape: [1, 0, 0, 0], colour: [1, 1, 1, 0], span: [0, 0, 0, 0] };
+const OFF = { head: [0, 0, 1, 0], colour: [0, 0, 0, 0], tail01: [0, 0, 0, 0], tail23: [0, 0, 0, 0], tail4: [0, 0], shape: [0, 0, 0, 0], bounds: [0, 0, 0, 0], burn: [0.52, 0, 0, 0] };
+const STORM_OFF = { head: [0, 0, 0, 0], shape: [1, 0, 0, 0], colour: [1, 1, 1, 0], span: [0, 0, 0, 0], burn: [0.52, 0.09, 0, 0], train: [0, 0, 0, 0], wind: [0, 0, 0, 0] };
 
-function uniformText(width, height, storm, slots) {
+function uniformText(width, height, storm, slots, tone) {
     const lines = ["resolution " + width + " " + height, "qt_Opacity 1"];
     const v = (name, a) => lines.push(name + " " + a.map(x => x.toFixed(6)).join(" "));
     v("stormHead", storm.head);
     v("stormShape", storm.shape);
     v("stormColour", storm.colour);
     v("stormSpan", storm.span);
+    v("stormBurn", storm.burn || [0.52, 0.09, 0, 0]);
+    v("stormTrain", storm.train || [0, 0, 0, 0]);
+    v("stormWind", storm.wind || [0, 0, 0, 0]);
+    v("meteorTone", tone || [0, 0, 0, 4.5]);
+    v("stormTone", tone || [0, 0, 0, 4.5]);
     for (let i = 0; i < 3; ++i) {
         const s = slots[i] || OFF;
         v("event" + i + "Head", s.head);
@@ -114,6 +121,7 @@ function uniformText(width, height, storm, slots) {
         v("event" + i + "Tail4", s.tail4);
         v("event" + i + "Shape", s.shape);
         v("event" + i + "Bounds", s.bounds);
+        v("event" + i + "Burn", s.burn || [0.52, 0, 0, 0]);
     }
     return lines.join("\n") + "\n";
 }
@@ -224,8 +232,8 @@ function colourBins(f, w, h, poly, reach, bins) {
         const lead = b === bins;
         const u = lead ? 0 : (b + 0.5) / bins;
         const at = alongPath(poly, u);
-        const cx = lead ? at.x + at.dx * reach * 0.9 : at.x;
-        const cy = lead ? at.y + at.dy * reach * 0.9 : at.y;
+        const cx = lead ? at.x + at.dx * reach * 0.55 : at.x;
+        const cy = lead ? at.y + at.dy * reach * 0.55 : at.y;
         const nx = -at.dy, ny = at.dx;
         let r = 0, g = 0, bl = 0;
         const N = Math.max(16, Math.ceil(reach * 3));
@@ -294,6 +302,21 @@ function measure(path, w, h, slot, opts) {
         const ws = [0.1, 0.4, 0.8].map(u => transverse(f, w, h, poly, u, reach, level));
         rec.width = ws.map(x => Number(x.fwhm.toFixed(3)));
         rec.core = ws.map(x => Number(x.core.toFixed(3)));
+        // THE LENS TEST. His complaint is that the streak is a taper off a dot.
+        // Sample the ridge -- the transverse maximum -- at twenty points along
+        // the DRAWN streak and report where it is brightest. A taper peaks at
+        // the head (ridgeU ~ 0); a real streak is a fusiform whose brightest
+        // part is behind the head, which is what the KPNO bolide reference is
+        // a photograph of.
+        const N = 20;
+        const ridge = [];
+        for (let i = 0; i < N; ++i)
+            ridge.push(transverse(f, w, h, poly, (i + 0.5) / N, reach, 0).peak);
+        let top = 0;
+        for (let i = 1; i < N; ++i) if (ridge[i] > ridge[top]) top = i;
+        rec.ridgeU = Number(((top + 0.5) / N).toFixed(3));
+        rec.ridge = ridge.map(x => Number(x.toFixed(5)));
+        rec.ridgeMidHead = ridge[0] > 1e-9 ? Number((ridge[Math.floor(N / 2)] / ridge[0]).toFixed(3)) : 0;
         rec.bins = colourBins(f, w, h, poly, reach, 5).map(b => ({
             u: b.u, lead: b.lead, rb: Number(b.rb.toFixed(4)), green: Number(b.green.toFixed(4)), flux: Number(b.flux.toFixed(4))
         }));
@@ -319,10 +342,11 @@ function main() {
     const host = () => makeHost(document, { width: W, height: H, screenSeed: 20260917, hole: false });
 
     let rendered = 0;
+    const tone = host().meteorToneVector(0);
     const render = (name, storm, slots, keep) => {
         const u = join(outDir, name + ".uniforms");
         const raw = join(outDir, label + "-" + name + ".f32");
-        writeFileSync(u, uniformText(W, H, storm || STORM_OFF, slots));
+        writeFileSync(u, uniformText(W, H, storm || STORM_OFF, slots, tone));
         execFileSync(bhrender, [frag, String(W), String(H), u, raw], { stdio: ["ignore", "ignore", "pipe"] });
         rendered++;
         const rec = measure(raw, W, H, slots[0], null);

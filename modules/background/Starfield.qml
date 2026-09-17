@@ -807,8 +807,36 @@ Item {
             tail23: [0, 0, 0, 0],
             tail4: [0, 0],
             shape: [0, 0, 0, 0],
-            bounds: [0, 0, 0, 0]
+            bounds: [0, 0, 0, 0],
+            burn: [0.52, 0, 0, 0]
         };
+    }
+
+    // v12. The meteor light curve, shared by the CPU envelope and the shader's
+    // trail so a point on the trail is lit by exactly what the head was lit by
+    // when it passed. F is the fraction of the path flown before maximum -- the
+    // measured population is 0.52 +- 0.09 over 113 light curves, against the
+    // 0.09 the shipped envelope peaked at, which is a real meteor played
+    // backwards.
+    //   L(x) = (x/F)^(s*F) * ((1-x)/(1-F))^(s*(1-F)),  exactly 1 at x = F.
+    function lightCurveAt(x: real, F: real, s: real): real {
+        const u = clamp(x, 0.0005, 0.9995);
+        const f = clamp(F, 0.08, 0.92);
+        return Math.pow(u / f, s * f) * Math.pow((1 - u) / (1 - f), s * (1 - f));
+    }
+
+    // The configured meteor tone block, read once per publication. naGain and
+    // trainGain at zero switch the v12 emitters off and leave the shape change
+    // on its own, which is how a config turns the colour work off without
+    // turning the light curve off with it.
+    function meteorToneVector(kind: int): var {
+        const cfg = eventConfig(kind) || {};
+        const value = (key, fallback, lo, hi) => {
+            const raw = cfg[key];
+            return clamp(raw === undefined || raw === null ? fallback : Number(raw), lo, hi);
+        };
+        return [value("naGain", 0.45, 0, 1), value("trainGain", 0.40, 0, 1),
+            value("leadingEdgeGain", 0.30, 0, 0.6), value("curveSharp", 4.5, 0.5, 12)];
     }
 
     // Kinds 5-11 are the radial phenomena; their names are the JSON family keys.
@@ -849,10 +877,18 @@ Item {
     function familyDefaults(kind: int): var {
         // weight, duration low/high, gain cap, tail low/high, bend low/high,
         // travel low/high. Lengths are fractions of the captured short side.
+        // v12 lengthened the meteor trails. The trail is the only place the
+        // light curve is VISIBLE in a single frame -- the head is one point,
+        // and what makes a meteor read as a burning column in every photograph
+        // is the curve laid out along the path. At the shipped 0.08-0.14 short
+        // sides against a 0.28-0.38 chord the drawn trail covered 0.21-0.50 of
+        // the path, most of it within a few per cent of the head's own
+        // brightness, so there was nothing along it to see. It now covers
+        // roughly 0.39-0.67, which is where the fusiform shows.
         return kind === 0 ? {
-            straight: [0.72, 0.7, 1.3, 0.85, 0.08, 0.14, 0, 0, 0.28, 0.38],
-            curved: [0.20, 0.9, 1.7, 0.80, 0.06, 0.10, 0.005, 0.02, 0.28, 0.38],
-            skipping: [0.08, 1.2, 2.2, 0.70, 0.08, 0.12, 0, 0.008, 0.3, 0.4]
+            straight: [0.72, 0.7, 1.3, 0.85, 0.13, 0.22, 0, 0, 0.28, 0.38],
+            curved: [0.20, 0.9, 1.7, 0.80, 0.11, 0.17, 0.005, 0.02, 0.28, 0.38],
+            skipping: [0.08, 1.2, 2.2, 0.70, 0.12, 0.19, 0, 0.008, 0.3, 0.4]
         } : {
             fast: [0.18, 4, 9, 0.95, 0.06, 0.11, 0, 0, 0.35, 0.65],
             slow: [0.34, 30, 65, 0.70, 0.20, 0.32, 0, 0, 0.5, 0.8],
@@ -979,6 +1015,28 @@ Item {
             omega: (random(index, salt + 15) < 0.5 ? -1 : 1) * Math.PI / 3,
             radius: shortSide * (0.22 + 0.12 * random(index, salt + 16))
         };
+        // v12. The four draws that make one meteor unlike the next. They are
+        // FROZEN AT BIRTH, like every other trait in this file: a meteoroid
+        // does not decide halfway down what shape its light curve is.
+        if (kind === 0) {
+            const curve = cfg.curveF === undefined ? 0.52 : clamp(Number(cfg.curveF), 0.20, 0.90);
+            const spread = cfg.curveSpread === undefined ? 0.09 : clamp(Number(cfg.curveSpread), 0, 0.25);
+            // A normal from three uniforms: sd(u1+u2+u3-1.5) is exactly 0.5,
+            // so 2*spread*(sum-1.5) has sd = spread. Cheaper and more honest
+            // than a Box-Muller nobody can seed reproducibly here.
+            const n = random(index, salt + 30) + random(index, salt + 31) + random(index, salt + 32) - 1.5;
+            event.curveF = clamp(curve + 2 * spread * n, 0.20, 0.90);
+            event.curveSharp = cfg.curveSharp === undefined ? 4.5 : clamp(Number(cfg.curveSharp), 0.5, 12);
+            // The head's share of the light. CAMO transverse slices give about
+            // 80:20 for a single body and 50:50 for one fragmenting hard, and
+            // the shipped kernel had it hardcoded at 0.62 for everything.
+            const ratio = parameterRange(cfg, "headTrailRatio", [0.50, 0.80], 0.3, 0.95);
+            event.headShare = ratio[0] + (ratio[1] - ratio[0]) * random(index, salt + 33);
+            // Entry speed, normalised, for the leading edge: the second
+            // spectrum is absent below about 15 km/s, so a slow meteor must
+            // get no violet precursor at all.
+            event.speed01 = clamp((distance / Math.max(0.05, duration) / shortSide - 0.12) / 0.40, 0, 1);
+        }
         // A comet is not a streak with a wider brush. It carries a coma, a
         // straight ion tail pointing away from the only light source on the sky
         // and a broader dust tail that lags behind it and curves, all captured
@@ -1162,6 +1220,35 @@ Item {
         e.grazers = stormValue(cfg, "earthgrazerShare", 0.08, 0, 0.35);
         e.fragments = stormValue(cfg, "fragmentShare", 0.06, 0, 0.35);
         e.stormMix = stormValue(cfg, "paletteMix", 0.30, 0, 0.45);
+        // v12. The storm's own light-curve population and its train stream.
+        // The kernel draws each streak's F, flare and train from these plus the
+        // streak index, so a storm's variety costs no uniform per streak.
+        e.curveF = stormValue(cfg, "curveF", 0.52, 0.20, 0.90);
+        e.curveSpread = stormValue(cfg, "curveSpread", 0.09, 0, 0.25);
+        e.flareShare = stormValue(cfg, "flareShare", 0.30, 0, 1);
+        e.doublePeakShare = stormValue(cfg, "doublePeakShare", 0.18, 0, 0.5);
+        e.trainShare = stormValue(cfg, "trainShare", 0.13, 0, 0.40);
+        e.trainGain = stormValue(cfg, "trainGain", 0.40, 0, 1);
+        e.trainFoldSec = stormValue(cfg, "trainFoldSec", 26, 4, 120);
+        e.trainDiffuseSec = stormValue(cfg, "trainDiffuseSec", 34, 4, 240);
+        // The wind at 90 km is a few tens of m/s, and the SHEAR is the
+        // difference along one train: 27 to 81 m/s were measured at different
+        // points of one real Perseid train. A 30 m/s difference displaces one
+        // end 1 km relative to the other in 33 s, which at 100 km range is
+        // 0.57 degrees. Mapped through the storm's own gnomonic focal length
+        // (the short side at the 45 degree reference), that is the pixels a
+        // second the shear accumulates -- so the CONFIG key is a wind speed and
+        // the pixel amount is derived, never typed.
+        const windMs = stormValue(cfg, "trainWindSpeed", 45, 0, 160);
+        e.trainWindPx = shortSide * Math.atan(windMs * 1.0 / 100000) / (Math.PI / 4) * 0.5;
+        const trainRange = parameterRange(cfg, "trainSec", [12, 26], 0, 180);
+        e.trainSecLo = trainRange[0];
+        e.trainSecHi = trainRange[1];
+        // The shader's train loop is bounded; the joint bound
+        // ceil(trainShare * peakRate * trainSec[1]) <= 16 is what keeps it so,
+        // and it is validated here rather than discovered on the screen. Each
+        // candidate costs [derived] 0.056 GPU points over the whole buffer.
+        e.trainWindow = Math.min(16, Math.max(0, Math.ceil(e.trainShare * e.rateMax * e.trainSecHi)));
         e.creep = 1;
         e.roll = 0;
         // The radiant: off-centre by construction (a storm pointed at the middle
@@ -1352,7 +1439,14 @@ Item {
             head: [place[0], place[1], stormPhase(e, age), rate],
             shape: [e.headSigma, e.trailLo, e.trailHi, e.stormGain],
             colour: e.colour.concat(e.stormMix),
-            span: [window, e.grazers, e.fragments, modulo(e.index * 7919 + screenSeed, 4096)]
+            span: [window, e.grazers, e.fragments, modulo(e.index * 7919 + screenSeed, 4096)],
+            // v12: the light-curve population and the train stream. Every
+            // streak's own F, flare and train are hash-drawn in the kernel from
+            // these four numbers plus its index, so several a second still cost
+            // one uniform block.
+            burn: [e.curveF, e.curveSpread, e.flareShare, e.doublePeakShare],
+            train: [e.trainShare, e.trainWindow, e.trainSecLo, e.trainSecHi],
+            wind: [e.trainWindPx, e.trainFoldSec, e.trainGain, e.trainDiffuseSec]
         };
     }
 
@@ -1361,7 +1455,10 @@ Item {
             head: [0, 0, 0, 0],
             shape: [1, 0, 0, 0],
             colour: [1, 1, 1, 0],
-            span: [0, 0, 0, 0]
+            span: [0, 0, 0, 0],
+            burn: [0.52, 0.09, 0, 0],
+            train: [0, 0, 0, 0],
+            wind: [0, 0, 0, 0]
         };
     }
 
@@ -1428,7 +1525,8 @@ Item {
             tail23: points[2].concat(points[3]),
             tail4: [c.trainWidth, trainAbs / peak],
             shape: [length, c.flashSigma, coreAbs / peak, flashAbs / peak],
-            bounds: [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad]
+            bounds: [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad],
+            burn: [c.curveF === undefined ? 0.72 : c.curveF, Math.min(1, age / Math.max(0.05, c.flight)), 0, 1]
         };
     }
 
@@ -2810,20 +2908,37 @@ Item {
         if (age < 0 || age > e.duration)
             return eventOff();
         const u = age / e.duration;
-        const progress = e.kind === 0 ? (1 - Math.exp(-2.4 * u)) / (1 - Math.exp(-2.4)) : u;
-        const envelope = ease(u / (e.kind === 0 ? 0.09 : 0.16)) * ease((1 - u) / (e.kind === 0 ? 0.38 : 0.20));
+        // v12 DECELERATION. The shipped law was (1-e^-2.4u)/(1-e^-2.4): 77 % of
+        // the path flown in the first half of the life, a start/end speed ratio
+        // of 10.51, and a trail that got SHORTER as the meteor aged because it
+        // spans a fixed progress interval. Real visible-phase deceleration is a
+        // few per cent; strong terminal deceleration belongs to a fireball,
+        // where it is real (Zdar nad Sazavou went 21.89 -> 4.8 km/s) and is
+        // what precedes the terminal burst.
+        const drag = e.kind === 0 ? (e.fireball ? 0.22 : 0.05) : 0;
+        const progress = e.kind === 0 ? (u - drag * u * u * u) / (1 - drag) : u;
+        // v12 LIGHT CURVE for a meteor; the v6 in/out ease for everything else.
+        const envelope = e.kind === 0
+            ? lightCurveAt(progress, e.curveF === undefined ? 0.52 : e.curveF, e.curveSharp === undefined ? 4.5 : e.curveSharp)
+            : ease(u / 0.16) * ease((1 - u) / 0.20);
         let gain = e.gain * envelope * (companion ? 0.5 : 1);
         if (e.family === "pulsating")
             gain *= (1 + e.pulseAmplitude * Math.sin(age * 2 * Math.PI / e.pulsePeriod)) / (1 + e.pulseAmplitude);
         if (e.family === "skipping")
             gain *= 0.10 + 0.90 * Math.pow(Math.sin(Math.PI * e.lobes * u), 2);
-        // Head flash, published in shape.w for styles 0 and 2: the entry bloom
-        // of a meteor and a satellite's glint both widen the halo rather than
-        // only lifting the gain, so they read as light spilling instead of a
-        // brighter dot.
+        // shape.w: a satellite's glint, and -- for a meteor since v12 -- the
+        // GLARE. It used to be `ease((0.26 - u)/0.20)`, an "entry bloom"
+        // peaking at u = 0 and gone by u = 0.16. There is no entry bloom. A
+        // head blooms where it is bright, and the apparent size of a head is
+        // the point-spread function convolved with SATURATION, so the
+        // saturated disc grows with the LOGARITHM of the brightness. That is
+        // also why a flare belongs here rather than in the gain: the value is
+        // already clipped by the display and cannot show anything more.
         let flash = 0;
-        if (e.kind === 0)
-            flash = clamp(ease((0.26 - u) / 0.20) * (e.fireball ? 1 : 0.55), 0, 1);
+        if (e.kind === 0) {
+            const bright = e.gain * envelope * (e.fireball ? 3.0 : 1);
+            flash = clamp(Math.log(1 + 18 * bright) / Math.log(1 + 18 * 2.6), 0, 1);
+        }
         if (e.kind === 2 && e.glintGain > 1) {
             // A Gaussian in time: smooth at both edges by construction, so the
             // brightening has no slope a blink could hide in.
@@ -2858,7 +2973,11 @@ Item {
         const width = e.pointWidth;
         if (e.kind === 1)
             return cometState(e, e.site ? cometHead(e, branch, progress) : points[0], progress, branch, gain, width, age);
-        const extent = width * (e.kind === 0 ? 15 : 7);
+        // v12: a meteor's head bloom reaches 33 sigma at full glare and its
+        // trail's widest emitter has 24 sigma of compact support, so the box
+        // has to be 34 sigma or the bounds test cuts the glow on a straight
+        // line. Style 2 keeps the 7 it was measured with.
+        const extent = width * (e.kind === 0 ? 44 : 7);
         const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
         return {
             head: [points[0][0], points[0][1], width, gain],
@@ -2866,8 +2985,16 @@ Item {
             tail01: points[0].concat(points[1]),
             tail23: points[2].concat(points[3]),
             tail4: points[4],
-            shape: [length, 0.62, count, flash],
-            bounds: [Math.min(...xs) - extent, Math.min(...ys) - extent, Math.max(...xs) + extent, Math.max(...ys) + extent]
+            // shape.y was a hardcoded 0.62 for every object in the sky; it is
+            // now the streak's own head:trail draw. shape.w is the glare.
+            shape: [length, e.kind === 0 ? (e.headShare === undefined ? 0.62 : e.headShare) : 0.62, count, flash],
+            bounds: [Math.min(...xs) - extent, Math.min(...ys) - extent, Math.max(...xs) + extent, Math.max(...ys) + extent],
+            // (F, headPathU, pathSpan, speed01). pathSpan is min(span,
+            // progress) because the polyline is clamped at the start of the
+            // path, so the drawn trail is shorter than `span` early on.
+            burn: e.kind === 0
+                ? [e.curveF === undefined ? 0.52 : e.curveF, progress, Math.min(span, progress), e.speed01 === undefined ? 0 : e.speed01]
+                : [0.52, 0, 0, 0]
         };
     }
 
@@ -2970,7 +3097,8 @@ Item {
             tail23: [dx, dy, dust, e.dustWidth],
             tail4: [Math.abs(e.curve) * side, coma],
             shape: [e.ionGain * share, e.dustGain * share, e.comaGain * breath, e.striae],
-            bounds: [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad]
+            bounds: [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad],
+            burn: [0.52, 0, 0, 0]
         };
     }
 
@@ -3223,6 +3351,9 @@ Item {
         shader.stormShape = Qt.vector4d(storm.shape[0], storm.shape[1], storm.shape[2], storm.shape[3]);
         shader.stormColour = Qt.vector4d(storm.colour[0], storm.colour[1], storm.colour[2], storm.colour[3]);
         shader.stormSpan = Qt.vector4d(storm.span[0], storm.span[1], storm.span[2], storm.span[3]);
+        shader.stormBurn = Qt.vector4d(storm.burn[0], storm.burn[1], storm.burn[2], storm.burn[3]);
+        shader.stormTrain = Qt.vector4d(storm.train[0], storm.train[1], storm.train[2], storm.train[3]);
+        shader.stormWind = Qt.vector4d(storm.wind[0], storm.wind[1], storm.wind[2], storm.wind[3]);
         if (showerActive && shower.children) {
             const ceiling = Math.min(Math.round(clamp(eventHeadCap, 0, 3)), 3);
             for (const child of shower.children) {
@@ -3239,11 +3370,17 @@ Item {
         for (let i = 0; i < 3; ++i) {
             const slot = slots[i] || eventOff();
             shader["event" + i + "Tail4"] = Qt.vector2d(slot.tail4[0], slot.tail4[1]);
-            for (const name of ["head", "colour", "tail01", "tail23", "shape", "bounds"]) {
-                const v = slot[name];
+            for (const name of ["head", "colour", "tail01", "tail23", "shape", "bounds", "burn"]) {
+                const v = slot[name] || [0, 0, 0, 0];
                 shader["event" + i + name[0].toUpperCase() + name.slice(1)] = Qt.vector4d(v[0], v[1], v[2], v[3]);
             }
         }
+        // v12 tone blocks. One vector each for the ordinary meteors and for the
+        // shower, because the two carry the same key names under separate
+        // config objects and a fireball belongs to the shower.
+        const mt = meteorToneVector(0), st = meteorToneVector(3);
+        shader.meteorTone = Qt.vector4d(mt[0], mt[1], mt[2], mt[3]);
+        shader.stormTone = Qt.vector4d(st[0], st[1], st[2], st[3]);
         publishPhenomena();
     }
 
@@ -4584,6 +4721,22 @@ Item {
         property vector4d nebulaStars: Qt.vector4d(-1000000, -1000000, -1000000, -1000000)
         property vector4d nebulaStars2: Qt.vector4d(-1000000, -1000000, 1, 1)
         property vector4d nebulaBounds: Qt.vector4d(0, 0, 0, 0)
+        // ---- v12 meteors, 128 B, APPENDED to the block so no offset above it
+        // moves and the offline sheets that re-declare the layout by hand keep
+        // reading what they already read.
+        //   eventNBurn = (F, headPathU, pathSpan, speed01)
+        //   meteorTone / stormTone = (naGain, trainGain, leadGain, curveSharp)
+        //   stormBurn  = (curveF, curveSpread, flareShare, doublePeakShare)
+        //   stormTrain = (trainShare, trainWindow, trainSecLo, trainSecHi)
+        //   stormWind  = (windPxPerSec, foldSec, trainGain, diffuseSec)
+        property vector4d event0Burn: Qt.vector4d(0.52, 0, 0, 0)
+        property vector4d event1Burn: Qt.vector4d(0.52, 0, 0, 0)
+        property vector4d event2Burn: Qt.vector4d(0.52, 0, 0, 0)
+        property vector4d meteorTone: Qt.vector4d(0, 0, 0, 4.5)
+        property vector4d stormTone: Qt.vector4d(0, 0, 0, 4.5)
+        property vector4d stormBurn: Qt.vector4d(0.52, 0.09, 0, 0)
+        property vector4d stormTrain: Qt.vector4d(0, 0, 0, 0)
+        property vector4d stormWind: Qt.vector4d(0, 0, 0, 0)
         property vector2d activeStamp: Qt.vector2d(0, 0)
         property var bhTransfer: root._hole.bhTransfer
         property var bhNoise: root._hole["bhNoise"] || root._hole.bhTransfer

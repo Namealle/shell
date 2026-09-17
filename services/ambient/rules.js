@@ -219,9 +219,16 @@ function validateFamilies(value, comet) {
         fragmenting: [[8, 16], 0.02, 0.80, [0.08, 0.16], [0.02, 0.06]],
         spiral: [[18, 35], 0.10, 0.65, [0.08, 0.18], [0, 0.06]]
     } : {
-        straight: [[0.7, 1.3], 0.72, 0.85, [0.08, 0.14], [0, 0]],
-        curved: [[0.9, 1.7], 0.20, 0.80, [0.04, 0.10], [0.005, 0.02]],
-        skipping: [[1.2, 2.2], 0.08, 0.70, [0.08, 0.14], [0, 0]]
+        // v12 lengthened the meteor tails. The trail is the only place a light
+        // curve is visible in ONE frame, and at 0.08-0.14 short sides against a
+        // 0.28-0.38 chord it covered a quarter to a half of the path with
+        // nothing along it to see. The ceiling is row[3][1], so raising a
+        // default raises the bound with it: a config that set the old value
+        // still validates, which is what keeps this a widening and not a
+        // rejection.
+        straight: [[0.7, 1.3], 0.72, 0.85, [0.13, 0.22], [0, 0]],
+        curved: [[0.9, 1.7], 0.20, 0.80, [0.11, 0.17], [0.005, 0.02]],
+        skipping: [[1.2, 2.2], 0.08, 0.70, [0.12, 0.19], [0, 0]]
     };
     var input = object(value), out = {}, names = Object.keys(defaults);
     for (var i = 0; i < names.length; i++) {

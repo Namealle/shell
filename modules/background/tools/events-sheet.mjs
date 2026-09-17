@@ -49,8 +49,8 @@ export function previewShader() {
     // whole v9 catalogue -- every family, the storm and the passage -- through
     // one shader in main()'s own composite order. The filter keeps this list
     // valid against an older frag.
-    const kernels = ["hash4", "tailSegment", "cometField", "supernovaField", "radialField",
-        "stormHash", "stormTrainSegment", "stormFireball", "meteorStorm", "nebulaTap", "nebulaStar",
+    const kernels = ["hash4", "lightCurve", "naProfile", "ablationStreak", "tailSegment", "cometField", "supernovaField", "radialField",
+        "stormHash", "stormTrainRay", "stormTrainSegment", "stormFireball", "meteorStorm", "nebulaTap", "nebulaStar",
         "nebulaField", "snPop", "snCurl", "snSlice", "supernovaRemnant", "eventSlot"]
         .filter(n => src.indexOf(n + "(") >= 0)
         .map(n => fragFunction(src, n)).join("\n\n");
@@ -75,6 +75,8 @@ layout(std140, binding = 0) uniform buf {
     vec4 stormHead; vec4 stormShape; vec4 stormColour; vec4 stormSpan;
     vec4 nebulaHead; vec4 nebulaShape; vec4 nebulaTone0; vec4 nebulaTone1;
     vec4 nebulaStars; vec4 nebulaStars2; vec4 nebulaBounds;
+    vec4 event0Burn; vec4 event1Burn; vec4 event2Burn;
+    vec4 meteorTone; vec4 stormTone; vec4 stormBurn; vec4 stormTrain; vec4 stormWind;
     float qt_Opacity;
 } ubuf;
 layout(binding = 2) uniform sampler2D bhNoise;
@@ -109,9 +111,9 @@ void main() {
     // not a third hand copy of one.
     vec4 remnant = supernovaRemnant(pixel);
     sky = sky * (1.0 - remnant.a) + remnant.rgb;
-    vec3 events = eventSlot(pixel, ubuf.event0Head, ubuf.event0Colour, ubuf.event0Tail01, ubuf.event0Tail23, ubuf.event0Tail4, ubuf.event0Shape, ubuf.event0Bounds);
-    events += eventSlot(pixel, ubuf.event1Head, ubuf.event1Colour, ubuf.event1Tail01, ubuf.event1Tail23, ubuf.event1Tail4, ubuf.event1Shape, ubuf.event1Bounds);
-    events += eventSlot(pixel, ubuf.event2Head, ubuf.event2Colour, ubuf.event2Tail01, ubuf.event2Tail23, ubuf.event2Tail4, ubuf.event2Shape, ubuf.event2Bounds);
+    vec3 events = eventSlot(pixel, ubuf.event0Head, ubuf.event0Colour, ubuf.event0Tail01, ubuf.event0Tail23, ubuf.event0Tail4, ubuf.event0Shape, ubuf.event0Bounds, ubuf.event0Burn, ubuf.meteorTone);
+    events += eventSlot(pixel, ubuf.event1Head, ubuf.event1Colour, ubuf.event1Tail01, ubuf.event1Tail23, ubuf.event1Tail4, ubuf.event1Shape, ubuf.event1Bounds, ubuf.event1Burn, ubuf.meteorTone);
+    events += eventSlot(pixel, ubuf.event2Head, ubuf.event2Colour, ubuf.event2Tail01, ubuf.event2Tail23, ubuf.event2Tail4, ubuf.event2Shape, ubuf.event2Bounds, ubuf.event2Burn, ubuf.meteorTone);
     events += radialField(pixel, ubuf.event3Head, ubuf.event3Colour, ubuf.event3Tail01, ubuf.event3Shape, ubuf.event3Bounds);
     events += radialField(pixel, ubuf.event4Head, ubuf.event4Colour, ubuf.event4Tail01, ubuf.event4Shape, ubuf.event4Bounds);
     events += radialField(pixel, ubuf.event5Head, ubuf.event5Colour, ubuf.event5Tail01, ubuf.event5Shape, ubuf.event5Bounds);
@@ -255,7 +257,11 @@ export function uniformText(width, height, entry) {
             w("Tail23", slotState.tail23);
             lines.push("event" + i + "Tail4 " + slotState.tail4.map(x => x.toFixed(6)).join(" "));
             w("Shape", slotState.shape); w("Bounds", slotState.bounds);
+            w("Burn", slotState.burn || [0.52, 0, 0, 0]);
         }
+        for (const [name, vec] of [["stormBurn", s.burn], ["stormTrain", s.train], ["stormWind", s.wind]])
+            if (vec) lines.push(name + " " + vec.map(y => y.toFixed(6)).join(" "));
+        lines.push("stormTone " + (entry.tone || [0, 0, 0, 4.5]).map(y => y.toFixed(6)).join(" "));
         return lines.join("\n") + "\n";
     }
     if (entry.block === "nebula") {
@@ -274,6 +280,8 @@ export function uniformText(width, height, entry) {
     }
     v("Shape", s.shape);
     v("Bounds", s.bounds);
+    v("Burn", s.burn || [0.52, 0, 0, 0]);
+    lines.push("meteorTone " + (entry.tone || [0, 0, 0, 4.5]).map(y => y.toFixed(6)).join(" "));
     // v9 supernova extras: four vectors beside the slot, zero for every other
     // family, so one uniforms file format covers the whole catalogue.
     const zero = [0, 0, 0, 0];

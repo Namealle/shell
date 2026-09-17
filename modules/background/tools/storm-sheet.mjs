@@ -46,7 +46,8 @@ function previewShader() {
     // remnant out of supernovaField into supernovaRemnant(), which is a SKY
     // layer this sheet never composites, so it is not lifted here and neither
     // is snPolar, which went with it.
-    const kernels = ["hash4", "tailSegment", "cometField", "supernovaField", "radialField", "stormHash", "stormTrainSegment", "stormFireball", "meteorStorm", "eventSlot"]
+    const kernels = ["hash4", "lightCurve", "naProfile", "ablationStreak", "tailSegment", "cometField", "supernovaField", "radialField", "stormHash", "stormTrainRay", "stormTrainSegment", "stormFireball", "meteorStorm", "eventSlot"]
+        .filter(n => src.indexOf(n + "(") >= 0)
         .map(n => fragFunction(src, n)).join("\n\n");
     return `#version 450 core
 layout(location = 0) in vec2 qt_TexCoord0;
@@ -62,6 +63,8 @@ layout(std140, binding = 0) uniform buf {
     vec4 snRemnant; vec4 snTone; vec4 snShell; vec4 snExtra;
     vec4 snBody; vec4 snHot; vec4 snWisp; vec4 snDust; vec4 snJet;
     vec4 stormHead; vec4 stormShape; vec4 stormColour; vec4 stormSpan;
+    vec4 event0Burn; vec4 event1Burn; vec4 event2Burn;
+    vec4 meteorTone; vec4 stormTone; vec4 stormBurn; vec4 stormTrain; vec4 stormWind;
     float qt_Opacity;
 } ubuf;
 
@@ -80,9 +83,9 @@ void main() {
     // main() adds the storm into the far-field accumulator, which is display-
     // encoded before the sky decode; on a #000000 sky that is exactly this.
     vec3 sky = meteorStorm(pixel);
-    vec3 events = eventSlot(pixel, ubuf.event0Head, ubuf.event0Colour, ubuf.event0Tail01, ubuf.event0Tail23, ubuf.event0Tail4, ubuf.event0Shape, ubuf.event0Bounds);
-    events += eventSlot(pixel, ubuf.event1Head, ubuf.event1Colour, ubuf.event1Tail01, ubuf.event1Tail23, ubuf.event1Tail4, ubuf.event1Shape, ubuf.event1Bounds);
-    events += eventSlot(pixel, ubuf.event2Head, ubuf.event2Colour, ubuf.event2Tail01, ubuf.event2Tail23, ubuf.event2Tail4, ubuf.event2Shape, ubuf.event2Bounds);
+    vec3 events = eventSlot(pixel, ubuf.event0Head, ubuf.event0Colour, ubuf.event0Tail01, ubuf.event0Tail23, ubuf.event0Tail4, ubuf.event0Shape, ubuf.event0Bounds, ubuf.event0Burn, ubuf.meteorTone);
+    events += eventSlot(pixel, ubuf.event1Head, ubuf.event1Colour, ubuf.event1Tail01, ubuf.event1Tail23, ubuf.event1Tail4, ubuf.event1Shape, ubuf.event1Bounds, ubuf.event1Burn, ubuf.meteorTone);
+    events += eventSlot(pixel, ubuf.event2Head, ubuf.event2Colour, ubuf.event2Tail01, ubuf.event2Tail23, ubuf.event2Tail4, ubuf.event2Shape, ubuf.event2Bounds, ubuf.event2Burn, ubuf.meteorTone);
     fragColor = vec4(clamp(encodeDisplay(decodeDisplay(sky) + decodeDisplay(events)), 0.0, 1.0), 1.0);
 }
 `;
@@ -95,6 +98,11 @@ function uniformText(width, height, frame) {
     v("stormShape", frame.storm.shape);
     v("stormColour", frame.storm.colour);
     v("stormSpan", frame.storm.span);
+    v("stormBurn", frame.storm.burn || [0.52, 0.09, 0, 0]);
+    v("stormTrain", frame.storm.train || [0, 0, 0, 0]);
+    v("stormWind", frame.storm.wind || [0, 0, 0, 0]);
+    v("stormTone", frame.tone || [0, 0, 0, 4.5]);
+    v("meteorTone", frame.tone || [0, 0, 0, 4.5]);
     frame.slots.forEach((s, i) => {
         v("event" + i + "Head", s.head);
         v("event" + i + "Colour", s.colour);
@@ -103,6 +111,7 @@ function uniformText(width, height, frame) {
         v("event" + i + "Tail4", s.tail4);
         v("event" + i + "Shape", s.shape);
         v("event" + i + "Bounds", s.bounds);
+        v("event" + i + "Burn", s.burn || [0.52, 0, 0, 0]);
     });
     return lines.join("\n") + "\n";
 }
@@ -144,11 +153,11 @@ function main() {
             const slot = h.stormFireballState(e, c);
             if (slot && slots.length < 3) slots.push(slot);
         }
-        while (slots.length < 3) slots.push({ head: [0, 0, 1, 0], colour: [0, 0, 0, 0], tail01: [0, 0, 0, 0], tail23: [0, 0, 0, 0], tail4: [0, 0], shape: [0, 0, 0, 0], bounds: [0, 0, 0, 0] });
+        while (slots.length < 3) slots.push({ head: [0, 0, 1, 0], colour: [0, 0, 0, 0], tail01: [0, 0, 0, 0], tail23: [0, 0, 0, 0], tail4: [0, 0], shape: [0, 0, 0, 0], bounds: [0, 0, 0, 0], burn: [0.52, 0, 0, 0] });
         const name = "t" + Math.round(age).toString().padStart(3, "0");
         const u = join(outDir, name + ".uniforms");
         const raw = join(outDir, label + "-" + name + ".f32");
-        writeFileSync(u, uniformText(W, H, { storm, slots }));
+        writeFileSync(u, uniformText(W, H, { storm, slots, tone: h.meteorToneVector(3) }));
         execFileSync(bhrender, [frag, String(W), String(H), u, raw], { stdio: ["ignore", "ignore", "pipe"] });
         manifest.push({
             name, raw, age: Number(age.toFixed(2)),

@@ -249,8 +249,8 @@ def main():
 
     # ---- M2 / M3 / M7 at each meteor's own peak -----------------------------
     print(f"\n== M2/M3/M7  at the light-curve peak ==")
-    print("   k   w(0.1) w(0.4) w(0.8)  ratio | core(0.1/0.4/0.8) ratio | headShare | rb: head .. tail     lead  green")
-    ratios, coreRatios, shares, greens, leads, rbspans = [], [], [], [], [], []
+    print("   k   w(0.1) w(0.4) w(0.8)  ratio | ridgeU mid/head | headShare | rb: head .. tail     lead  green")
+    ratios, coreRatios, shares, greens, leads, rbspans, ridgeUs, ridgeRat = [], [], [], [], [], [], [], []
     for m in manifest["meteors"]:
         c = m.get("stats")
         if not c:
@@ -275,15 +275,34 @@ def main():
         greens.append(max(gr[2:]) - gr[0] if len(gr) > 2 else 0)
         leads.append((lead["rb"] - rb[0]) if lead else 0)
         rbspans.append(max(rb) - min(rb))
+        ridgeUs.append(f.get("ridgeU", 0))
+        ridgeRat.append(f.get("ridgeMidHead", 0))
         print(f"  {m['index']:2d}  {wds[0]:6.2f} {wds[1]:6.2f} {wds[2]:6.2f}  {ratio:5.2f} | "
-              f"{cds[0]:5.2f} {cds[1]:5.2f} {cds[2]:5.2f}  {cratio:5.2f} | "
+              f"{f.get('ridgeU', 0):6.3f} {f.get('ridgeMidHead', 0):8.3f} | "
               f"{f.get('headShare', 0):7.3f} | " + " ".join(f"{x:+.3f}" for x in rb)
               + f"  {leads[-1]:+.3f}  {greens[-1]:+.3f}")
+    # THE LENS, measured late. At the light-curve peak the head IS the
+    # brightest point and should be; the fusiform only shows once the head has
+    # flown past its maximum and the trail covers it, which is exactly when a
+    # long exposure would record one. Measured at 0.85 of the path.
+    lateU, lateRat = [], []
+    for m in manifest["meteors"]:
+        frames = m["frames"]
+        i = int(np.argmin([abs(f.get("pathU", f["u"]) - 0.85) for f in frames]))
+        f = frames[i]
+        if f.get("ridgeU") is not None:
+            lateU.append(f["ridgeU"])
+            lateRat.append(f.get("ridgeMidHead", 0))
+    if lateU:
+        print(f"  late (path 0.85)  ridgeU {np.mean(lateU):.3f}   mid/head {np.mean(lateRat):.3f}")
+        report["M2late"] = dict(ridgeU=float(np.mean(lateU)), ridgeMidHead=float(np.mean(lateRat)))
     if ratios:
         print(f"  population  width ratio {np.mean(ratios):.2f}   core ratio {np.mean(coreRatios):.2f}   "
+              f"ridgeU {np.mean(ridgeUs):.3f}   mid/head {np.mean(ridgeRat):.3f}   "
               f"head share {np.mean(shares):.3f}   "
               f"rb span {np.mean(rbspans):.3f}   lead excess {np.mean(leads):+.3f}   green excess {np.mean(greens):+.3f}")
-        report["M2"] = dict(ratio=float(np.mean(ratios)), coreRatio=float(np.mean(coreRatios)))
+        report["M2"] = dict(ratio=float(np.mean(ratios)), coreRatio=float(np.mean(coreRatios)),
+                            ridgeU=float(np.mean(ridgeUs)), ridgeMidHead=float(np.mean(ridgeRat)))
         report["M3"] = dict(rbSpan=float(np.mean(rbspans)), leadExcess=float(np.mean(leads)), greenExcess=float(np.mean(greens)))
         report["M7"] = dict(headShare=float(np.mean(shares)))
 

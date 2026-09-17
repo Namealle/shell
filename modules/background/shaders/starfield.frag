@@ -168,6 +168,41 @@ layout(std140, binding = 0) uniform buf {
     vec4 nebulaStars;  // star0 x, y, star1 x, y (absolute px; far off = absent)
     vec4 nebulaStars2; // star2 x, y, coreSigmaPx, scatterSigmaPx
     vec4 nebulaBounds; // x0, y0, x1, y1
+    // ---- v12 METEORS, 128 B, APPENDED so every offset above is unchanged --
+    // Three per-slot vectors and five shared ones. They are at the END of the
+    // block on purpose: the offline sheets re-declare this layout by hand
+    // (events-sheet.mjs, storm-sheet.mjs, meteor-sheet.mjs) and appending
+    // cannot move anything they already read. Block 2080 -> 2208 B of 16384;
+    // offsets are read off the baked .qsb by tools/bh_probe.py --check, never
+    // added up by hand.
+    //
+    //   eventNBurn = (F, headPathU, pathSpan, speed01)
+    //     F           where along its own path this streak is brightest. The
+    //                 kernel this replaced peaked at 0.09 of the LIFE; the
+    //                 measured population is 0.52 +- 0.09 (Subasinghe, 113
+    //                 light curves). headPathU is where the head is NOW and
+    //                 pathSpan how much path the drawn trail covers, so a
+    //                 point on the trail can be lit by the light curve at the
+    //                 place the head was when it passed -- which is what makes
+    //                 a streak a lens instead of a taper off a dot.
+    //     speed01     the entry speed, normalised. The second spectrum (the
+    //                 violet-red leading edge) is absent below ~15 km/s.
+    //   meteorTone / stormTone = (naGain, trainGain, leadGain, curveSharp)
+    //     the three extra emitters' gains as a share of the head, and the
+    //     light curve's sharpness. Zero in all three disables the v12 colour
+    //     and leaves the shape change alone, which is how the config keys
+    //     switch it off.
+    //   stormBurn  = (curveF, curveSpread, flareShare, doublePeakShare)
+    //   stormTrain = (trainShare, trainWindow, trainSecLo, trainSecHi)
+    //   stormWind  = (windPxPerSec, foldSec, trainGain, diffuseSec)
+    vec4 event0Burn;
+    vec4 event1Burn;
+    vec4 event2Burn;
+    vec4 meteorTone;
+    vec4 stormTone;
+    vec4 stormBurn;
+    vec4 stormTrain;
+    vec4 stormWind;
     // -------------------------------------------------------------------
 #define BH_UNIFORMS
 #include "blackhole.glsl"
@@ -718,9 +753,158 @@ vec3 stars(vec2 pixel, float baseAngle, float scale, float layer, float captureP
     return light * tint * visibility * behaviour;
 }
 
+// ---- v12: THE ABLATION STREAK -------------------------------------------
+// "commets and metorieds ... they seems to be underdeveloped and unrealistic
+//  ... because the rail looks underdeveloped they just apper and disaper they
+//  dont burn change glare deform like a real once." (ledger 2404)
+//
+// Four verbs, and the kernel below this comment did none of them. It drew a
+// meteor BACKWARDS: brightest at entry (the envelope peaked at 9 % of the
+// life), decelerating 10.5x, with a trail that was five samples of the head's
+// own path -- so it could not be displaced, could not outlive the head, and
+// got SHORTER as the meteor aged.
+//
+// A real one is a 4 m column of vapour that RISES to a maximum around the
+// middle of its path and falls after it, and everything that makes the head
+// look like a glowing ball is bloom convolved with saturation, which is why
+// the saturated disc grows with the LOGARITHM of the brightness and why the
+// right way to draw a flare is to grow the disc rather than to raise a value
+// the display is already clipping.
+//
+// THE LIGHT CURVE. F is the fraction of the path flown before maximum;
+// measured over 113 light curves it is 0.52 +- 0.09.
+//   L(x) = (x/F)^a * ((1-x)/(1-F))^b,   a = s*F,  b = s*(1-F),  so F = a/(a+b)
+// One exp2 over two log2 rather than two pow(), and exactly 1 at x = F.
+//
+// A NUMBER WORTH KNOWING BEFORE TUNING `s`: the measured "pointedness"
+// P = width at -1 mag / width at -2 mag is 0.70 +- 0.05, and for this curve
+// family P = 1/sqrt(1 + 2^(-2/s)) at F = 0.5, which is bounded BELOW by
+// 1/sqrt(2) = 0.707 however sharp s is made. The measured 0.70 is not
+// reachable by making this curve sharper; it would need a different family.
+// s = 4.5 sits at P = 0.78, inside the acceptance window, with the half
+// maximum spanning about half the path -- a broad fusiform, which is what the
+// bolide reference is a photograph of.
+float lightCurve(float x, float F, float s) {
+    float u = clamp(x, 0.0005, 0.9995);
+    float f = clamp(F, 0.08, 0.92);
+    return exp2(s * (f * log2(u / f) + (1.0 - f) * log2((1.0 - u) / (1.0 - f))));
+}
+// Sodium's along-path profile, and the whole of "change colour" in one curve.
+// Na and K vaporise at ~99 km and "vaporization is almost complete before other
+// elements start to evaporate"; Fe, Mg and Si peak 5-15 km lower. Five km of
+// altitude at a 45 degree entry is 0.17 of a 42 km path and the 10-15 km figure
+// gives 0.33-0.50, so the warm emitter LEADS the maximum by roughly a quarter
+// of the path -- and Borovicka's Draconid 4 puts it plainly: "at the
+// disintegration end height, almost all the sodium had evaporated."
+//
+// So the meteor runs warm early and then STOPS being warm, and what is left
+// underneath is the blue-white of magnesium and iron. No hue is interpolated
+// into another anywhere in this: one emitter switches off and a different one
+// is what remains. That is his rule and the physics at the same time.
+float naProfile(float pu, float F) {
+    float c = (pu - clamp(F - 0.25, 0.06, 0.80)) * 3.3333333;
+    return exp2(-1.4426950 * c * c) * smoothstep(0.95, 0.62, pu);
+}
+// One segment of a streak's trail, and the shared body of every meteor in the
+// sky: eventSlot's style 0 calls it per polyline segment, meteorStorm calls it
+// once per accepted candidate with a straight radial ray.
+//   head  = (x, y, headSigmaPx, gain)
+//   shape = (totalPx, headShare, segments, glare)
+//   burn  = (F, headPathU, pathSpan, speed01)
+//   tone  = (naGain, trainGain, leadGain, curveSharp)
+//
+// THREE EMITTERS ON ONE CENTRELINE, each with its own along-path profile, its
+// own width and a FIXED tone. The colour along the path changes because which
+// emitter is bright there changes -- never because one hue is interpolated
+// into another, which is the rule the v12 supernova's grain populations were
+// built to obey as well (ledger 2403).
+//
+//   wake       the head's own tone, lit by the light curve where the head WAS
+//              when it passed. This is what turns a taper into a lens.
+//   Na sheath  fixed orange-yellow, the 589 nm doublet. Sodium is released at
+//              ~99 km, about 5 km ABOVE where magnesium and iron peak, and
+//              "almost all the sodium had evaporated" by the end: the warm
+//              tone LEADS the maximum by a quarter of the path and is gone
+//              before the meteor is.
+//   [O I] train  fixed green, the forbidden 557.7 nm line -- ATMOSPHERIC
+//              oxygen, not the meteoroid. It therefore exists only where the
+//              head has already been (zero at the head, rising behind it) and
+//              it is what is LEFT when the head dies.
+//
+// WIDTH GROWS WITH AGE. A real train expands radially at 10.5 m/s, near
+// constant and independent of altitude between 86 and 97 km, so the oldest
+// part is always the widest. Style 0 shipped 1.0 - 0.65u, shrinking by 65 %,
+// while stormTrainSegment forty lines down already had 0.55 + 1.4u. Two code
+// paths drawing the same physical object disagreed about its shape.
+vec3 ablationStreak(vec2 pixel, vec2 a, vec2 b, float travelled, vec4 head, vec4 shape, vec4 burn, vec4 tone, vec3 headTone) {
+    vec2 v = b - a;
+    float len = sqrt(dot(v, v));
+    if (len < 0.001) return vec3(0.0);
+    float t = clamp(dot(pixel - a, v) / (len * len), 0.0, 1.0);
+    float du = clamp((travelled + t * len) / max(shape.x, 0.001), 0.0, 1.0);
+    vec2 delta = pixel - mix(a, b, t);
+    float r2 = dot(delta, delta);
+    float sigma = max(head.z, 0.35);
+    // Compact support, cut where every emitter is already under a 255th: the
+    // widest is the saturation bloom at 2.4 x the local width, and the local
+    // width reaches 4.6 sigma at the far end, so 34 sigma is 3.1 of the widest
+    // Gaussian's own sigma and the taper below finishes it.
+    float support = sigma * 34.0;
+    if (r2 >= support * support) return vec3(0.0);
+    float w = sigma * (1.4 + 3.2 * du);
+    float pu = burn.y - du * burn.z;
+    float L = lightCurve(pu, burn.x, max(tone.w, 0.5));
+    float age = 1.0 - du;
+    float share = 2.0 * (1.0 - shape.y);
+    // The wake and its sodium are the vapour cloud, and a point in it stays
+    // lit for a fraction of a second; the [O I] train is atmospheric oxygen
+    // that keeps glowing for seconds. TWO DIFFERENT CLOCKS, which is what
+    // makes the near half of a streak white and the far half green -- one
+    // emitter has gone out and a different one has not. Nothing crossfades.
+    float fade = 0.30 + 0.70 * age;
+    // The wake fades behind the head on its own clock, ON TOP of the light
+    // curve: a point is lit by how bright the head was there and then goes out.
+    float wake = L * exp2(-1.4426950 * r2 / (w * w)) * fade;
+    // ...and it BLOOMS where it is bright, for the same reason the head does.
+    // A real train expands radially at only 10.5 m/s, which over the third of
+    // a second of path this trail covers is three metres against a four-metre
+    // head: the breadth in every photograph of a meteor is not the column
+    // getting wider, it is the point-spread function convolved with
+    // SATURATION. So the width here is driven by L squared -- a bright stretch
+    // flares out and a faint one stays a hairline, which is what the closeup
+    // reference shows (a trail four times wider than its own head three head
+    // widths behind it) and what the shipped taper could not do at all.
+    float wb = w * 2.4;
+    vec3 sum = headTone * ((wake + 0.30 * L * L * exp2(-1.4426950 * r2 / (wb * wb)) * fade) * share);
+    if (tone.x > 0.0) {
+        // Sodium is a neutral-atom line in the vapour cloud and it goes out
+        // FAST -- faster than the wake continuum it sits in. That is the third
+        // clock, and it is what leaves the far end of a bright streak to the
+        // green train alone instead of to a warm haze.
+        float wn = w * 1.15;
+        sum += vec3(1.00, 0.58, 0.19) * (tone.x * naProfile(pu, burn.x)
+             * exp2(-1.4426950 * r2 / (wn * wn)) * (0.10 + 0.90 * age * age) * share);
+    }
+    if (tone.y > 0.0) {
+        // The green train. sqrt(L) rather than L: the line saturates, so a
+        // faint stretch of path still leaves something behind it. The 0.55 is
+        // the width compensation -- this emitter is drawn 2.2 x wider than the
+        // wake, so at equal peak it would carry twice the FLUX and the streak
+        // reads as a green laser rather than as a white streak with a green
+        // train behind it. Checked on a 2x crop, not on a contact sheet.
+        float wt = w * 1.8;
+        float tr = smoothstep(0.0, 0.18, du) * sqrt(L)
+                 * exp2(-1.4426950 * r2 / (wt * wt)) * (0.62 + 0.38 * age);
+        sum += vec3(0.48, 1.00, 0.58) * (tone.y * 0.55 * tr * share);
+    }
+    // The same edge taper the shipped kernel used, so the bounding box can
+    // never cut a glow on a straight line.
+    return sum * (1.0 - smoothstep(0.64 * support * support, support * support, r2));
+}
 // CPU bounds and at most six connected segments across three generic slots.
 // Every segment uses total tail distance for opacity/width. max-combination
 // avoids bright joints; the nucleus is evaluated exactly once per slot.
+// STYLE 2 ONLY since v12 -- a meteor's trail is ablationStreak() above.
 float tailSegment(vec2 pixel, vec2 a, vec2 b, float travelled, vec4 head, vec4 shape, float style) {
     vec2 v = b - a;
     float length = sqrt(dot(v, v));
@@ -939,7 +1123,7 @@ float stormTrainSegment(vec2 pixel, vec2 a, vec2 b, float travelled, float total
 //   tail23 = (p2.xy, p3.xy)
 //   tail4  = (trainWidthPx, trainGain)
 //   shape  = (trainLengthPx, flashSigmaPx, nucleusGain, flashGain)
-vec3 stormFireball(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec2 tail4, vec4 shape) {
+vec3 stormFireball(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec2 tail4, vec4 shape, vec4 burn, vec4 tone) {
     vec2 p = pixel - head.xy;
     float r2 = dot(p, p);
     float sigma2 = head.z * head.z;
@@ -1037,15 +1221,38 @@ vec3 meteorStorm(vec2 pixel) {
         float bright = (0.28 + 0.72 * g.y * g.y * g.y) * env;
         float span = max(dh - dt, 1.0);
         float u = clamp((dh - d) / span, 0.0, 1.0);
+        // v12: the same light curve the slot meteors fly. The path fraction a
+        // drawn point was flown at is EXACT in theta and costs no
+        // transcendental, because theta = theta0 + omega*age: the head is at
+        // age/life of its path and the drawn trail covers
+        // min(trail, omega*age)/(omega*life) of it.
+        vec4 m = hash4(vec2(k * 0.017 + 3.77, seed + 19.13));
+        // A normal drawn from three uniforms: sd(u1+u2+u3-1.5) = 0.5 exactly,
+        // so 2*spread*(sum-1.5) has sd = spread.
+        float F = ubuf.stormBurn.x + 2.0 * ubuf.stormBurn.y * (m.x + m.y + m.z - 1.5);
+        // An earthgrazer skims, stays in thin air and brightens gradually: its
+        // curve is late-peaked by construction, which is most of why one reads
+        // as a different object rather than as a slow ordinary streak.
+        F = clamp(mix(F, 0.70 + 0.15 * m.x, grazer), 0.20, 0.90);
+        float pHead = age / life;
+        float pSpan = min(trail, omega * age + 0.004) / max(omega * life, 1e-5);
+        float L = lightCurve(pHead - u * pSpan, F, max(ubuf.stormTone.w, 0.5));
         float w = sigma * (1.0 + 2.4 * u);
         float over = max(d - dh, 0.0);
-        float body = exp2(-1.4426950 * (across * across + over * over) / (w * w)) * (1.0 - u) * sqrt(1.0 - u);
+        float across2 = across * across + over * over;
+        float body = exp2(-1.4426950 * across2 / (w * w)) * L * (0.35 + 0.65 * (1.0 - u));
         vec2 dir = vec2(cos(a), sin(a));
         vec2 q = pixel - (ubuf.stormHead.xy + dir * dh);
         float r2 = dot(q, q);
         float sigma2 = sigma * sigma;
         float variance = sigma2 + 0.0833333;
-        float value = 1.45 * exp2(-0.7213475 * r2 / variance) * sigma2 / variance + 0.85 * body;
+        // The head carries the light curve too, and its bloom grows with it:
+        // the same "the disc grows with log brightness" the slot meteors use,
+        // reached here through one extra exp2 rather than a uniform.
+        float glare = clamp(L * (0.35 + 0.65 * g.y), 0.0, 1.0);
+        float value = 1.45 * L * exp2(-0.7213475 * r2 / variance) * sigma2 / variance
+                    + (0.10 + 0.55 * glare) * exp2(-r2 / (sigma2 * (7.0 + 70.0 * glare)))
+                    + 0.85 * body;
         if (g.z < ubuf.stormSpan.z) {
             // Fragmenting: two siblings separate from the head after the split
             // and keep flying on their own slightly divergent rays.
@@ -1058,31 +1265,130 @@ vec3 meteorStorm(vec2 pixel) {
         // the sky's own palette is mixed into both by the same paletteMix the
         // ordinary meteors use.
         vec3 tint = mix(vec3(1.0, 0.72, 0.38), vec3(0.50, 1.0, 0.80), smoothstep(0.45, 1.15, omega));
-        sum += value * bright * mix(mix(tint, ubuf.stormColour.rgb, ubuf.stormColour.w), vec3(1.0), 0.45);
+        vec3 body3 = mix(mix(tint, ubuf.stormColour.rgb, ubuf.stormColour.w), vec3(1.0), 0.45);
+        sum += value * bright * body3;
+        // v12: the storm's streaks get the same three extra emitters the slot
+        // meteors do, on the same profiles, so a storm streak and an ordinary
+        // meteor are the same object drawn by two code paths instead of two
+        // different-looking things that happen to share a name.
+        if (ubuf.stormTone.x > 0.0 || ubuf.stormTone.y > 0.0) {
+            float puHere = pHead - u * pSpan;
+            float fadeHere = 0.30 + 0.70 * (1.0 - u);
+            float wn = w * 1.15, wt = w * 1.8;
+            vec3 extra = vec3(1.00, 0.58, 0.19)
+                * (ubuf.stormTone.x * naProfile(puHere, F)
+                   * exp2(-1.4426950 * across2 / (wn * wn))
+                   * (0.10 + 0.90 * (1.0 - u) * (1.0 - u)));
+            extra += vec3(0.48, 1.00, 0.58)
+                * (ubuf.stormTone.y * 0.55 * smoothstep(0.0, 0.18, u) * sqrt(L)
+                   * exp2(-1.4426950 * across2 / (wt * wt)) * (0.62 + 0.38 * (1.0 - u)) * 1.0);
+            // The head runs warm before maximum for the same reason the slot
+            // meteors do -- the sodium is where the head is.
+            extra += vec3(1.00, 0.58, 0.19) * (ubuf.stormTone.x * naProfile(pHead, F)
+                   * 1.2 * exp2(-0.7213475 * r2 / variance) * sigma2 / variance);
+            sum += extra * bright * 0.85;
+        }
     }
     return gain * max(sum, vec3(0.0));
 }
-vec3 eventSlot(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec2 tail4, vec4 shape, vec4 bounds) {
+vec3 eventSlot(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, vec2 tail4, vec4 shape, vec4 bounds, vec4 burn, vec4 tone) {
     if (head.w <= 0.0 || pixel.x < bounds.x || pixel.y < bounds.y || pixel.x > bounds.z || pixel.y > bounds.w) return vec3(0.0);
     // Style 7 is the storm's fireball; style 6 is the supernova and reaches its
     // own kernel through radialField below. Styles are dispatched from the top
     // down, so the two v9 additions cannot shadow each other.
-    if (colour.w > 6.5) return stormFireball(pixel, head, colour, tail01, tail23, tail4, shape);
+    // The storm's fireball reads the SHOWER's tone block, not the ordinary
+    // meteors' one: events.shower and events.meteors carry the same key names
+    // and are separately configured, and a fireball belongs to the shower.
+    if (colour.w > 6.5) return stormFireball(pixel, head, colour, tail01, tail23, tail4, shape, burn, ubuf.stormTone);
     if (colour.w > 4.5 && colour.w < 5.5) return cometField(pixel, head, colour, tail01, tail23, tail4, shape);
     if (colour.w > 2.5) return radialField(pixel, head, colour, tail01, shape, bounds);
     vec2 p = pixel - head.xy;
     float r2 = dot(p, p);
     float sigma2 = head.z * head.z;
     float variance = sigma2 + 0.0833333;
-    // shape.w is the HEAD FLASH for styles 0 and 2: the entry bloom of a
-    // meteor, and a satellite's glint. It widens the halo and the taper
-    // together, so the flash is a bloom rather than a brighter dot.
+    if (colour.w < 0.5) {
+        // ---- v12 STYLE 0: THE METEOR --------------------------------------
+        // shape.w is the GLARE, and it used to be the entry FLASH -- a bloom
+        // that existed for the first 16 % of the path and then never again,
+        // commented in the source as "the entry bloom of a meteor". There is
+        // no such thing. A head blooms where it is BRIGHT, which is around the
+        // middle of the path and at a terminal burst, and the bloom is the
+        // right place to put a flare because the saturated disc grows with the
+        // logarithm of the brightness while the value itself is clipped by the
+        // display and cannot show anything at all (V12 brief 1.4, 2.7).
+        float glare = clamp(shape.w, 0.0, 1.0);
+        float extent = head.z * (7.0 + 26.0 * glare);
+        float taper = 1.0 - smoothstep(0.64 * extent * extent, extent * extent, r2);
+        float hot = exp2(-0.7213475 * r2 / variance) * sigma2 / variance;
+        float bloom = exp2(-r2 / (sigma2 * (7.0 + 95.0 * glare)));
+        float headShare = 2.0 * shape.y;
+        vec3 nucleus = (hot * 1.35 + bloom * (0.10 + 0.70 * glare)) * taper
+                     * mix(colour.rgb, vec3(1.0), 0.60) * headShare;
+        // The HEAD's own colour changes along the path, and this is the part
+        // that answers "change" where he can actually see it -- on the
+        // brightest thing in the streak rather than only on the tail. The
+        // sodium sheath is a property of WHERE THE HEAD IS, so it belongs on
+        // the head as well as behind it: the meteor runs warm early, the warm
+        // emitter dies, and the blue-white left underneath is what it ends as.
+        if (tone.x > 0.0)
+            nucleus += vec3(1.00, 0.58, 0.19) * (tone.x * naProfile(burn.y, burn.x)
+                     * (hot * 0.90 + bloom * 0.30 * glare) * taper * headShare);
+        // The leading edge. Meteor spectra are TWO spectra at two temperatures
+        // in two places: the ~4000 K vapour cloud that is the head and the
+        // wake, and a ~10000 K component that forms IN FRONT of the meteoroid
+        // near the shock wave and is absent below about 15 km/s. It is drawn
+        // here rather than in the trail because it is physically ahead of the
+        // head, and a slow meteor gets none of it at all.
+        if (tone.z > 0.0 && burn.w > 0.25) {
+            vec2 dir = tail01.xy - tail01.zw;              // trail -> head
+            float dl = length(dir);
+            if (dl > 0.001) {
+                dir /= dl;
+                float along = dot(p, dir);
+                float gate = tone.z * smoothstep(0.25, 0.65, burn.w);
+                // Ca II at 393 nm and the N2 bands at 631 nm together, so the
+                // precursor is violet-RED rather than blue: it has to read as
+                // a DIFFERENT emitter from the blue-white head, not as more of
+                // the head.
+                //
+                // TWO PARTS, because at a real head's angular size that is
+                // what a camera records. A thin needle reaching ahead -- the
+                // shock-heated column itself -- and a violet-red FRINGE on the
+                // leading half of the head's own bloom, which is the part that
+                // survives being a couple of pixels across. The closeup
+                // reference shows both: a hairline precursor in front, and the
+                // violet edge on the saturated ball.
+                float forward = along / max(1e-4, sqrt(r2));
+                nucleus += vec3(1.00, 0.40, 0.90)
+                         * (gate * 0.85 * bloom * smoothstep(0.0, 0.85, forward) * taper);
+                float reach = head.z * 10.0;
+                if (along > 0.0 && along < reach) {
+                    float across = dot(p, vec2(-dir.y, dir.x));
+                    float wl = max(head.z * 0.80, 0.45);
+                    float fade = 1.0 - along / reach;
+                    nucleus += vec3(1.00, 0.40, 0.90)
+                             * (gate * fade * exp2(-1.4426950 * across * across / (wl * wl)));
+                }
+            }
+        }
+        vec3 trail = vec3(0.0);
+        if (shape.z > 0.5) trail = ablationStreak(pixel, tail01.xy, tail01.zw, 0.0, head, shape, burn, tone, colour.rgb);
+        float run = length(tail01.zw - tail01.xy);
+        if (shape.z > 1.5) trail = max(trail, ablationStreak(pixel, tail01.zw, tail23.xy, run, head, shape, burn, tone, colour.rgb));
+        run += length(tail23.xy - tail01.zw);
+        if (shape.z > 2.5) trail = max(trail, ablationStreak(pixel, tail23.xy, tail23.zw, run, head, shape, burn, tone, colour.rgb));
+        run += length(tail23.zw - tail23.xy);
+        if (shape.z > 3.5) trail = max(trail, ablationStreak(pixel, tail23.zw, tail4, run, head, shape, burn, tone, colour.rgb));
+        return head.w * (nucleus + trail);
+    }
+    // Styles 1 and 2 -- the satellite's glint and the slow wanderer -- are
+    // untouched by v12 and keep the kernel they were measured with.
     float flash = clamp(shape.w, 0.0, 1.0);
-    float extent = head.z * (colour.w > 0.5 && colour.w < 1.5 ? 14.0 : 6.0 + 12.0 * flash);
+    float extent = head.z * (colour.w < 1.5 ? 14.0 : 6.0 + 12.0 * flash);
     float taper = 1.0 - smoothstep(0.64 * extent * extent, extent * extent, r2);
     float hot = exp2(-0.7213475 * r2 / variance) * sigma2 / variance;
-    float glow = colour.w > 1.5 ? exp2(-r2 / (sigma2 * (6.0 + 40.0 * flash))) : exp2(-r2 / (sigma2 * (colour.w > 0.5 ? 32.0 : 6.0 + 34.0 * flash)));
-    vec3 nucleus = (hot * (colour.w > 1.5 ? 1.0 : 1.35) + glow * (colour.w > 0.5 ? 0.22 * flash : 0.12 + 0.62 * flash)) * taper * mix(colour.rgb, vec3(1.0), 0.60);
+    float glow = colour.w > 1.5 ? exp2(-r2 / (sigma2 * (6.0 + 40.0 * flash))) : exp2(-r2 / (sigma2 * 32.0));
+    vec3 nucleus = (hot * (colour.w > 1.5 ? 1.0 : 1.35) + glow * 0.22 * flash) * taper * mix(colour.rgb, vec3(1.0), 0.60);
     float tail = 0.0;
     if (shape.z > 0.5) tail = tailSegment(pixel, tail01.xy, tail01.zw, 0.0, head, shape, colour.w);
     float distance = length(tail01.zw - tail01.xy);
@@ -2155,9 +2461,9 @@ void legacyMain() {
     }
     // Captures have their own immutable rim fade; foreground passes stay in
     // front of the shadow and disk. Both are composed in linear light locally.
-    vec3 e0 = eventSlot(pixel,ubuf.event0Head,ubuf.event0Colour,ubuf.event0Tail01,ubuf.event0Tail23,ubuf.event0Tail4,ubuf.event0Shape,ubuf.event0Bounds);
-    vec3 e1 = eventSlot(pixel,ubuf.event1Head,ubuf.event1Colour,ubuf.event1Tail01,ubuf.event1Tail23,ubuf.event1Tail4,ubuf.event1Shape,ubuf.event1Bounds);
-    vec3 e2 = eventSlot(pixel,ubuf.event2Head,ubuf.event2Colour,ubuf.event2Tail01,ubuf.event2Tail23,ubuf.event2Tail4,ubuf.event2Shape,ubuf.event2Bounds);
+    vec3 e0 = eventSlot(pixel,ubuf.event0Head,ubuf.event0Colour,ubuf.event0Tail01,ubuf.event0Tail23,ubuf.event0Tail4,ubuf.event0Shape,ubuf.event0Bounds,ubuf.event0Burn,ubuf.meteorTone);
+    vec3 e1 = eventSlot(pixel,ubuf.event1Head,ubuf.event1Colour,ubuf.event1Tail01,ubuf.event1Tail23,ubuf.event1Tail4,ubuf.event1Shape,ubuf.event1Bounds,ubuf.event1Burn,ubuf.meteorTone);
+    vec3 e2 = eventSlot(pixel,ubuf.event2Head,ubuf.event2Colour,ubuf.event2Tail01,ubuf.event2Tail23,ubuf.event2Tail4,ubuf.event2Shape,ubuf.event2Bounds,ubuf.event2Burn,ubuf.meteorTone);
     e2 += radialField(pixel,ubuf.event3Head,ubuf.event3Colour,ubuf.event3Tail01,ubuf.event3Shape,ubuf.event3Bounds);
     e2 += radialField(pixel,ubuf.event4Head,ubuf.event4Colour,ubuf.event4Tail01,ubuf.event4Shape,ubuf.event4Bounds);
     e2 += radialField(pixel,ubuf.event5Head,ubuf.event5Colour,ubuf.event5Tail01,ubuf.event5Shape,ubuf.event5Bounds);
@@ -2270,9 +2576,9 @@ void main() {
     // the neighbouring stars by brightenNear's 1.5 shell radii. A pixel outside
     // those is bit-for-bit what it would have been with no supernova at all,
     // and tools/sn_flash.py proves it on real frames.
-    vec3 events = eventSlot(pixel,ubuf.event0Head,ubuf.event0Colour,ubuf.event0Tail01,ubuf.event0Tail23,ubuf.event0Tail4,ubuf.event0Shape,ubuf.event0Bounds);
-    events += eventSlot(pixel,ubuf.event1Head,ubuf.event1Colour,ubuf.event1Tail01,ubuf.event1Tail23,ubuf.event1Tail4,ubuf.event1Shape,ubuf.event1Bounds);
-    events += eventSlot(pixel,ubuf.event2Head,ubuf.event2Colour,ubuf.event2Tail01,ubuf.event2Tail23,ubuf.event2Tail4,ubuf.event2Shape,ubuf.event2Bounds);
+    vec3 events = eventSlot(pixel,ubuf.event0Head,ubuf.event0Colour,ubuf.event0Tail01,ubuf.event0Tail23,ubuf.event0Tail4,ubuf.event0Shape,ubuf.event0Bounds,ubuf.event0Burn,ubuf.meteorTone);
+    events += eventSlot(pixel,ubuf.event1Head,ubuf.event1Colour,ubuf.event1Tail01,ubuf.event1Tail23,ubuf.event1Tail4,ubuf.event1Shape,ubuf.event1Bounds,ubuf.event1Burn,ubuf.meteorTone);
+    events += eventSlot(pixel,ubuf.event2Head,ubuf.event2Colour,ubuf.event2Tail01,ubuf.event2Tail23,ubuf.event2Tail4,ubuf.event2Shape,ubuf.event2Bounds,ubuf.event2Burn,ubuf.meteorTone);
     events += radialField(pixel,ubuf.event3Head,ubuf.event3Colour,ubuf.event3Tail01,ubuf.event3Shape,ubuf.event3Bounds);
     events += radialField(pixel,ubuf.event4Head,ubuf.event4Colour,ubuf.event4Tail01,ubuf.event4Shape,ubuf.event4Bounds);
     events += radialField(pixel,ubuf.event5Head,ubuf.event5Colour,ubuf.event5Tail01,ubuf.event5Shape,ubuf.event5Bounds);
