@@ -64,7 +64,7 @@ layout(std140, binding = 0) uniform buf {
     vec4 event3Head; vec4 event3Colour; vec4 event3Tail01; vec4 event3Shape; vec4 event3Bounds;
     vec4 event4Head; vec4 event4Colour; vec4 event4Tail01; vec4 event4Shape; vec4 event4Bounds;
     vec4 event5Head; vec4 event5Colour; vec4 event5Tail01; vec4 event5Shape; vec4 event5Bounds;
-    vec4 snFlash; vec4 snTone; vec4 snShell; vec4 snExtra;
+    vec4 snRemnant; vec4 snTone; vec4 snShell; vec4 snExtra;
     vec4 stormHead; vec4 stormShape; vec4 stormColour; vec4 stormSpan;
     vec4 nebulaHead; vec4 nebulaShape; vec4 nebulaTone0; vec4 nebulaTone1;
     vec4 nebulaStars; vec4 nebulaStars2; vec4 nebulaBounds;
@@ -94,11 +94,9 @@ void main() {
     vec4 nebula = nebulaField(pixel);
     sky = sky * (1.0 - nebula.a) + nebula.rgb;
     if (ubuf.stormShape.w > 0.0) sky += decodeDisplay(meteorStorm(pixel));
-    if (ubuf.snFlash.z > 0.0) {
-        vec2 q = pixel - ubuf.snFlash.xy;
-        float lift = ubuf.snFlash.z * exp2(-0.7213475 * dot(q, q) / (ubuf.snFlash.w * ubuf.snFlash.w));
-        sky = sky * (1.0 + 2.5 * lift) + lift * 0.09 * vec3(0.72, 0.84, 1.0);
-    }
+    // v11: the supernova's whole-sky lift used to be copied here from main().
+    // It is gone from both (ledger 2286, "I don't like that my screen flashes"),
+    // so there is nothing global left to copy.
     vec3 events = eventSlot(pixel, ubuf.event0Head, ubuf.event0Colour, ubuf.event0Tail01, ubuf.event0Tail23, ubuf.event0Tail4, ubuf.event0Shape, ubuf.event0Bounds);
     events += eventSlot(pixel, ubuf.event1Head, ubuf.event1Colour, ubuf.event1Tail01, ubuf.event1Tail23, ubuf.event1Tail4, ubuf.event1Shape, ubuf.event1Bounds);
     events += eventSlot(pixel, ubuf.event2Head, ubuf.event2Colour, ubuf.event2Tail01, ubuf.event2Tail23, ubuf.event2Tail4, ubuf.event2Shape, ubuf.event2Bounds);
@@ -266,8 +264,8 @@ export function uniformText(width, height, entry) {
     v("Bounds", s.bounds);
     // v9 supernova extras: four vectors beside the slot, zero for every other
     // family, so one uniforms file format covers the whole catalogue.
-    const x = s.extras || { flash: [0, 0, 0, 1], tone: [0, 0, 0, 0], shell: [0, 0, 0, 0], extra: [0, 0, 0, 0] };
-    for (const [name, vec] of [["snFlash", x.flash], ["snTone", x.tone], ["snShell", x.shell], ["snExtra", x.extra]])
+    const x = s.extras || { remnant: [0, 0, 0, 0], tone: [0, 0, 0, 0], shell: [0, 0, 0, 0], extra: [0, 0, 0, 0] };
+    for (const [name, vec] of [["snRemnant", x.remnant], ["snTone", x.tone], ["snShell", x.shell], ["snExtra", x.extra]])
         lines.push(name + " " + vec.map(y => y.toFixed(6)).join(" "));
     return lines.join("\n") + "\n";
 }

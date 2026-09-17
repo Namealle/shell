@@ -47,9 +47,22 @@ Item {
             const e = field._state.events[8];
             const head = shader().event3Head.w > 0 ? shader().event3Head
                 : shader().event4Head.w > 0 ? shader().event4Head : shader().event5Head;
+            const bounds = shader().event3Head.w > 0 ? shader().event3Bounds
+                : shader().event4Head.w > 0 ? shader().event4Bounds : shader().event5Bounds;
             const pool = field._particles;
+            // v11, requirement A. Everything the episode can reach: the half
+            // width of the box the shader rejects on, and the radius of the
+            // widest live brightenNear glow. Between them they ARE the footprint
+            // -- the whole-sky lift that used to sit outside both is gone, so if
+            // these two stay local, nothing on the screen can flash.
+            let glow = 0;
+            for (const g of (pool.glows || []))
+                if (clock - g.start < g.decay && g.radius > glow)
+                    glow = g.radius;
             if (e && clock >= e.start && clock <= e.start + e.duration)
                 track.push({
+                    boundsReach: head.w > 0 ? Math.max(bounds.z - head.x, bounds.w - head.y) : 0,
+                    glow: glow,
                     t: clock,
                     age: clock - e.start,
                     x: e.site ? e.site[0] : 0,
@@ -205,6 +218,15 @@ Item {
                 expect("and it is replaced by real debris", pool.transientCount >= 150 && pool.counters.debris >= 150, pool.counters.debris + " debris particles, " + pool.transientCount + " alive");
                 expect("the shock shoves the stars it reaches", pool.counters.kicked > 8, pool.counters.kicked + " kicks delivered in the first three seconds, " + pool.kickAlive + " particles carrying a peculiar velocity");
                 expect("the field itself is not thinned by the explosion", pool.aliveCount - pool.transientCount > 0.9 * (before - 1), (pool.aliveCount - pool.transientCount) + " stars against " + before + " before");
+                // v11, requirement A: "I don't like that my screen flashes
+                // during the explosion". The flash lights the neighbourhood it
+                // stands in and nothing else. v10 lit 0.55 of the LONG side --
+                // 1584 px here, past every corner of the shell.
+                const lit = track.filter(f => f.detonated && f.glow > 0);
+                const cap = 1.5 * e.shell;
+                expect("the flash lights only its own neighbourhood",
+                    lit.length > 0 && lit.every(f => f.glow <= cap + 0.5),
+                    lit.length ? "brightenNear radius " + lit[0].glow.toFixed(0) + " px against 1.5 shell radii = " + cap.toFixed(0) + " px (v10: " + (0.55 * Math.max(root.width, root.height)).toFixed(0) + " px)" : "no glow");
             } else if (step === 3) {
                 const e = field._state.events[8];
                 advanceBy(28, 0.5);
@@ -235,6 +257,22 @@ Item {
                 expect("every ember is gone when the episode ends", pool.transientCount === 0, pool.transientCount + " transient particles left");
                 expect("and the field is whole again", pool.aliveCount >= 0.9 * pool.targetPopulation, pool.aliveCount + " of " + pool.targetPopulation);
                 expect("the slot is released", shader().event3Head.w === 0 && shader().event4Head.w === 0 && shader().event5Head.w === 0);
+                // v11, requirement A, the whole life cycle at once: nothing the
+                // episode ever published can reach a pixel outside its own box,
+                // because there is no term outside the box any more. The cap is
+                // a third of the SHORT side, which on this buffer is 600 px --
+                // against the 1584 px radius the sky lift used to cover, and
+                // against a screen half-diagonal of 1698 px.
+                let widest = 0, widestAt = 0;
+                for (const f of track)
+                    if (f.boundsReach > widest) {
+                        widest = f.boundsReach;
+                        widestAt = f.age;
+                    }
+                const short = Math.min(root.width, root.height);
+                expect("and nothing it drew ever reached past its own box",
+                    widest > 0 && widest <= 0.34 * short,
+                    "widest published reach " + widest.toFixed(0) + " px at t+" + widestAt.toFixed(0) + " s = " + (widest / short).toFixed(3) + " of the short side");
             } else if (step === 5) {
                 // The other regime: with the hole on, the debris is under
                 // gravity and the field crosses the screen in seconds, so the

@@ -101,11 +101,14 @@ layout(std140, binding = 0) uniform buf {
     // dramatic cooldown is 900 s against a ~290 s life - so the life cycle's
     // fifth through eighth vectors ride beside the phenomenon slots instead of
     // costing a slot nothing else would use.
-    //   snFlash = (x, y, skyLiftGain, skyLiftRadiusPx)   read by main(), global
-    //   snTone  = (secondR, secondG, secondB, turbulencePhase)
-    //   snShell = (innerRadiusPx, innerGain, nebulaRadiusPx, nebulaGain)
-    //   snExtra = (spikeGain, spikeLengthPx, pulsarGain, seedAngle)
-    vec4 snFlash;
+    //   snRemnant = (siteX, siteY, radiusPx, bodyGain)  the remnant's own frame
+    //   snTone    = (rimR, rimG, rimB, turbulencePhase)
+    //   snShell   = (shockRadiusPx, shockGain, shockWidthPx, innerGain)
+    //   snExtra   = (spikeGain, spikeLengthPx, pulsarGain, seedAngle)
+    // v11 renamed snFlash -> snRemnant. It used to carry the whole-sky lift
+    // gain, which is gone (see main()); it now carries the comoving frame the
+    // remnant kernel below is drawn in, which is the vector that replaced it.
+    vec4 snRemnant;
     vec4 snTone;
     vec4 snShell;
     vec4 snExtra;
@@ -1538,16 +1541,17 @@ void main() {
     // coverage, not by the alpha its shading left: a middle star crossing the
     // material sinks into it instead of riding over the top of it.
     vec3 linearColour = disk.rgb+(1.0-disk.a)*far+(1.0-diskOcclusion)*material+ahead*shadowPass;
-    // v9 SUPERNOVA, the core-collapse flash: for a second or two the whole sky
-    // is lit by it. The lift SCALES the sky already there (which is what light
-    // arriving at dust and stars does) and adds a flat haze on top, so it can
-    // reach every pixel and still return to exactly #000000 - a multiply leaves
-    // a black pixel black, and both terms ease to zero with the flash.
-    if (ubuf.snFlash.z>0.0) {
-        vec2 q = pixel-ubuf.snFlash.xy;
-        float lift = ubuf.snFlash.z*exp2(-0.7213475*dot(q,q)/(ubuf.snFlash.w*ubuf.snFlash.w));
-        linearColour = linearColour*(1.0+2.5*lift)+lift*0.09*vec3(0.72,0.84,1.0);
-    }
+    // v11 REMOVED: the v9/v10 core-collapse SKY LIFT lived here. It multiplied
+    // every pixel of the screen by 1 + 2.5*gauss and added a flat haze, which
+    // is what "I don't like that my screen flashes during the explosion"
+    // (ledger 2286) was about. Measured on his tablet before it went: the whole
+    // -frame mean went 12.7 -> 54.0 of 255 in one second, a 4.3x lift on pixels
+    // a thousand px from the site. Nothing global replaces it. The detonation
+    // is still the brightest moment on the screen, but every term that makes it
+    // so is now bounded: the core and its bloom by the slot's own `bounds` box,
+    // the neighbouring stars by brightenNear's 1.5 shell radii. A pixel outside
+    // those is bit-for-bit what it would have been with no supernova at all,
+    // and tools/sn_flash.py proves it on real frames.
     vec3 events = eventSlot(pixel,ubuf.event0Head,ubuf.event0Colour,ubuf.event0Tail01,ubuf.event0Tail23,ubuf.event0Tail4,ubuf.event0Shape,ubuf.event0Bounds);
     events += eventSlot(pixel,ubuf.event1Head,ubuf.event1Colour,ubuf.event1Tail01,ubuf.event1Tail23,ubuf.event1Tail4,ubuf.event1Shape,ubuf.event1Bounds);
     events += eventSlot(pixel,ubuf.event2Head,ubuf.event2Colour,ubuf.event2Tail01,ubuf.event2Tail23,ubuf.event2Tail4,ubuf.event2Shape,ubuf.event2Bounds);

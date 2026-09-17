@@ -274,7 +274,7 @@ that keeps all three true at once.
 - **Style ids.** `eventSlot` dispatches from the top down: **7** is the storm's fireball (`stormFireball`), **6** is the supernova (`supernovaField`, reached through
   `radialField`), 5 the comet, 3-4 radial, 0-2 the point kernels. Both v9 tests are bounded on BOTH sides (`> 5.5 && < 6.5` for the supernova, `> 6.5` for the
   fireball), so neither can shadow the other and a slot carrying one can never fall into the other's kernel.
-- **One UBO block, in this order:** supernova `snFlash/snTone/snShell/snExtra` (64 B), storm `stormHead/Shape/Colour/Span` (64 B), nebula
+- **One UBO block, in this order:** supernova `snRemnant/snTone/snShell/snExtra` (64 B), storm `stormHead/Shape/Colour/Span` (64 B), nebula
   `nebulaHead/Shape/Tone0/Tone1/Stars/Stars2/Bounds` (112 B). **1600 → 1840 B of 16384**, read off the driver's own reflection
   (`BHRENDER_LAYOUT=1 bhrender frag 4 4 /dev/null /dev/null` prints the block size and every member's offset), never added up by hand. The same order is written into
   `Starfield.qml`'s ShaderEffect properties and into every offline tool that re-declares the block.
@@ -429,7 +429,7 @@ the drift: that flow is area-preserving (tangential stretch r′/r, radial squas
 own expansion — which is the truth for a source that far away. The particles' z/z′ perspective was the other candidate and cannot carry a life cycle at all: at the
 shipped `speed` 6 and `depth` 16 the camera crosses the whole depth in 60 active seconds, so a 3-D-anchored event would leave the screen before its shell finished.
 Channels: head=(x, y, coreSigmaPx, peak), colour=(r, g, b, 6), tail01=(haloSigmaPx, haloGain, coreGain, shellGain), shape=(shellRadiusPx, shellWidthPx, filamentAmp,
-toneWeight), plus `snFlash`=(x, y, skyLiftGain, skyLiftRadiusPx), `snTone`=(secondR, secondG, secondB, advectionPhase), `snShell`=(innerRadiusPx, innerGain,
+toneWeight), plus `snRemnant`=(x, y, skyLiftGain, skyLiftRadiusPx), `snTone`=(secondR, secondG, secondB, advectionPhase), `snShell`=(innerRadiusPx, innerGain,
 nebulaRadiusPx, nebulaGain), `snExtra`=(spikeGain, spikeLengthPx, pulsarGain, seedAngle). Every gain except the sky lift is a fraction of head.w, the same convention
 style 3 uses. The advection phase is the episode's own age × 0.05 and is NEVER wrapped: it indexes a noise field, where a wrap is a jump.
 v9 supernova key changes: `precursorSec`, `flashShortSide`, `skyLift`, `spikeGain`, `shellSec`, `filaments`, `remnantGain`, `pulsarGain`, `pulsarPeriodSec` are new;

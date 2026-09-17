@@ -1619,17 +1619,26 @@ Item {
             // hash stream, so an edit only reaches the NEXT episode.
             e.precursor = sample("precursorSec", [10, 20], 0, 120, 19);
             e.rise = Math.max(0.8, sample("riseSec", [0.8, 1.5], 0, 600, 3));
-            e.hold = sample("holdSec", [0.6, 1.6], 0, 600, 5);
+            // v11: the bloom may sit at its widest for 0.16-0.28 s, not 0.6-1.6.
+            // Requirement A allows a ~10 % bloom for at most 0.4 s, and the
+            // measured window above 95 % of peak width is the eased tail of the
+            // rise plus this hold: 0.28-0.40 s (tools/sn_flash.py --bloom).
+            e.hold = sample("holdSec", [0.16, 0.28], 0, 600, 5);
             e.decay = sample("decaySec", [25, 60], 1, 600, 7);
             e.shellSpan = sample("shellSec", [30, 90], 5, 600, 21);
             e.remnant = sample("remnantSec", [120, 300], 1, 1800, 9);
             e.duration = e.precursor + e.rise + e.hold + e.shellSpan + e.remnant;
             // Both are the drawn DIAMETER as a share of the short side, halved
             // here into the radius everything downstream works in.
-            e.flash = 0.5 * sample("flashShortSide", [0.15, 0.25], 0, 0.6, 23) * shortSide;
+            // v11 halved the flash: 0.15-0.25 of the short side put the bloom's
+            // visible disc at 20 % of the screen's short side, which with the
+            // sky lift gone is the only thing left that could still read as
+            // "the screen flashed". 0.08-0.12 puts it at 9-13 %, against a hard
+            // core of 4-5 %, which is requirement A's 3-6 % core and ~10 %
+            // bloom. Measured with tools/sn_flash.py, not chosen by eye.
+            e.flash = 0.5 * sample("flashShortSide", [0.08, 0.12], 0, 0.6, 23) * shortSide;
             e.shell = 0.5 * sample("shellShortSide", [0.25, 0.40], 0, 0.6, 11) * shortSide;
             e.shellGain = value("shellGain", 0.55, 0.80);
-            e.skyLift = value("skyLift", 0.35, 1);
             e.spikeGain = value("spikeGain", 0.55, 1.5);
             e.filaments = value("filaments", 0.55, 1);
             e.remnantGain = value("remnantGain", 0.26, 0.40);
@@ -1870,10 +1879,10 @@ Item {
     // plus four vectors of its own, because one supernova is alive at a time
     // (the dramatic cooldown is 900 s against a ~290 s life) and a phenomenon
     // slot's five vectors cannot carry a flash, a shock and a nebula at once:
-    //   snFlash = (x, y, skyLiftGain, skyLiftRadiusPx)   read by main(), global
-    //   snTone  = (secondR, secondG, secondB, turbulencePhase)
-    //   snShell = (innerRadiusPx, innerGain, nebulaRadiusPx, nebulaGain)
-    //   snExtra = (spikeGain, spikeLengthPx, pulsarGain, seedAngle)
+    //   snRemnant = (siteX, siteY, radiusPx, bodyGain)   the remnant's own frame
+    //   snTone    = (rimR, rimG, rimB, turbulencePhase)
+    //   snShell   = (shockRadiusPx, shockGain, shockWidthPx, innerGain)
+    //   snExtra   = (spikeGain, spikeLengthPx, pulsarGain, seedAngle)
     // Every gain except the sky lift is a FRACTION of head.w, the same
     // convention style 3 uses, so one multiply in the shader reproduces them.
     function supernovaState(e: var, age: real): var {
@@ -1893,7 +1902,7 @@ Item {
         // sweeps through it rather than expanding with the front. Only the GAIN
         // enlarges the box the shader pays for (see `reach` below).
         let nebulaR = e.shell * 0.92, nebulaAbs = 0, pulsarAbs = 0, spikeAbs = 0, spikeLen = 0;
-        let lift = 0, filaments = 0, tone = 0;
+        let filaments = 0, tone = 0;
         let colour = e.colour, second = e.peakColour;
         // v10: the shell's clock starts at the DETONATION, not at the end of
         // the flash. The shock leaves when the star explodes -- that is the
@@ -1961,7 +1970,15 @@ Item {
             const fade = Math.exp(-3 * d / Math.max(0.001, e.decay));
             const k = ease(d / Math.max(0.001, e.decay * 0.8));
             core = e.core * (3.6 - 2.4 * k);
-            halo = (e.flash / 1.6) * (1 - k) + e.core * 4.5 * k;
+            // v11: the bloom's SIZE collapses in under half a second while its
+            // LIGHT still fades over `decay`. It used to shrink on the decay's
+            // own clock (25-60 s), which left a disc a tenth of the short side
+            // across parked on the screen for half a minute -- the part of "my
+            // screen flashes during the explosion" that would have survived
+            // deleting the sky lift. The photosphere of a real collapse shrinks
+            // too, so this is the honest envelope as well as the quieter one.
+            const kh = ease(d / 0.45);
+            halo = (e.flash / 1.6) * (1 - kh) + e.core * 4.5 * kh;
             coreAbs = e.gain * fade * 0.34;
             haloAbs = e.gain * fade * 0.66;
             colour = e.peakColour;
@@ -2006,16 +2023,17 @@ Item {
             innerAbs = e.shellGain * 0.50 * ease(shockU / 0.05) * Math.pow(1 - shockU, 2.4);
             filaments = Math.max(filaments, e.filaments * ease(shockU / 0.35));
         }
-        // The spikes and the sky lift belong to the collapse alone. The lift is
-        // ABSOLUTE (main() multiplies the sky it already has by 1 + 2.5*lift and
-        // adds a flat haze of 0.09*lift), which is why it can light the whole
-        // screen and still return to exactly #000000: it scales what is there.
+        // The spikes belong to the collapse alone. v11 deleted the SKY LIFT that
+        // used to be computed beside them: it was an absolute gain main() used
+        // to multiply every pixel of the screen by, and it is the thing he
+        // objected to (ledger 2286). Nothing global replaces it; the diffraction
+        // spikes are the only part of the collapse that reaches past the bloom,
+        // and they are inside the slot's own `bounds` box like everything else.
         if (age >= e.precursor && age < flashEnd + 2.5) {
             const rising = ease((age - e.precursor) / e.rise);
             const falling = age < flashEnd ? 1 : ease((flashEnd + 2.5 - age) / 2.5);
             spikeAbs = e.gain * e.spikeGain * 0.45 * rising * falling;
             spikeLen = e.flash * 2.6;
-            lift = e.skyLift * rising * (age < flashEnd ? 1 : ease((flashEnd + 1.8 - age) / 1.8));
         }
         const peak = Math.max(Math.max(coreAbs + haloAbs, spikeAbs), Math.max(shellAbs + innerAbs, nebulaAbs + pulsarAbs));
         if (peak <= 0.0004)
@@ -2041,10 +2059,11 @@ Item {
             // eases back inside it over three seconds, as it always has.
             exempt: ease((flashEnd + 3 - age) / 3),
             extras: {
-                // 0.55 of the long side leaves the corners at 56 % of the
-                // centre: global, but with a gradient, so it reads as light
-                // arriving from somewhere rather than as a flat wash.
-                flash: [site[0], site[1], lift, 0.55 * Math.max(w, h)],
+                // v11. This vector used to be the sky lift's gain and radius.
+                // It is now the remnant's own frame: where it is, how big it is
+                // and how bright its body is. Nothing in it reaches a pixel
+                // outside `radiusPx`, which is the whole difference.
+                remnant: [site[0], site[1], nebulaR, nebulaAbs],
                 // The advection phase is the episode's own age and is NEVER
                 // wrapped: it indexes a noise field, where a wrap is a jump. An
                 // episode is bounded well under 2000 s, so 0.05 * age stays
@@ -2221,8 +2240,15 @@ Item {
                 t0: 0.02,
                 group: 1
             });
-            // The flash lights the neighbourhood it is standing in.
-            ParticlePhysics.brightenNear(P, at[0], at[1], 0.55 * Math.max(w, h), 1.7, Math.max(2.5, e.rise + e.hold + 2));
+            // The flash lights the neighbourhood it is standing in -- and ONLY
+            // the neighbourhood. v10 used 0.55 of the LONG side, which on his
+            // tablet is 1690 px: every star on the screen brightened at once,
+            // which is a sky flash made out of particles rather than out of a
+            // uniform, and deleting main()'s lift without this would have left
+            // half of it behind. 1.5 shell radii is the radius requirement A
+            // names, it is bounded by the episode's own geometry, and the gain
+            // goes up because a smaller neighbourhood may be lit harder.
+            ParticlePhysics.brightenNear(P, at[0], at[1], 1.5 * supernovaShellReach(e), 2.4, Math.max(2.5, e.rise + e.hold + 2));
             e.shockAt = 0;
             return;
         }
@@ -2994,7 +3020,7 @@ Item {
         for (const state of live)
             if (state && state.extras && !extras)
                 extras = state.extras;
-        shader.snFlash = extras ? Qt.vector4d(extras.flash[0], extras.flash[1], extras.flash[2], extras.flash[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snRemnant = extras ? Qt.vector4d(extras.remnant[0], extras.remnant[1], extras.remnant[2], extras.remnant[3]) : Qt.vector4d(0, 0, 0, 0);
         shader.snTone = extras ? Qt.vector4d(extras.tone[0], extras.tone[1], extras.tone[2], extras.tone[3]) : Qt.vector4d(0, 0, 0, 0);
         shader.snShell = extras ? Qt.vector4d(extras.shell[0], extras.shell[1], extras.shell[2], extras.shell[3]) : Qt.vector4d(0, 0, 0, 0);
         shader.snExtra = extras ? Qt.vector4d(extras.extra[0], extras.extra[1], extras.extra[2], extras.extra[3]) : Qt.vector4d(0, 0, 0, 0);
@@ -4199,7 +4225,7 @@ Item {
         // supernova (64 B), storm (64 B), nebula (112 B), 1600 -> 1840 B.
         // v9 supernova extras, 64 B. One supernova is alive at a time, so these
         // ride beside the phenomenon slots rather than inside one.
-        property vector4d snFlash: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snRemnant: Qt.vector4d(0, 0, 0, 0)
         property vector4d snTone: Qt.vector4d(0, 0, 0, 0)
         property vector4d snShell: Qt.vector4d(0, 0, 0, 0)
         property vector4d snExtra: Qt.vector4d(0, 0, 0, 0)

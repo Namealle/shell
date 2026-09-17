@@ -319,10 +319,13 @@ var EVENT_FAMILY_SPEC = {
         everyHours: [[0.5, 1], "hours"],
         precursorSec: [[10, 20], "pair", 0, 120],
         riseSec: [[0.8, 1.5], "pair", RISE_FLOOR, 30],
-        holdSec: [[0.6, 1.6], "pair", 0, 30],
+        holdSec: [[0.16, 0.28], "pair", 0, 30],
         decaySec: [[25, 60], "pair", 1, 600],
-        flashShortSide: [[0.15, 0.25], "pair", 0, 0.6],
-        skyLift: [0.35, "num", 0, 1],
+        // v11: the bloom is half what it was and `skyLift` is gone with the
+        // whole-sky lift it drove (ledger 2286). A document that still
+        // carries the key is accepted and the key is dropped, like any
+        // other retired one.
+        flashShortSide: [[0.08, 0.12], "pair", 0, 0.6],
         spikeGain: [0.55, "num", 0, 1.5],
         gain: [1.35, "num", 0, 1.35],
         shellSec: [[30, 90], "pair", 5, 600],

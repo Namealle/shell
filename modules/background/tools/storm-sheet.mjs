@@ -56,7 +56,7 @@ layout(std140, binding = 0) uniform buf {
     vec2 event1Tail4; vec4 event1Shape; vec4 event1Bounds;
     vec4 event2Head; vec4 event2Colour; vec4 event2Tail01; vec4 event2Tail23;
     vec2 event2Tail4; vec4 event2Shape; vec4 event2Bounds;
-    vec4 snFlash; vec4 snTone; vec4 snShell; vec4 snExtra;
+    vec4 snRemnant; vec4 snTone; vec4 snShell; vec4 snExtra;
     vec4 stormHead; vec4 stormShape; vec4 stormColour; vec4 stormSpan;
     float qt_Opacity;
 } ubuf;

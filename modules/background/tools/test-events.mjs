@@ -561,10 +561,16 @@ function tests() {
         // extra uniform vectors live outside the slot on exactly that basis.
         check("the life cycle fits inside the dramatic cooldown", e.duration < 900,
             e.duration.toFixed(1) + " s < 900 s");
-        // Sizes, in SHORT SIDES across, against the brief: flash 15-25 %, shell
+        // Sizes, in SHORT SIDES across, against the brief: flash 8-12 %, shell
         // 25-40 %. Both keys are diameters, so this is the captured value.
+        // v11 halved the flash. Requirement A allows a hard core of 3-6 % and a
+        // bloom to about 10 %: 0.15-0.25 put the bloom's 64/255 disc at a fifth
+        // of the screen's short side, which with the sky lift gone was the only
+        // thing left that could still read as the screen flashing. Measured on
+        // the shipped envelope by tools/sn_bloom.mjs: peak 9.1 % for 0.35 s,
+        // hard core 3.4 %.
         const shortSide = 1800;
-        check("the flash is 15-25 % of the short side across", 2 * e.flash / shortSide >= 0.15 && 2 * e.flash / shortSide <= 0.25,
+        check("the flash is 8-12 % of the short side across", 2 * e.flash / shortSide >= 0.08 && 2 * e.flash / shortSide <= 0.12,
             (2 * e.flash / shortSide * 100).toFixed(1) + " % (" + (2 * e.flash).toFixed(0) + " px)");
         check("the shell reaches 25-40 % of the short side across", 2 * e.shell / shortSide >= 0.25 && 2 * e.shell / shortSide <= 0.40,
             (2 * e.shell / shortSide * 100).toFixed(1) + " % (" + (2 * e.shell).toFixed(0) + " px)");
@@ -575,11 +581,11 @@ function tests() {
         const dt = 1 / 30;
         let worst = { channel: "", step: 0, at: 0 };
         let previous = null;
-        const limits = { gain: 0.09, sigma: 0.06, colour: 0.10, radius: 0.06, lift: 0.09 };
+        const limits = { gain: 0.09, sigma: 0.06, colour: 0.10, radius: 0.06 };
         for (let f = 0; f * dt <= e.duration; ++f) {
             h2._state.clock = e.start + f * dt;
             const s = h2.radialState(e);
-            const x = s.extras || { flash: [0, 0, 0, 1], tone: [0, 0, 0, 0], shell: [0, 0, 0, 0], extra: [0, 0, 0, 0] };
+            const x = s.extras || { remnant: [0, 0, 0, 0], tone: [0, 0, 0, 0], shell: [0, 0, 0, 0], extra: [0, 0, 0, 0] };
             const now = {
                 // Absolute gains, so a change of the peak that the fractions
                 // exactly cancel is correctly read as no change at all.
@@ -595,12 +601,15 @@ function tests() {
                 colourR: s.colour[0],
                 colourG: s.colour[1],
                 colourB: s.colour[2],
-                lift: x.flash[2]
+                // v11: `lift` was the sky lift's gain and is gone. The remnant's
+                // own body gain took the vector and is the channel worth the
+                // same continuity check -- it is what draws the gas.
+                body: x.remnant[3]
             };
             if (previous && s.head[3] > 0 && previous.gain + previous.shell + previous.nebula > 0)
                 for (const key of Object.keys(now)) {
                     const step = Math.abs(now[key] - previous[key]);
-                    const limit = key.startsWith("colour") ? limits.colour : key === "lift" ? limits.lift
+                    const limit = key.startsWith("colour") ? limits.colour
                         : key === "sigma" || key === "halo" ? limits.sigma
                             : key === "radius" || key === "nebulaR" ? limits.radius : limits.gain;
                     if (step > limit && step / limit > worst.step) worst = { channel: key, step: step / limit, at: f * dt, value: step, limit };
@@ -609,18 +618,27 @@ function tests() {
         }
         check("no channel of the life cycle steps between two frames", worst.step === 0,
             worst.step ? worst.channel + " stepped " + worst.value.toFixed(4) + " (limit " + worst.limit + ") at " + worst.at.toFixed(2) + " s" : "13 channels, " + Math.round(e.duration * 30) + " frames");
-        // The sky lift is the one absolute term, and it has to return to zero:
-        // the sky must be #000000 again the moment the flash is over.
-        let liftAfter = 0, liftPeak = 0;
+        // v11, requirement A. There is no absolute term left. The v9/v10 sky
+        // lift lived on this vector and reached every pixel of the screen; what
+        // replaced it is the remnant's own frame, and the strongest thing that
+        // can be said about the whole episode from the CPU side is that nothing
+        // it ever publishes reaches outside the bounds box the shader rejects
+        // on. Swept over the life cycle at 30 Hz. The cap is a third of the
+        // SHORT side -- 600 px here, against the 1584 px radius the lift used to
+        // cover and a screen half-diagonal of 1698 px.
+        let widest = 0, widestAt = 0, anyDrawn = 0;
         for (let f = 0; f * dt <= e.duration; ++f) {
             h2._state.clock = e.start + f * dt;
-            const x = h2.radialState(e).extras;
-            const lift = x ? x.flash[2] : 0;
-            liftPeak = Math.max(liftPeak, lift);
-            if (f * dt > e.precursor + e.rise + e.hold + 4) liftAfter = Math.max(liftAfter, lift);
+            const s2 = h2.radialState(e);
+            if (!(s2.head[3] > 0)) continue;
+            ++anyDrawn;
+            const reach = Math.max(s2.bounds[2] - s2.head[0], s2.bounds[3] - s2.head[1]);
+            if (reach > widest) { widest = reach; widestAt = f * dt; }
         }
-        check("the sky lift peaks and then returns to exactly zero", liftPeak > 0.3 && liftAfter === 0,
-            "peak " + liftPeak.toFixed(3) + ", zero from 4 s after the flash");
+        check("nothing the episode publishes reaches outside its own box",
+            anyDrawn > 0 && widest > 0 && widest <= shortSide / 3,
+            "widest reach " + widest.toFixed(0) + " px at t+" + widestAt.toFixed(0) + " s = "
+            + (widest / shortSide).toFixed(3) + " of the short side, over " + anyDrawn + " drawn frames");
         // Sedov: r ~ t^0.4 within the shell phase, measured off the published
         // radius rather than asserted from the source.
         // v10: the shell's clock starts at the DETONATION, which is where the
@@ -670,16 +688,16 @@ function tests() {
             h3.publishPhenomena();
             h3._state.clock = sn.precursor + sn.rise + sn.hold + 20;
             h3.publishPhenomena();
-            const live = ["snFlash", "snTone", "snShell", "snExtra"].map(k => h3.shader[k]);
+            const live = ["snRemnant", "snTone", "snShell", "snExtra"].map(k => h3.shader[k]);
             check("publishPhenomena publishes the supernova's four extra vectors",
-                live.every(v => !!v) && live[2].z > 0 && h3.shader.event3Colour.w === 6,
-                "style " + h3.shader.event3Colour.w + ", nebula unit " + live[2].z.toFixed(1) + " px");
+                live.every(v => !!v) && live[0].z > 0 && h3.shader.event3Colour.w === 6,
+                "style " + h3.shader.event3Colour.w + ", remnant radius " + live[0].z.toFixed(1) + " px");
             h3._state.events[8] = null;
             h3._state.phenomenonSlots = [null, null, null];
             h3._state.clock += 1;
             h3.publishPhenomena();
             check("and zeroes them when no supernova is live",
-                ["snFlash", "snTone", "snShell", "snExtra"].every(k => {
+                ["snRemnant", "snTone", "snShell", "snExtra"].every(k => {
                     const v = h3.shader[k];
                     return v.x === 0 && v.y === 0 && v.z === 0 && v.w === 0;
                 }), "all four cleared");

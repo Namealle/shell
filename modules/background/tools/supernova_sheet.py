@@ -58,7 +58,7 @@ def main():
     sheet = Image.new("RGB", (cols * tile_w, rows * (tile_h + 34)), "black")
     draw = ImageDraw.Draw(sheet)
     print(f"{'phase':<16} {'age s':>7} {'peak/255':>8} {'lit px':>9} {'lit r px':>9} "
-          f"{'lit d/short':>11} {'disc d/short':>12} {'shell r px':>10} {'neb r px':>9} {'lift':>6}")
+          f"{'lit d/short':>11} {'disc d/short':>12} {'shell r px':>10} {'neb r px':>9} {'body':>6}")
     for i, entry in enumerate(manifest["entries"]):
         img = load(entry["raw"], w, h)
         m = metrics(img, entry["head"], short_side)
@@ -72,7 +72,7 @@ def main():
         print(f"{entry['name']:<16} {entry['age']:>7.1f} {m['peak255']:>8.1f} {m['litPx']:>9} "
               f"{m['litRadiusPx']:>9.1f} {m['litDiameterShortSides']:>11.3f} "
               f"{m['discDiameterShortSides']:>12.3f} "
-              f"{entry['shellRadiusPx']:>10.1f} {entry['nebulaRadiusPx']:>9.1f} {entry['skyLift']:>6.3f}")
+              f"{entry['shellRadiusPx']:>10.1f} {entry['nebulaRadiusPx']:>9.1f} {entry['remnantGain']:>6.3f}")
     sheet.save(out)
     json.dump(manifest, open(sys.argv[1], "w"), indent=2)
     print("\nsheet: " + out)

@@ -83,7 +83,8 @@ function main() {
             head: state.head, bounds: state.bounds,
             shellRadiusPx: state.shape[0], shellWidthPx: state.shape[1],
             nebulaRadiusPx: state.extras ? state.extras.shell[2] : 0,
-            skyLift: state.extras ? state.extras.flash[2] : 0,
+            remnantRadiusPx: state.extras ? state.extras.remnant[2] : 0,
+            remnantGain: state.extras ? state.extras.remnant[3] : 0,
             colour: state.colour.slice(0, 3)
         });
     }
