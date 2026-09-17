@@ -386,12 +386,21 @@ function render(previous, s, style) {
         cloudRx = cloud.radius; cloudRy = cloud.radius * cloud.aspect;
         cloudW = cloud.weight;
     } else cloud = null;
+    // smooth()'s two literal windows, with their denominators computed exactly
+    // the way smooth() would: 1 - 0.90 is 0.09999999999999998, not 0.1, and the
+    // inlined copies below have to divide by the same number to stay bit for
+    // bit what the call produced.
+    var CAM_FADE_DEN = Math.max(1e-9, 1 - 0.90);
     for (var k = 0; k < n; ++k) {
         var i = live[k];
         var kind = KIND[i], phase = PHASE[i];
         var oscillation = cycle * P0[i] + phase;
         var behavior = 1, ox = 0, oy = 0, ember = -1;
-        if (kind === 7) {
+        // 82 % of the field is kind 0 by the shipped archetype weights, and it
+        // matches none of the branches below; one test skips the chain.
+        if (kind === 0) {
+            // steady: behavior stays 1, no offset, no ember
+        } else if (kind === 7) {
             // An ember: supernova debris. Its whole appearance is its own age
             // over its own life — it comes in inside two frames because an
             // explosion does not fade in, it burns down over tens of seconds,
@@ -415,7 +424,13 @@ function render(previous, s, style) {
             ox = P1[i] * Math.SQRT1_2 * Math.sin(oscillation);
             oy = P1[i] * Math.SQRT1_2 * Math.sin(cycle * (P0[i] + 1) + phase * 1.7);
         } else if (kind === 5) { ox = P1[i] * Math.cos(oscillation); oy = P1[i] * Math.sin(oscillation); }
-        var captured = RCAP[i] > 0 ? smooth(0, 4, clock - CTIME[i]) : 0;
+        var captured = 0;
+        if (RCAP[i] > 0) {
+            // smooth(0, 4, clock - CTIME[i]), inlined. /4 is exact.
+            var cu = (clock - CTIME[i]) / 4;
+            cu = cu > 1 ? 1 : (cu > 0 ? cu : 0);
+            captured = cu * cu * (3 - 2 * cu);
+        }
         var core = SIZE[i] + captured * (CAPSIZE[i] - SIZE[i]);
         if (ember >= 0) core *= 0.55 + 0.45 * (1 - ember);
         else if (i === novaIndex) core *= novaSize;
@@ -430,7 +445,15 @@ function render(previous, s, style) {
             var t = (z - 1) / camSpan;
             // 1 at the near plane, 1/far at the far one.
             camScale = 1 - camBlend * camGain * (1 - 1 / z);
-            camFade = 1 - camBlend * (1 - camScale * (1 - smooth(0.90, 1, t)) * smooth(0, 0.06, t));
+            // smooth(0.90, 1, t) and smooth(0, 0.06, t), inlined: two calls per
+            // particle per frame on the only regime he runs.
+            var sa = (t - 0.90) / CAM_FADE_DEN;
+            sa = sa > 1 ? 1 : (sa > 0 ? sa : 0);
+            sa = sa * sa * (3 - 2 * sa);
+            var sb = t / 0.06;
+            sb = sb > 1 ? 1 : (sb > 0 ? sb : 0);
+            sb = sb * sb * (3 - 2 * sb);
+            camFade = 1 - camBlend * (1 - camScale * (1 - sa) * sb);
             core *= camScale;
         }
         // The peculiar-velocity channel is part of the motion that is DRAWN:
@@ -446,30 +469,43 @@ function render(previous, s, style) {
         // saturates a little inside it, and the rendered value is a first-order
         // relaxation toward that target, so it can never move by more than
         // step/(tau+step) of the remaining gap in one frame.
-        var reach = reachBase * TONSET[i];
-        var drive = reach / (radius > 1e-3 ? radius : 1e-3);
-        drive = drive * drive * drive;
-        var tide = (drive - 1) * 0.4;
-        tide = tide > 1 ? 1 : (tide > 0 ? tide : 0);
-        tide = tide * tide * (3 - 2 * tide);
-        // Direction relative to the hole. The tide stretches material ALONG the
-        // radius, so a star falling straight in elongates along its own motion
-        // and a tangential pass elongates across it; the rendered kernel is
-        // oriented by the velocity, so the radial component is the one that
-        // lengthens it. The curved-wake term needs no factor here at all: its
-        // kappa is the perpendicular acceleration, which a radial plunge has
-        // none of, so the shader gates the arc on the same geometry for free.
-        var radial = radius > 1e-3 && speed > 1e-3
-            ? Math.abs(dx * vx + dy * vy) / (radius * speed) : 0;
-        var target = envelope * TGAIN[i] * tide * (0.55 + 0.45 * radial);
-        // Time since capture: a captured star is already coming apart, and the
-        // existing four-second capture ramp is the clock that says how far.
-        target += 0.35 * captured * TGAIN[i] * envelope;
-        if (target > 1) target = 1;
-        demand += target;
-        target *= budget;
-        var stretch = STRETCH[i] + (target - STRETCH[i]) * (step / (TRATE[i] + step));
-        STRETCH[i] = stretch;
+        // The whole tidal block is multiplied by `envelope`, which is the hole's
+        // enable envelope: with the hole off it is exactly 0, so the target is
+        // exactly 0 and everything above it -- a cube, two smoothsteps and a dot
+        // product -- is computed to be thrown away. What still has to happen is
+        // the relaxation of whatever stretch is left, and that is the same
+        // arithmetic with target 0.
+        var stretch;
+        if (envelope === 0) {
+            var s0 = STRETCH[i];
+            stretch = s0 !== 0 ? s0 - s0 * (step / (TRATE[i] + step)) : 0;
+            STRETCH[i] = stretch;
+        } else {
+            var reach = reachBase * TONSET[i];
+            var drive = reach / (radius > 1e-3 ? radius : 1e-3);
+            drive = drive * drive * drive;
+            var tide = (drive - 1) * 0.4;
+            tide = tide > 1 ? 1 : (tide > 0 ? tide : 0);
+            tide = tide * tide * (3 - 2 * tide);
+            // Direction relative to the hole. The tide stretches material ALONG the
+            // radius, so a star falling straight in elongates along its own motion
+            // and a tangential pass elongates across it; the rendered kernel is
+            // oriented by the velocity, so the radial component is the one that
+            // lengthens it. The curved-wake term needs no factor here at all: its
+            // kappa is the perpendicular acceleration, which a radial plunge has
+            // none of, so the shader gates the arc on the same geometry for free.
+            var radial = radius > 1e-3 && speed > 1e-3
+                ? Math.abs(dx * vx + dy * vy) / (radius * speed) : 0;
+            var target = envelope * TGAIN[i] * tide * (0.55 + 0.45 * radial);
+            // Time since capture: a captured star is already coming apart, and the
+            // existing four-second capture ramp is the clock that says how far.
+            target += 0.35 * captured * TGAIN[i] * envelope;
+            if (target > 1) target = 1;
+            demand += target;
+            target *= budget;
+            stretch = STRETCH[i] + (target - STRETCH[i]) * (step / (TRATE[i] + step));
+            STRETCH[i] = stretch;
+        }
         // Tangential stretch: the exposure and its ceiling both slide with the
         // deformation, so the trail lengthens over many frames instead of
         // switching between two fixed sprites.
