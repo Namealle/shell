@@ -89,17 +89,27 @@ emit() {
         printf '\n-- %s (pid %s, up %ss, rss %s kB)\n' "$name" "$pid" "$up" "${rss:-?}"
         # Second top iteration only, threads of this pid, busiest first, and
         # only those that actually did something.
-        printf '%s\n' "$raw" | awk -v pid="$pid" '
+        # Fixed columns, NOT NF-relative: a thread called "Thread (pooled)"
+        # has a space in COMMAND, and counting back from the end then reads
+        # %MEM as %CPU. That silently inflated a process total by every idle
+        # pooled thread in it.
+        #   1=PID 2=USER 3=PR 4=NI 5=VIRT 6=RES 7=SHR 8=S 9=%CPU 10=%MEM 11=TIME+ 12..=COMMAND
+        # top -H -p a,b prints every thread of BOTH processes with no column
+        # saying which one owns it; the thread ids of this pid come from /proc.
+        mine=$(ls "/proc/$pid/task" 2>/dev/null | tr '\n' ' ')
+        printf '%s\n' "$raw" | awk -v pid="$pid" -v mine="$mine" '
+            BEGIN{ n=split(mine, a, " "); for (i=1;i<=n;++i) own[a[i]]=1 }
             /^top - /{++iter}
-            iter==2 && $1 ~ /^[0-9]+$/ {
-                cpu=$(NF-3)+0; tm=$(NF-1); cmd=$NF;
-                if (cpu > 0.05 || $1 == pid) printf "%8.1f %s %s %s\n", cpu, $1, cmd, tm
-            }' | sort -rn | head -12 |
-            awk '{printf "   %-8s %-16s %6.1f%% of a core   cpu-time %s\n", $2, $3, $1, $4}'
-        printf '   %s\n' "$(printf '%s\n' "$raw" | awk -v p="$pid" '
-            /^top - /{++iter}
-            iter==2 && $1 ~ /^[0-9]+$/ {s+=$(NF-3)}
-            END{printf "process total %.1f%% of one core", s}')"
+            iter==2 && $1 ~ /^[0-9]+$/ && own[$1] {
+                cmd=$12; for (f=13;f<=NF;++f) cmd=cmd"_"$f;
+                total+=$9;
+                if ($9+0 > 0.05 || $1 == pid) printf "%8.1f %s %s %s\n", $9+0, $1, cmd, $11
+            }
+            END{ printf "%8.1f %s %s %s\n", -1, "TOTAL", "process-total", total }' |
+            sort -rn | awk '
+                $2 == "TOTAL" { total=$4; next }
+                shown++ < 12 { printf "   %-8s %-18s %6.1f%% of a core   cpu-time %s\n", $2, $3, $1, $4 }
+                END { printf "   process total %.1f%% of one core\n", total }'
     done
     if [ -n "$dump" ]; then
         printf '\n-- sky per-frame, per output (ms on the main thread)\n'
