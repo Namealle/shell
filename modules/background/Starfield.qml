@@ -278,6 +278,9 @@ Item {
         _particles = null;
         _particlePending = null;
         _particleAtlasHeight = 0;
+        // A new state means a new entry ledger; the cached prefix is stale.
+        _atlasPrefix = "";
+        _atlasPrefixVersion = -1;
         shader.particleReady = 0;
         _hole.reset();
         // A fresh state has no continuity to protect, so the regime starts where
@@ -322,6 +325,7 @@ Item {
             entryOverflow: 0,
             entrySignature: "",
             entryPixels: new Array(64 * 1280 * 3).fill(0),
+            entryVersion: 0,
             nearHashes: {},
             entryGeometry: "",
             entrySeed: screenSeed,
@@ -697,12 +701,17 @@ Item {
         };
     }
 
-    function atlasUrl(): string {
-        // 24-bit BI_RGB BMP has no colour profile or gamma chunk, no alpha to
-        // premultiply. The first 64x256 tile is the unchanged immutable cohort
-        // atlas; a 64x1280 entry ledger follows it. A single 64x1536 upload
-        // publishes both tiles and their uniforms atomically, at any DPR.
-        // QImage uploads this opaque image as RGBA8. Bottom-up rows are explicit.
+    // The BMP header plus the entry ledger's 1280 rows, already base64-encoded.
+    // Rebuilt only when publishEntries rewrites the ledger, which is never while
+    // particles are on.
+    property string _atlasPrefix: ""
+    property int _atlasPrefixVersion: -1
+    property var _atlasTail: null
+
+    function atlasPrefix(): string {
+        const s = _state;
+        if (_atlasPrefix && _atlasPrefixVersion === s.entryVersion)
+            return _atlasPrefix;
         const bytes = [];
         function le(n, count) {
             for (let i = 0; i < count; ++i)
@@ -723,13 +732,47 @@ Item {
         le(0, 4);
         le(0, 4);
         le(0, 4);
-        for (let row = 1535; row >= 0; --row) {
-            const p = row < 256 ? _state.history[row].pixels : _state.entryPixels;
-            const offset = row < 256 ? 0 : (row - 256) * 64 * 3;
+        const p = s.entryPixels;
+        for (let row = 1535; row >= 256; --row) {
+            const offset = (row - 256) * 64 * 3;
             for (let x = 0; x < 64; ++x)
                 bytes.push(p[offset + x * 3 + 2], p[offset + x * 3 + 1], p[offset + x * 3]);
         }
-        return "data:image/bmp;base64," + Qt.btoa(bytes);
+        _atlasPrefix = Qt.btoa(bytes);
+        _atlasPrefixVersion = s.entryVersion;
+        return _atlasPrefix;
+    }
+
+    function atlasUrl(): string {
+        // 24-bit BI_RGB BMP has no colour profile or gamma chunk, no alpha to
+        // premultiply. The first 64x256 tile is the unchanged immutable cohort
+        // atlas; a 64x1280 entry ledger follows it. A single 64x1536 upload
+        // publishes both tiles and their uniforms atomically, at any DPR.
+        // QImage uploads this opaque image as RGBA8. Bottom-up rows are explicit.
+        //
+        // Bottom-up is what makes this cheap: the ledger's 1280 rows come FIRST
+        // in the byte stream and only the 256 descriptor rows follow, so 83 % of
+        // the image never changes between two seals. Both the header + ledger
+        // prefix (245814 bytes) and the descriptor tail (49152) are multiples of
+        // three, and base64 encodes three bytes at a time, so the encoding of
+        // the whole is exactly the concatenation of the two encodings -- proved
+        // against python's base64 this session. Rebuilding and encoding all
+        // 295 kB cost 29 ms, one dropped frame per output every 30 flow seconds.
+        const s = _state;
+        let tail = _atlasTail;
+        if (!tail)
+            tail = _atlasTail = new Array(256 * 64 * 3);
+        let at = 0;
+        for (let row = 255; row >= 0; --row) {
+            const p = s.history[row].pixels;
+            for (let x = 0; x < 64; ++x) {
+                const c = x * 3;
+                tail[at++] = p[c + 2];
+                tail[at++] = p[c + 1];
+                tail[at++] = p[c];
+            }
+        }
+        return "data:image/bmp;base64," + atlasPrefix() + Qt.btoa(tail);
     }
 
     function blockSalt(block: real, layer: int, axis: int): real {
@@ -3590,6 +3633,9 @@ Item {
                 }
             }
             s.entryOverflow = Math.max(s.entryOverflow, records.length - 19456);
+            // The only writer of entryPixels; atlasUrl's cached base64 prefix
+            // is keyed on this.
+            ++s.entryVersion;
             ++s.atlasRevision;
         }
     }
