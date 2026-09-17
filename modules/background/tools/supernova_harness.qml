@@ -251,6 +251,27 @@ Item {
                 const e8 = field._state.events[8];
                 const d0 = first.age - e8.precursor, d1 = last.age - e8.precursor;
                 expect("and both of them decelerate", last.reach > 2 * first.reach && last.reach / d1 < first.reach / d0, "debris " + first.reach.toFixed(0) + " px at " + d0.toFixed(1) + " s (" + (first.reach / d0).toFixed(0) + " px/s) -> " + last.reach.toFixed(0) + " px at " + d1.toFixed(1) + " s (" + (last.reach / d1).toFixed(0) + " px/s)");
+                // v11, requirement B: "the cloud of the supernova is static and
+                // not moving with the rest". In v10 the debris was dead long
+                // before the remnant -- measured on the live tablet, 162
+                // transients at t+28 s and ZERO from t+55 s on, so the thing he
+                // watched for the next four minutes was a sprite with nothing
+                // in it. The knot population lives through the remnant, so the
+                // remnant is made of material that moves with the regime.
+                const pool2 = field._particles;
+                const e2 = field._state.events[8];
+                const mid = e2.precursor + 0.6 * e2.shellSpan + 0.5 * (0.4 * e2.shellSpan + e2.remnant);
+                advanceBy(Math.max(2, e2.start + mid - clock), 0.5);
+                const site0 = e2.site ? e2.site.slice() : [0, 0];
+                const before2 = debrisRadius(pool2, e2);
+                advanceBy(8, 0.5);
+                const moved = e2.site ? Math.hypot(e2.site[0] - site0[0], e2.site[1] - site0[1]) : 0;
+                expect("the remnant is still made of particles halfway through it",
+                    pool2.transientCount > 60,
+                    pool2.transientCount + " embers alive at t+" + (clock - e2.start).toFixed(0) + " s, median radius " + before2.toFixed(0) + " px");
+                expect("and that material travels with the regime",
+                    moved > 1,
+                    "the site moved " + moved.toFixed(1) + " px in 8 s and the cloud went with it (driftGroup)");
             } else if (step === 4) {
                 const pool = field._particles;
                 advanceBy(90, 2);

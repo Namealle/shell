@@ -696,7 +696,14 @@ function spawnAt(s, x, y, vx, vy, kx, ky, traits) {
     s.luminosity[i] = number(t.lum, 2.6, 0, 8);
     s.archetype[i] = t.archetype === undefined ? 7 : t.archetype;
     s.p0[i] = s.safetyLife[i]; s.p1[i] = number(t.fast, 0, 0, 1);
-    s.p2[i] = number(t.group, 0, 0, 255); s.p3[i] = 0;
+    // v11. p3 is the fragment's LINE-OF-SIGHT direction cosine, -1 (going away
+    // from the camera) to +1 (coming at it). A star has no use for it and a
+    // transient has no archetype parameters to keep in p3, so it was zero here
+    // and unread anywhere. It is what turns a burst from a disc into a hollow
+    // sphere: Appearance.render grows and brightens the near cap and shrinks
+    // and reddens the far one as the shell expands, which is the only depth cue
+    // a cloud of points has. Costs nothing to anything that does not set it.
+    s.p2[i] = number(t.group, 0, 0, 255); s.p3[i] = number(t.los, 0, -1, 1);
     s.kickX[i] = 0; s.kickY[i] = 0; s.kickAge[i] = 0; s.kickDrag[i] = 0;
     if (kx || ky) {
         s.kickX[i] = kx; s.kickY[i] = ky;
@@ -717,12 +724,61 @@ function spawnAt(s, x, y, vx, vy, kx, ky, traits) {
 // default 0.6 the displacement is r ~ t^0.4, which is the SAME Sedov law the
 // shell sprite draws, so the rim runs through the middle of its own debris
 // instead of beside it.
+// v11. The 3-D launch direction of one fragment, returned as (screenX, screenY,
+// losZ) with unit length, so the caller can put screenX/screenY into the kick
+// and losZ into p3 and the two halves are guaranteed to describe the same
+// vector. Two distributions:
+//
+//   ISOTROPIC (no cone) reproduces v10's draw EXACTLY -- a uniform screen angle
+//   and project = sqrt(u) for the in-plane fraction -- and only adds the
+//   component that was always implied by it: losZ = +-sqrt(1 - project^2),
+//   sign from the same stream. Nothing about an existing burst moves.
+//
+//   CONE (jets) samples inside a cone about a 3-D axis, BIPOLAR: half the
+//   fragments go up the axis and half down it, because a jet has two ends.
+//   cos(psi) uniform on [cosHalf, 1] is the correct solid-angle draw; a uniform
+//   psi would pile the material on the axis.
+function launchDirection(s, cone) {
+    if (!cone) {
+        var angle = random(s) * Math.PI * 2;
+        var project = Math.sqrt(random(s));
+        var losZ = Math.sqrt(Math.max(0, 1 - project * project)) * (random(s) < 0.5 ? -1 : 1);
+        return [Math.cos(angle) * project, Math.sin(angle) * project, losZ, project];
+    }
+    var ax = cone[0], ay = cone[1], az = cone[2];
+    var an = Math.sqrt(ax * ax + ay * ay + az * az);
+    if (!(an > 1e-9)) { ax = 0; ay = 0; az = 1; an = 1; }
+    ax /= an; ay /= an; az /= an;
+    if (random(s) < 0.5) { ax = -ax; ay = -ay; az = -az; }
+    var cosHalf = number(cone[3], 0.95, -1, 1);
+    var c = cosHalf + (1 - cosHalf) * random(s);
+    var sn = Math.sqrt(Math.max(0, 1 - c * c));
+    var phi = random(s) * Math.PI * 2;
+    // An orthonormal frame around the axis. The seed vector is chosen against
+    // the axis' own smallest component so the cross product never degenerates.
+    var sx = 0, sy = 0, sz = 0;
+    if (Math.abs(ax) <= Math.abs(ay) && Math.abs(ax) <= Math.abs(az)) sx = 1;
+    else if (Math.abs(ay) <= Math.abs(az)) sy = 1;
+    else sz = 1;
+    var ux = ay * sz - az * sy, uy = az * sx - ax * sz, uz = ax * sy - ay * sx;
+    var un = Math.sqrt(ux * ux + uy * uy + uz * uz);
+    ux /= un; uy /= un; uz /= un;
+    var vx = ay * uz - az * uy, vy = az * ux - ax * uz, vz = ax * uy - ay * ux;
+    var cp = Math.cos(phi) * sn, sp = Math.sin(phi) * sn;
+    var dx = c * ax + cp * ux + sp * vx;
+    var dy = c * ay + cp * uy + sp * vy;
+    var dz = c * az + cp * uz + sp * vz;
+    return [dx, dy, dz, Math.sqrt(dx * dx + dy * dy)];
+}
 function spawnBurst(s, x, y, count, speedRange, traits) {
     var t = traits || {};
     var want = Math.round(number(count, 0, 0, BOUNDS.burstCount[1]));
     var room = debrisRoom(s);
     var n = Math.min(want, room);
     if (!(n > 0)) return 0;
+    var cone = Array.isArray(t.cone) && t.cone.length === 4 ? t.cone : null;
+    var dome = t.dome === true;
+    var curl = Array.isArray(t.curl) && t.curl.length === 2 ? t.curl : null;
     var sr = Array.isArray(speedRange) && speedRange.length === 2
         ? [number(speedRange[0], 0, 0, BOUNDS.impulsePx[1]), number(speedRange[1], 0, 0, BOUNDS.impulsePx[1])]
         : [60, 240];
@@ -740,19 +796,29 @@ function spawnBurst(s, x, y, count, speedRange, traits) {
         // speed and the material coming at us shows a fraction of it. sqrt of a
         // uniform draw is that projection, and it is what stops the burst from
         // reading as a ring with a hole in the middle.
-        var angle = random(s) * Math.PI * 2;
-        var project = Math.sqrt(random(s));
+        var dir = launchDirection(s, cone);
+        var project = dir[3];
         var fast = random(s) < fastShare;
         // Uniform in the requested range, so the MEDIAN ejecta speed is the
         // midpoint times the projection's 0.707 and the caller can solve for
         // the reach it wants. A skewed draw here would quietly put the whole
         // cloud inside the rim the sprite is drawing.
         var base = lo + (hi - lo) * random(s);
+        // The SCREEN speed, clamped exactly where v10 clamped it: the bound is
+        // on what the particle does on the buffer, not on the 3-D speed behind
+        // it, and the projection is `project` rather than a square root of the
+        // components because launchDirection already returned it.
         var speed = base * project * (fast ? fastGain : 1);
         if (speed > BOUNDS.impulsePx[1]) speed = BOUNDS.impulsePx[1];
         var life = lives[0] + (lives[1] - lives[0]) * random(s);
         var trait = {
             lifeSec: life + spread * random(s),
+            // v11: the component of the SAME unit vector the kick came from, so
+            // the depth cue and the screen motion can never describe different
+            // fragments. Off unless the caller asks, so every other burst in
+            // the shell draws exactly what it drew before.
+            los: dome ? dir[2] : 0,
+            curl: curl,
             sizePx: sizes[0] + (sizes[1] - sizes[0]) * random(s) * (fast ? 1.35 : 1),
             lum: lums[0] + (lums[1] - lums[0]) * random(s) * (fast ? 1.3 : 1),
             colour: t.colour || [1, 0.97, 0.92],
@@ -768,7 +834,12 @@ function spawnBurst(s, x, y, count, speedRange, traits) {
             exposureSec: t.exposureSec === undefined ? undefined : t.exposureSec * (fast ? 1.6 : 1),
             endColour: t.endColour
         };
-        if (spawnAt(s, x, y, 0, 0, Math.cos(angle) * speed, Math.sin(angle) * speed, trait) >= 0) ++made;
+        // dir[0]/dir[1] are already the unit vector times `project`, so dividing
+        // the screen speed by `project` here would be undoing what the
+        // projection is for. cos(angle)*project * (speed/project) is what v10
+        // wrote, which is why the isotropic case is unchanged to the last bit.
+        var kn = project > 1e-9 ? speed / project : 0;
+        if (spawnAt(s, x, y, 0, 0, dir[0] * kn, dir[1] * kn, trait) >= 0) ++made;
     }
     s.counters.debris += made;
     return made;

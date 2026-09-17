@@ -22,7 +22,7 @@ function range(value, fallback, lo, hi, u) {
 function ensure(s) {
     if (s.exposure) return;
     for (var k of ["exposure", "maxStreak", "entryStamp", "altR", "altG", "altB", "flare", "shimmerRate", "front",
-        "stretch", "tideOnset", "tideGain", "tideRate"])
+        "stretch", "tideOnset", "tideGain", "tideRate", "axisC", "axisS"])
         s[k] = new Float64Array(s.capacity);
     s.entryStamp.fill(-1);
 }
@@ -58,6 +58,27 @@ function transient(s, i, traits) {
     s.tideRate[i] = 0.45 + 1.45 * draw(seed, 103);
     var end = t.endColour || [0.92, 0.20, 0.10];
     s.altR[i] = end[0]; s.altG[i] = end[1]; s.altB[i] = end[2];
+    // v11, THE FILAMENT AXIS. A supernova remnant's optical filaments are
+    // sheets of shocked gas seen edge-on: they MOVE radially and they LIE
+    // tangentially. v10 drew every fragment's streak along its own velocity,
+    // which is radial, and a few hundred radial dashes converging on a point is
+    // exactly the sunburst he rejected -- "this part looks flat" (ledger 2286),
+    // and his screenshot is a wheel of spokes with the bright end at the hub.
+    //
+    // So the DRAWN orientation is frozen here, once, at the launch direction
+    // rotated by `curl`: about a right angle for shell material and knots,
+    // about zero for a jet, because a jet IS radial and both references show it
+    // that way. It costs nothing per frame -- render() reads two numbers
+    // instead of dividing by the speed -- and a caller that asks for no curl
+    // leaves both at zero and gets v10's behaviour untouched.
+    s.axisC[i] = 0; s.axisS[i] = 0;
+    if (Array.isArray(t.curl) && t.curl.length === 2) {
+        var kx = s.kickX ? s.kickX[i] : 0, ky = s.kickY ? s.kickY[i] : 0;
+        var ang = (kx || ky) ? Math.atan2(ky, kx) : draw(seed, 107) * 6.283185307179586;
+        var psi = (t.curl[0] + (t.curl[1] - t.curl[0]) * draw(seed, 109)) * (draw(seed, 113) < 0.5 ? -1 : 1);
+        s.axisC[i] = Math.cos(ang + psi);
+        s.axisS[i] = Math.sin(ang + psi);
+    }
 }
 function birth(s, i, input) {
     ensure(s);
@@ -226,6 +247,12 @@ function bounds(s) {
 // eighteen properties per instance per frame is the single most expensive thing
 // this file can do in QML's JS engine. The field order is the contract shared
 // with Binning.js and Packing.js (and documented in PARTICLES.md).
+// 2/3 are the DRAWN velocity, which is the true one for everything except a
+// supernova ember with a filament axis (v11): the shader takes the streak's
+// orientation from this pair and its LENGTH from field 6, so a fragment that
+// moves radially can be drawn lying across its own motion without touching the
+// physics. Fields 21/22 carry the matching unit vector for the binner and the
+// packer, and all three must be the same direction.
 var STRIDE = 23;
 var IX = 0, IY = 1, IVX = 2, IVY = 3, ICORE = 4, ISUPPORT = 5, ISTREAK = 6, IR = 7,
     IG = 8, IB = 9, ILUM = 10, IFLAGS = 11, IPHASE = 12, IP0 = 13, IAGE = 14,
@@ -269,7 +296,8 @@ function render(previous, s, style) {
     // Every array this loop touches is hoisted; a property lookup on the state
     // object costs more than the arithmetic around it in QML's JS engine.
     var X = s.x, Y = s.y, VX = s.vx, VY = s.vy, AGE = s.age, SEED = s.seed;
-    var KIND = s.archetype, PHASE = s.phase, P0 = s.p0, P1 = s.p1, P2 = s.p2;
+    var KIND = s.archetype, PHASE = s.phase, P0 = s.p0, P1 = s.p1, P2 = s.p2, P3 = s.p3;
+    var AXC = s.axisC, AXS = s.axisS;
     var SIZE = s.size, CAPSIZE = s.capturedSize, LUM = s.luminosity, FLARE = s.flare, DEPTH = s.depth, FRONT = s.front;
     var RCAP = s.radiusAtCapture, CTIME = s.captureTime, ENTRY = s.entryTime, STAMP = s.entryStamp;
     var STRETCH = s.stretch, TONSET = s.tideOnset, TGAIN = s.tideGain, TRATE = s.tideRate;
@@ -437,8 +465,24 @@ function render(previous, s, style) {
             captured = cu * cu * (3 - 2 * cu);
         }
         var core = SIZE[i] + captured * (CAPSIZE[i] - SIZE[i]);
-        if (ember >= 0) core *= 0.55 + 0.45 * (1 - ember);
-        else if (i === novaIndex) core *= novaSize;
+        // v11. THE SHELL IS A HOLLOW SPHERE, NOT A DISC. A fragment carries the
+        // line-of-sight component of its own launch direction in p3 (-1 going
+        // away, +1 coming at the camera), and as the shell expands the near cap
+        // grows and brightens while the far cap shrinks and dims. That is the
+        // only depth cue a cloud of points has, and it is the difference
+        // between "a hollow sphere you fly past" and the flat disc he rejected.
+        // ember*(2-ember) rather than the true t^0.4 expansion: concave, 0 at
+        // birth, 1 at the end of life, and two multiplies instead of a pow at
+        // 211 ns per particle-iteration.
+        var losDepth = 0;
+        if (ember >= 0) {
+            core *= 0.55 + 0.45 * (1 - ember);
+            var lz = P3[i];
+            if (lz !== 0) {
+                losDepth = lz * (ember * (2 - ember));
+                core *= 1 + 0.62 * losDepth;
+            }
+        } else if (i === novaIndex) core *= novaSize;
         var camScale = 1, camFade = 1;
         // Event material is exempt from the camera regime in Physics.step, so
         // it is exempt from the depth cues here too: it is drawn at its own
@@ -574,6 +618,9 @@ function render(previous, s, style) {
         if (age0 < 0.35 && ember < 0) { var w0 = age0 <= 0 ? 0 : age0 / 0.35; fade *= w0 * w0 * (3 - 2 * w0); }
         var shimmer = twinkle > 0 ? 1 + 0.15 * twinkle * Math.sin(cycle * SHIMMER[i] + phase) : 1;
         var light = LUM[i] * (1 - dim * captured) * behavior * fade * shimmer * camFade;
+        // The same hollow-sphere cue in light. Size alone reads as a size
+        // difference; size AND brightness together read as distance.
+        if (losDepth !== 0) light *= 1 + 0.55 * losDepth;
         var mix = kind === 6 ? 0.5 - 0.5 * Math.cos(oscillation) : 0;
         // Colour is resolved once per particle rather than three times inside
         // the component writes, so the disruption's warming costs one branch.
@@ -584,10 +631,17 @@ function render(previous, s, style) {
             // Hot white -> yellow -> orange -> dim red, over the ember's own
             // life. Three segments so the yellow and the orange are real stops
             // and not an average of the two ends.
+            // v11: the near cap reads younger and the far cap older along the
+            // same ramp. Physically that is the remnant's own dust reddening
+            // and dimming the receding hemisphere, which is what makes Cas A's
+            // far side brown in both references; here it costs one add and
+            // makes the sphere legible in colour as well as in size.
+            var cooled = ember - 0.16 * losDepth;
+            if (cooled > 1) cooled = 1; else if (!(cooled > 0)) cooled = 0;
             var e0, e1, ef;
-            if (ember < 0.12) { e0 = null; e1 = EMBER_YELLOW; ef = ember / 0.12; }
-            else if (ember < 0.45) { e0 = EMBER_YELLOW; e1 = EMBER_ORANGE; ef = (ember - 0.12) / 0.33; }
-            else { e0 = EMBER_ORANGE; e1 = null; ef = (ember - 0.45) / 0.55; }
+            if (cooled < 0.12) { e0 = null; e1 = EMBER_YELLOW; ef = cooled / 0.12; }
+            else if (cooled < 0.45) { e0 = EMBER_YELLOW; e1 = EMBER_ORANGE; ef = (cooled - 0.12) / 0.33; }
+            else { e0 = EMBER_ORANGE; e1 = null; ef = (cooled - 0.45) / 0.55; }
             var a0r = e0 ? e0[0] : cr, a0g = e0 ? e0[1] : cg, a0b = e0 ? e0[2] : cb;
             var a1r = e1 ? e1[0] : ALTR[i], a1g = e1 ? e1[1] : ALTG[i], a1b = e1 ? e1[2] : ALTB[i];
             cr = a0r + (a1r - a0r) * ef; cg = a0g + (a1g - a0g) * ef; cb = a0b + (a1b - a0b) * ef;
@@ -646,8 +700,18 @@ function render(previous, s, style) {
         // in Binning.build and once in Packing.pack: three square roots and six
         // divisions per particle per frame for one number. Same guard all three
         // used, so the binner's capsule and the packer's box are unchanged.
-        var ux = 1, uy = 0;
-        if (speed > 0.01) { ux = vx / speed; uy = vy / speed; }
+        var ux = 1, uy = 0, dvx = vx, dvy = vy;
+        // v11: an ember with a frozen filament axis is DRAWN along it. The
+        // shader re-derives the direction from the packed vx/vy (starfield.frag
+        // `direction`), the binner walks a capsule along ux/uy and the packer's
+        // reject box is built from the same pair, so all three have to be the
+        // rotated vector or the trail is drawn outside the box that admits it.
+        // The particle's own vx/vy in s.* are untouched: it still MOVES
+        // radially, it is only drawn lying across its own motion.
+        if (ember >= 0 && (AXC[i] !== 0 || AXS[i] !== 0)) {
+            ux = AXC[i]; uy = AXS[i];
+            dvx = ux * speed; dvy = uy * speed;
+        } else if (speed > 0.01) { ux = vx / speed; uy = vy / speed; }
         for (var component = 0; component < components; ++component) {
             if ((count + 1) * 23 > out.length) {
                 var grown = new Float64Array(Math.max((count + 1) * 23, out.length * 2));
@@ -658,7 +722,7 @@ function render(previous, s, style) {
             // per write in QML's JS engine. Order is the STRIDE contract above.
             var b = count * 23, sign = component === 0 ? 1 : -1;
             out[b] = X[i] + sign * ox; out[b + 1] = Y[i] + sign * oy;
-            out[b + 2] = vx; out[b + 3] = vy; out[b + 4] = core;
+            out[b + 2] = dvx; out[b + 3] = dvy; out[b + 4] = core;
             out[b + 5] = support; out[b + 6] = streak;
             out[b + 7] = cr; out[b + 8] = cg; out[b + 9] = cb;
             out[b + 10] = light / components; out[b + 11] = flags;

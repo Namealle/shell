@@ -2211,35 +2211,101 @@ Item {
             const index = e.index;
             const optics = Math.max(1, Math.sqrt(w * h / (1024 * 576)));
             const grain = Math.min(2, Math.sqrt(optics));
-            const span = parameterRange(cfg, "debrisCount", [180, 370], 0, 480);
+            const span = parameterRange(cfg, "debrisCount", [300, 400], 0, 480);
             const count = Math.round(span[0] + (span[1] - span[0]) * random(index, screenSeed + 9311));
             const median = supernovaEjecta(e);
             const mid = median / 0.7071;
-            // The ejecta is not one speed: the slow half stays inside the rim
-            // and the fast half runs ahead of it, which is what a shock into a
-            // real medium looks like and what makes the cloud read as depth
-            // rather than as a ring.
-            ParticlePhysics.spawnBurst(P, at[0], at[1], count, [0.35 * mid, 1.65 * mid], {
-                lifeSec: [clamp(0.45 * e.shellSpan, 14, 60), clamp(1.05 * e.shellSpan, 20, 70)],
-                // Fragments, not blobs. Particle sizes are physical pixels and
-                // are NOT optics-scaled (nearPx is 2.4-4.8 px on every buffer),
-                // so multiplying by the full optical scale made the debris
-                // three times the size of the stars it was thrown out of --
-                // measured 2.7-9.2 px on the tablet, and it read as bubbles.
-                // sqrt of the optical scale keeps a big buffer's debris legible
-                // without leaving the star range.
-                sizePx: [0.8 * grain, 2.6 * grain],
-                lum: [2.2, 4.4],
-                colour: [1, 0.97, 0.92],
-                endColour: [0.92, 0.20, 0.10],
-                fastShare: 0.08,
-                fastGain: 2.8,
-                streakPx: Math.min(48, P.config.streak.bendMaxPx),
-                exposureSec: 0.055,
+            const streakCap = P.config.streak.bendMaxPx;
+            // ---- v11: THREE POPULATIONS, NOT ONE CLOUD ----------------------
+            // "It should behave like a gas moving in a 3-D plane" (ledger 2286).
+            // A single isotropic burst of identical embers is a puff; Cas A in
+            // both references is three things at once, and so is this:
+            //
+            //   SHELL  most of the mass, a thin fast shell, streaked and lying
+            //          TANGENTIALLY (curl about a right angle) so the rim reads
+            //          as thousands of curling threads instead of as spokes.
+            //          Dies with the shock, which is when its light is gone.
+            //   JETS   two opposed cones on a frozen 3-D axis at 2-3x the shell
+            //          speed, RADIAL (curl ~ 0) and long-streaked -- the fast
+            //          jets shooting out of the rim in the Chandra composite.
+            //   KNOTS  the dense clumps that survive. They are the REMNANT'S
+            //          MATERIAL: they live through the whole remnant phase, so
+            //          what he looks at for four minutes is made of particles
+            //          that move with the regime, not of a sprite. Slower,
+            //          smaller, redder, barely streaked -- and cheap, because a
+            //          decelerated fragment's streak is zero and a plain dot
+            //          costs a third of what a 48 px trail costs.
+            //
+            // Every one of them carries `dome: true`, so each fragment stores
+            // the line-of-sight component of its own 3-D launch direction and
+            // the near cap is magnified against the far one. That is the whole
+            // "hollow sphere you fly past" and it costs five flops per ember.
+            const jetAngle = e.spin * 0.5;
+            const jetAxis = [Math.cos(jetAngle), Math.sin(jetAngle),
+                (random(index, screenSeed + 9317) * 2 - 1) * 0.55];
+            const shellN = Math.round(count * 0.52);
+            const jetN = Math.round(count * 0.10);
+            const knotN = Math.max(0, count - shellN - jetN);
+            // Fragments, not blobs. Particle sizes are physical pixels and are
+            // NOT optics-scaled (nearPx is 2.4-4.8 px on every buffer), so
+            // multiplying by the full optical scale made the debris three times
+            // the size of the stars it was thrown out of -- measured 2.7-9.2 px
+            // on the tablet, and it read as bubbles. sqrt of the optical scale
+            // keeps a big buffer's debris legible without leaving the star range.
+            const common = {
+                dome: true,
                 drag: 0.6,
                 t0: 0.02,
                 group: 1
-            });
+            };
+            ParticlePhysics.spawnBurst(P, at[0], at[1], shellN, [0.78 * mid, 1.62 * mid],
+                Object.assign({
+                    lifeSec: [clamp(0.45 * e.shellSpan, 14, 60), clamp(1.05 * e.shellSpan, 20, 70)],
+                    sizePx: [0.8 * grain, 2.4 * grain],
+                    lum: [2.2, 4.4],
+                    colour: [1, 0.97, 0.92],
+                    endColour: [0.95, 0.34, 0.16],
+                    fastShare: 0.10,
+                    fastGain: 2.4,
+                    // 62-118 degrees off radial: tangential, but not a perfect
+                    // ring of tangents -- a perfect one reads as a drawn circle.
+                    curl: [1.0821, 2.0595],
+                    streakPx: Math.min(48, streakCap),
+                    exposureSec: 0.055
+                }, common));
+            ParticlePhysics.spawnBurst(P, at[0], at[1], jetN, [2.0 * mid, 3.2 * mid],
+                Object.assign({
+                    // cos 16 degrees: a narrow bipolar cone, which is what makes
+                    // it read as a jet rather than as a wide fan.
+                    cone: [jetAxis[0], jetAxis[1], jetAxis[2], 0.9613],
+                    lifeSec: [clamp(0.70 * e.shellSpan, 20, 70), clamp(1.25 * e.shellSpan, 26, 90)],
+                    sizePx: [0.7 * grain, 1.9 * grain],
+                    lum: [3.0, 5.2],
+                    colour: [0.88, 0.94, 1],
+                    endColour: [1, 0.52, 0.62],
+                    fastShare: 0.22,
+                    fastGain: 1.5,
+                    curl: [0, 0.26],
+                    streakPx: Math.min(72, streakCap),
+                    exposureSec: 0.075
+                }, common));
+            ParticlePhysics.spawnBurst(P, at[0], at[1], knotN, [0.42 * mid, 1.15 * mid],
+                Object.assign({
+                    // Through the remnant and out the other side: this is the
+                    // material the remnant IS. Bounded by the 600 s ceiling
+                    // spawnAt clamps `lifeSec` to.
+                    lifeSec: [clamp(0.55 * e.shellSpan + 0.80 * e.remnant, 40, 560),
+                        clamp(0.70 * e.shellSpan + 1.00 * e.remnant, 60, 600)],
+                    sizePx: [0.7 * grain, 1.8 * grain],
+                    lum: [1.5, 3.2],
+                    colour: [1, 0.90, 0.72],
+                    endColour: [0.78, 0.16, 0.10],
+                    fastShare: 0.05,
+                    fastGain: 1.8,
+                    curl: [0.7854, 2.3562],
+                    streakPx: Math.min(22, streakCap),
+                    exposureSec: 0.040
+                }, common));
             // The flash lights the neighbourhood it is standing in -- and ONLY
             // the neighbourhood. v10 used 0.55 of the LONG side, which on his
             // tablet is 1690 px: every star on the screen brightened at once,

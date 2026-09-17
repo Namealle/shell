@@ -880,6 +880,98 @@ function run(p, seconds, camera) {
         colours.length ? colours[0].map(c => c.toFixed(2)).join(",") : "none");
 }
 {
+    // ---- v11: the burst is a HOLLOW SPHERE, and its filaments lie across
+    // their own motion. "The cloud of the supernova is static and not moving
+    // with the rest. It should behave like a gas moving in a 3-D plane"
+    // (ledger 2286); his screenshot is a flat wheel of radial spokes.
+    const p = pool({ camera: true });
+    const cx = W / 2, cy = H / 2;
+    Physics.spawnBurst(p, cx, cy, 300, [200, 400],
+        { lifeSec: [40, 60], dome: true, curl: [1.0821, 2.0595], streakPx: 48, exposureSec: 0.055 });
+    const ids = [];
+    for (let k = 0; k < p.liveCount; ++k) if (p.transient[p.live[k]]) ids.push(p.live[k]);
+    // Every fragment's LOS cosine and its SCREEN speed are two components of
+    // one unit vector: screenSpeed = base * sqrt(1 - los^2), so dividing one by
+    // the other has to land back inside the requested speed range. That is the
+    // invariant that says the depth cue and the motion describe the same
+    // fragment rather than two independent draws.
+    let inRange = 0, signs = [0, 0], spread = 0;
+    for (const i of ids) {
+        const los = p.p3[i];
+        const plane = Math.sqrt(Math.max(1e-9, 1 - los * los));
+        const base = Math.hypot(p.kickX[i], p.kickY[i]) / plane;
+        // fastShare defaults to 0.07 with a 2.6x gain, so the fast tail is
+        // allowed above the range and is counted separately.
+        if (base >= 199 && base <= 401) ++inRange;
+        if (los > 0.2) ++signs[0];
+        if (los < -0.2) ++signs[1];
+        spread = Math.max(spread, Math.abs(los));
+    }
+    check("every fragment of a domed burst carries its own line of sight",
+        ids.length === 300 && inRange >= 270 && signs[0] > 90 && signs[1] > 90 && spread > 0.9,
+        `${inRange}/${ids.length} reconstruct their launch speed, ${signs[0]} coming / ${signs[1]} going, |los| up to ${spread.toFixed(3)}`);
+    // A frozen filament axis: the DRAWN direction is across the radius, the
+    // MOTION is along it. v10 drew both along the radius, which is the spoke.
+    run(p, 2, true);
+    let items = Appearance.render(null, p, { twinkle: 0 });
+    let tangential = 0, drawn = 0, moved = 0;
+    for (let n = 0; n < items.count; ++n) {
+        const i = items.data[n * S + IID];
+        if (!p.transient[i]) continue;
+        const rx = items.data[n * S + IX] - cx, ry = items.data[n * S + 1] - cy;
+        const rn = Math.hypot(rx, ry);
+        const dn = Math.hypot(items.data[n * S + 2], items.data[n * S + 3]);
+        if (!(rn > 1 && dn > 1)) continue;
+        ++drawn;
+        const align = Math.abs((rx * items.data[n * S + 2] + ry * items.data[n * S + 3]) / (rn * dn));
+        if (align < 0.5) ++tangential;
+        const mn = Math.hypot(p.kickX[i], p.kickY[i]);
+        if (mn > 1 && Math.abs((rx * p.kickX[i] + ry * p.kickY[i]) / (rn * mn)) > 0.95) ++moved;
+    }
+    check("its filaments are drawn across the motion they are made of",
+        drawn > 200 && tangential > 0.75 * drawn && moved > 0.95 * drawn,
+        `${tangential}/${drawn} drawn tangentially while ${moved}/${drawn} still move radially`);
+    // The near cap is magnified and the far cap is not, and the gap OPENS as
+    // the shell expands -- at birth the two are the same size.
+    const caps = () => {
+        const it = Appearance.render(null, p, { twinkle: 0 });
+        let near = 0, nearN = 0, far = 0, farN = 0;
+        for (let n = 0; n < it.count; ++n) {
+            const i = it.data[n * S + IID];
+            if (!p.transient[i]) continue;
+            if (p.p3[i] > 0.5) { near += it.data[n * S + ICORE]; ++nearN; }
+            else if (p.p3[i] < -0.5) { far += it.data[n * S + ICORE]; ++farN; }
+        }
+        return [nearN ? near / nearN : 0, farN ? far / farN : 0];
+    };
+    const early = caps();
+    run(p, 26, true);
+    const late = caps();
+    check("and the near cap of the shell is magnified against the far one",
+        early[0] / early[1] < 1.25 && late[0] / late[1] > 1.6,
+        `near/far core ${early[0].toFixed(2)}/${early[1].toFixed(2)} = ${(early[0] / early[1]).toFixed(2)}x at t+2 s, `
+        + `${late[0].toFixed(2)}/${late[1].toFixed(2)} = ${(late[0] / late[1]).toFixed(2)}x at t+28 s`);
+    // A jet is bipolar and narrow, and it is drawn RADIALLY -- both references
+    // put the jets straight out of the rim.
+    const q = pool({ camera: true });
+    Physics.spawnBurst(q, W / 2, H / 2, 200, [600, 900],
+        { lifeSec: [40, 60], dome: true, cone: [1, 0, 0, 0.9613], curl: [0, 0.26], streakPx: 72 });
+    let up = 0, down = 0, wide = 0;
+    for (let k = 0; k < q.liveCount; ++k) {
+        const i = q.live[k];
+        if (!q.transient[i]) continue;
+        const kx = q.kickX[i], ky = q.kickY[i];
+        if (kx > 0) ++up; else ++down;
+        // In-plane half-angle off the x axis. The cone is 16 degrees in 3-D and
+        // its projection cannot be wider than that when the axis lies in the
+        // plane, so anything past 17 degrees is the sampler being wrong.
+        if (Math.abs(Math.atan2(ky, Math.abs(kx))) > 17 * Math.PI / 180) ++wide;
+    }
+    check("a jet comes out of both poles and stays inside its cone",
+        up > 70 && down > 70 && wide === 0,
+        `${up} one way, ${down} the other, ${wide} outside 17 degrees`);
+}
+{
     // ---- brightenNear: the flash lights its own neighbourhood, then stops
     const p = pool({ camera: true });
     const base = Appearance.render(null, p, { twinkle: 0 });

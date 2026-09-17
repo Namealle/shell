@@ -335,7 +335,7 @@ var EVENT_FAMILY_SPEC = {
         // particles the star is replaced by, and how hard the shock shoves the
         // stars it reaches (in short sides per second, falling to nothing at
         // 2.4x the drawn rim). 0 for either leaves the sprite alone.
-        debrisCount: [[180, 370], "pair", 0, 480],
+        debrisCount: [[300, 400], "pair", 0, 480],
         shockShortSide: [0.32, "num", 0, 2],
         filaments: [0.55, "num", 0, 1],
         remnantSec: [[120, 300], "pair", 1, 1800],
