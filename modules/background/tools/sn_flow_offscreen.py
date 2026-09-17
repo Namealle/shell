@@ -70,20 +70,66 @@ def main():
         uy = (gy - site[1]) / np.maximum(r, 1e-6)
         speed = np.hypot(dx[good], dy[good])
         rad = (dx * ux + dy * uy)[good]
+        tan = (dx * -uy + dy * ux)[good]
+        # ---- v12: IS THE FLOW VARIED, OR IS IT ONE RIGID MOTION? -----------
+        # The mean radial term alone cannot tell "gas in wind" from "a picture
+        # being scaled up": v11 measured 0.45 px/s radial out of 0.53 px/s
+        # total, i.e. 85 % of every block doing the same thing, which is a rigid
+        # body. These are the numbers that say whether each part moves
+        # differently.
+        #
+        #   dirStdDeg  circular standard deviation of each block's flow
+        #              direction MEASURED AGAINST ITS OWN RADIAL DIRECTION, so
+        #              pure homologous expansion scores 0 however big it is.
+        #   magCV      coefficient of variation of |flow| -- one number for
+        #              "some parts are moving much faster than others".
+        #   coherence  radial mean over speed mean: 1 is rigid expansion, 0 is
+        #              pure churn. This is v11's 85 % in its own terms.
+        #   radialSpreadAtR  the std-dev of radial speed WITHIN a radius bin,
+        #              averaged over bins, as a share of the mean radial speed.
+        #              Homologous expansion of a single sheet makes this ~0;
+        #              depth slices at different perspective magnifications make
+        #              it the size of the magnification spread. It is the layer
+        #              parallax, measured on pixels rather than asserted.
+        ang = np.arctan2(tan, rad)
+        dir_std = float(math.degrees(math.sqrt(
+            max(-2.0 * math.log(max(math.hypot(np.cos(ang).mean(), np.sin(ang).mean()), 1e-9)), 0.0))))
+        rbin = np.clip((r[good] / rim * 6).astype(int), 0, 5)
+        spreads = []
+        for b in range(6):
+            sel = rbin == b
+            if sel.sum() >= 6:
+                spreads.append(rad[sel].std())
+        mean_rad = abs(rad.mean()) if abs(rad.mean()) > 1e-9 else 1e-9
         rows.append({"from": entries[i]["age"], "to": entries[i + 1]["age"], "dtSec": dt,
                      "blocks": int(good.sum()),
                      "internalPxPerSec": float(speed.mean() / max(dt, 1e-6)),
                      "radialPxPerSec": float(rad.mean() / max(dt, 1e-6)),
-                     "movingBlocks": float((speed > 0.5).mean())})
+                     "tangentialAbsPxPerSec": float(np.abs(tan).mean() / max(dt, 1e-6)),
+                     "movingBlocks": float((speed > 0.5).mean()),
+                     "dirStdDeg": dir_std,
+                     "magCV": float(speed.std() / max(speed.mean(), 1e-9)),
+                     "coherence": float(rad.mean() / max(speed.mean(), 1e-9)),
+                     "radialSpreadAtR": float(np.mean(spreads) / mean_rad) if spreads else 0.0})
     print(f"{pathlib.Path(args.manifest).stem}: site {site[0]:.0f},{site[1]:.0f} rim {rim:.0f} px")
-    print(f"{'t0':>8} {'t1':>8} {'blocks':>7} {'internal px/s':>14} {'radial px/s':>12} {'moving':>8}")
+    print(f"{'t0':>8} {'t1':>8} {'blocks':>7} {'internal px/s':>14} {'radial px/s':>12} {'tang px/s':>10} "
+          f"{'moving':>7} {'dir sd':>8} {'mag CV':>7} {'coher':>6} {'layer':>6}")
     for r0 in rows:
         print(f"{r0['from']:>8.1f} {r0['to']:>8.1f} {r0['blocks']:>7} "
-              f"{r0['internalPxPerSec']:>14.2f} {r0['radialPxPerSec']:>12.2f} {r0['movingBlocks']:>7.0%}")
+              f"{r0['internalPxPerSec']:>14.2f} {r0['radialPxPerSec']:>12.2f} "
+              f"{r0['tangentialAbsPxPerSec']:>10.2f} {r0['movingBlocks']:>6.0%} "
+              f"{r0['dirStdDeg']:>7.1f}d {r0['magCV']:>7.2f} {r0['coherence']:>6.2f} "
+              f"{r0['radialSpreadAtR']:>6.2f}")
     if rows:
-        print(f"mean internal motion {np.mean([r0['internalPxPerSec'] for r0 in rows]):.2f} px/s, "
-              f"radial {np.mean([r0['radialPxPerSec'] for r0 in rows]):.2f} px/s, "
-              f"{np.mean([r0['movingBlocks'] for r0 in rows]):.0%} of blocks moving")
+        mean = lambda k: float(np.mean([r0[k] for r0 in rows]))  # noqa: E731
+        print(f"mean internal motion {mean('internalPxPerSec'):.2f} px/s, "
+              f"radial {mean('radialPxPerSec'):.2f} px/s, "
+              f"tangential {mean('tangentialAbsPxPerSec'):.2f} px/s, "
+              f"{mean('movingBlocks'):.0%} of blocks moving")
+        print(f"VARIATION: flow direction sd {mean('dirStdDeg'):.1f} deg about the local radial, "
+              f"magnitude CV {mean('magCV'):.2f}, coherence {mean('coherence'):.2f} "
+              f"(1 = rigid expansion), layer parallax {mean('radialSpreadAtR'):.2f} "
+              f"of the mean radial speed")
     if args.json:
         pathlib.Path(args.json).write_text(json.dumps(rows, indent=1))
     return 0

@@ -689,9 +689,10 @@ function tests() {
             h3.publishPhenomena();
             h3._state.clock = sn.precursor + sn.rise + sn.hold + 20;
             h3.publishPhenomena();
-            const NAMES = ["snRemnant", "snTone", "snShell", "snExtra", "snBody", "snHot", "snWisp", "snDust", "snJet"];
+            const NAMES = ["snRemnant", "snTone", "snShell", "snExtra", "snBody", "snHot", "snWisp", "snDust", "snJet",
+                "snPop0", "snPop1", "snPop2", "snPop3", "snPop4", "snPop5", "snGrain", "snFlow", "snTurn", "snTurn2"];
             const live = NAMES.map(k => h3.shader[k]);
-            check("publishPhenomena publishes the supernova's nine extra vectors",
+            check("publishPhenomena publishes the supernova's nineteen extra vectors",
                 live.every(v => !!v) && live[0].z > 0 && Math.abs(Math.hypot(live[8].x, live[8].y) - 1) < 1e-9
                 && h3.shader.event3Colour.w === 6,
                 "style " + h3.shader.event3Colour.w + ", remnant radius " + live[0].z.toFixed(1)
@@ -709,6 +710,134 @@ function tests() {
                     if (k === "snJet") return v.x === 1 && v.y === 0 && v.z === 0 && v.w === 0;
                     return v.x === 0 && v.y === 0 && v.z === 0 && v.w === 0;
                 }), "all nine cleared");
+        }
+        // ---- v12: THE GRAIN SCHEDULE ------------------------------------
+        // The grains live in the fragment shader, so what can be tested here is
+        // the CONTRACT the CPU hands it -- and every one of these is a property
+        // the shader relies on rather than a number that happens to be true.
+        // KEEP IN STEP with supernovaRemnant()/snSlice() in starfield.frag: the
+        // three constants below (the four-wide palette window, the 1.16-cell
+        // support bound and the 0.16..0.84 in-cell placement) are copied from
+        // it, and if either side moves alone these checks are what notices.
+        {
+            const WINDOW = 4;          // cA..cD, so an index may sit 0..3 above `base`
+            const REACH = 1.16;        // cells: the 3x3 neighbourhood's guaranteed radius
+            const g = h2.radialState(e);
+            const sample = (age) => {
+                h2._state.clock = e.start + age;
+                return h2.radialState(e).extras;
+            };
+            const remnantAt = e.precursor + 0.6 * e.shellSpan;
+            const span = 0.4 * e.shellSpan + e.remnant;
+            const early = sample(remnantAt + span * 0.10);
+            const mid = sample(remnantAt + span * 0.50);
+            const late = sample(remnantAt + span * 0.88);
+            check("the reverse shock walks INWARD through the remnant",
+                early.turn[2] > mid.turn[2] && mid.turn[2] > late.turn[2] && late.turn[2] < 0.4,
+                "shock radius " + early.turn[2].toFixed(2) + " -> " + mid.turn[2].toFixed(2)
+                + " -> " + late.turn[2].toFixed(2) + " of the rim");
+            // The published rate must be the ACTUAL rate, because the shader
+            // reconstructs a grain's birth-time schedule position from it. A
+            // sign error or a factor here would freeze or reverse the turnover
+            // and nothing else would catch it.
+            const dt = span * 0.40;
+            const measured = (early.turn[2] - mid.turn[2]) / dt;
+            check("snTurn2.x is the reverse shock's true speed",
+                Math.abs(measured - early.turn2[0]) < 1e-6,
+                "published " + early.turn2[0].toFixed(6) + " vs measured "
+                + measured.toFixed(6) + " rim radii per second");
+            // The whole point: swept material has advanced along the sequence,
+            // so the schedule at a fixed radius moves by toneAdvance over the
+            // episode. If this is ~0 there is no turnover to see.
+            const posAt = (x, u) => x.turn[0] + x.turn[1] * u
+                + x.turn[3] * (() => { const s = Math.max(0, Math.min(1, (u - x.turn[2]) * 2.2222222)); return s * s * (3 - 2 * s); })();
+            const walk = posAt(late, 0.5) - posAt(early, 0.5);
+            check("the schedule walks a whole population or more at mid-radius",
+                walk > 1.0, "moved " + walk.toFixed(2) + " populations at u = 0.5");
+            // THE WINDOW NEVER CLIPS. The shader hoists four adjacent
+            // populations and reconstructs a grain's tone as an offset into
+            // them; a grain whose index falls outside gets clamped, and the
+            // clamp boundary follows a smooth field's level set, which draws a
+            // visible edge. This sweeps the whole episode and the whole radius
+            // range with the shader's own arithmetic.
+            // The invariant is NOT "the index is inside the window" -- an index
+            // past either END of the palette is clipped to the same tone the
+            // window's own end already holds, and snPop() clamps identically.
+            // What must hold is that the tone the shader RECONSTRUCTS is the
+            // tone the schedule asked for:
+            //
+            //     clamp(base + clamp(idx - base, 0, 3), 0, 5) === clamp(idx, 0, 5)
+            //
+            // A window that is too narrow, or a `base` that is mis-centred,
+            // breaks this in the middle of the palette -- and because `base` is
+            // a floor() of a smooth field, the failure is not a stray pixel, it
+            // is a hard edge along that field's level set. This sweeps the
+            // whole episode, the whole radius range, and both extremes of the
+            // per-grain jitter and the birth-time spread.
+            const clamp01 = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+            let mismatches = 0, worstAt = "";
+            for (let k = 0; k <= 60; ++k) {
+                const x = sample(remnantAt + span * (k / 60));
+                if (!x || !x.grain || x.grain[0] <= 0) continue;
+                const spread = x.flow[3], life = x.grain[2];
+                for (let i = 0; i <= 60; ++i) {
+                    const u = i / 60;
+                    const sx = clamp01((u - x.turn[2]) * 2.2222222, 0, 1);
+                    const pos = x.turn[0] + x.turn[1] * u + x.turn[3] * (sx * sx * (3 - 2 * sx));
+                    const rate = x.turn[3] * 6 * sx * (1 - sx) * 2.2222222 * x.turn2[0];
+                    const base = clamp01(Math.floor(pos - rate * life - spread * 0.5
+                        - x.turn[1] * 0.12 + 0.5), 0, 2);
+                    // Every corner a grain in this neighbourhood can reach:
+                    // freshly born or at the end of its life, and either end of
+                    // the jitter.
+                    for (const ago of [0, life]) {
+                        for (const jit of [-spread * 0.5, 0, spread * 0.5]) {
+                            const idx = Math.floor(pos - rate * ago + jit + 0.5);
+                            const got = clamp01(base + clamp01(idx - base, 0, WINDOW - 1), 0, 5);
+                            const want = clamp01(idx, 0, 5);
+                            if (got !== want) {
+                                mismatches++;
+                                worstAt = "u " + u.toFixed(2) + " t " + (k / 60).toFixed(2)
+                                    + " idx " + idx + " base " + base + " -> " + got + " not " + want;
+                            }
+                        }
+                    }
+                }
+            }
+            check("the hoisted window reconstructs every grain's own tone",
+                mismatches === 0, mismatches ? mismatches + " mismatches, e.g. " + worstAt
+                    : "0 mismatches over 61 ages x 61 radii x 6 corners, window " + WINDOW + " wide");
+            // THE 3x3 NEIGHBOURHOOD IS EXACT. A grain sits at its cell plus
+            // 0.16..0.84, so the nearest edge of the nine cells is 1.16 away;
+            // the shader caps `stretch` at 1.16/rad for exactly this reason,
+            // and the cap only works if `rad` itself can never reach 1.16.
+            const size = mid.grain[3];
+            const radMax = size * (0.55 + 0.75 * 1.0);
+            check("a grain's support can never leave the 3x3 neighbourhood",
+                radMax < REACH, "largest grain radius " + radMax.toFixed(3)
+                + " cells against the " + REACH + " the neighbourhood guarantees");
+            check("the curl displacement stays under one cell",
+                mid.flow[0] <= 0.5, "curl amplitude " + mid.flow[0].toFixed(3) + " cells");
+            const dying = sample(remnantAt + span * 0.99);
+            check("grain opacity follows the remnant's own envelope",
+                early.turn2[2] > 0 && (!dying || !dying.turn2 || dying.turn2[2] < early.turn2[2]),
+                "opacity envelope " + early.turn2[2].toFixed(3) + " -> "
+                + ((dying && dying.turn2) ? dying.turn2[2].toFixed(3) : "episode over"));
+            // Six populations, all of them actually distinct, all of them with
+            // a dust fraction in range. A duplicated tone would silently make
+            // the turnover invisible over part of its range.
+            const pops = [mid.pop0, mid.pop1, mid.pop2, mid.pop3, mid.pop4, mid.pop5];
+            let minGap = 9;
+            for (let i = 0; i < 6; ++i)
+                for (let j = i + 1; j < 6; ++j) {
+                    const norm = (p) => { const m = Math.max(p[0], p[1], p[2]); return [p[0] / m, p[1] / m, p[2] / m]; };
+                    const a = norm(pops[i]), b = norm(pops[j]);
+                    minGap = Math.min(minGap, Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]));
+                }
+            check("the six populations are six distinct tones",
+                minGap > 0.20 && pops.every(p => p[3] >= 0 && p[3] <= 1),
+                "closest pair " + minGap.toFixed(3) + " apart in normalised linear rgb");
+            h2._state.clock = e.start + remnantAt + span * 0.5;
         }
         // The episode ends dark: no residue, no ring left on the screen.
         h2._state.clock = e.start + e.duration - 0.05;
