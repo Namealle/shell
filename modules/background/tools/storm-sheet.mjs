@@ -40,10 +40,13 @@ function fragFunction(src, name) {
 
 function previewShader() {
     const src = readFileSync(FRAG, "utf8");
-    // radialField dispatches style 6 to supernovaField, so the supernova's two
-    // kernels come along even though a storm never lights one: the lifted
-    // eventSlot -> radialField chain has to compile whole.
-    const kernels = ["hash4", "tailSegment", "cometField", "snPolar", "supernovaField", "radialField", "stormHash", "stormTrainSegment", "stormFireball", "meteorStorm", "eventSlot"]
+    // radialField dispatches style 6 to supernovaField, so the supernova's
+    // kernel comes along even though a storm never lights one: the lifted
+    // eventSlot -> radialField chain has to compile whole. v11 moved the
+    // remnant out of supernovaField into supernovaRemnant(), which is a SKY
+    // layer this sheet never composites, so it is not lifted here and neither
+    // is snPolar, which went with it.
+    const kernels = ["hash4", "tailSegment", "cometField", "supernovaField", "radialField", "stormHash", "stormTrainSegment", "stormFireball", "meteorStorm", "eventSlot"]
         .map(n => fragFunction(src, n)).join("\n\n");
     return `#version 450 core
 layout(location = 0) in vec2 qt_TexCoord0;
@@ -57,6 +60,7 @@ layout(std140, binding = 0) uniform buf {
     vec4 event2Head; vec4 event2Colour; vec4 event2Tail01; vec4 event2Tail23;
     vec2 event2Tail4; vec4 event2Shape; vec4 event2Bounds;
     vec4 snRemnant; vec4 snTone; vec4 snShell; vec4 snExtra;
+    vec4 snBody; vec4 snHot; vec4 snWisp; vec4 snDust; vec4 snJet;
     vec4 stormHead; vec4 stormShape; vec4 stormColour; vec4 stormSpan;
     float qt_Opacity;
 } ubuf;

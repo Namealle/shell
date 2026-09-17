@@ -69,6 +69,18 @@ function main() {
     e.y = H / 2;
     const frag = join(outDir, "supernova-preview.frag");
     writeFileSync(frag, previewShader());
+    // v11: supernovaRemnant() samples blackhole-noise.png on binding 2 through
+    // nebulaTap, exactly as the live ShaderEffect binds it. This sheet used to
+    // call bhrender with five arguments and no textures at all, which was fine
+    // while the supernova was pure arithmetic and is a black remnant now.
+    // bh_probe owns the PNG -> .raw conversion, so there is one copy of it.
+    const shaders = join(repo, "modules", "background", "shaders");
+    const t1 = join(outDir, "t1.raw"), t2 = join(outDir, "t2.raw");
+    execFileSync("python3", ["-c",
+        "import sys; sys.path.insert(0, sys.argv[1]); import bh_probe;" +
+        " bh_probe._rawtex(sys.argv[2], sys.argv[3]); bh_probe._rawtex(sys.argv[4], sys.argv[5])",
+        here, join(shaders, "blackhole-lut.png"), t1, join(shaders, "blackhole-noise.png"), t2],
+        { stdio: ["ignore", "ignore", "pipe"] });
     const entries = [];
     for (const [name, age] of moments(e)) {
         h._state.clock = e.start + age;
@@ -77,14 +89,16 @@ function main() {
         const u = join(outDir, label + "-" + name + ".uniforms");
         const raw = join(outDir, label + "-" + name + ".f32");
         writeFileSync(u, uniformText(W, H, entry));
-        execFileSync(bhrender, [frag, String(W), String(H), u, raw], { stdio: ["ignore", "ignore", "pipe"] });
+        execFileSync(bhrender, [frag, String(W), String(H), u, raw, t1, t2], { stdio: ["ignore", "ignore", "pipe"] });
         entries.push({
             name, raw, age: Number(age.toFixed(2)), gain: state.head[3],
             head: state.head, bounds: state.bounds,
             shellRadiusPx: state.shape[0], shellWidthPx: state.shape[1],
-            nebulaRadiusPx: state.extras ? state.extras.shell[2] : 0,
+            // v11: snShell is the SHOCK now and the remnant has its own vector.
+            shockWidthPx: state.extras ? state.extras.shell[2] : 0,
             remnantRadiusPx: state.extras ? state.extras.remnant[2] : 0,
             remnantGain: state.extras ? state.extras.remnant[3] : 0,
+            hollowFrac: state.extras ? state.extras.body[0] : 0,
             colour: state.colour.slice(0, 3)
         });
     }

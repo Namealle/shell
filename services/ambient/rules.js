@@ -337,7 +337,19 @@ var EVENT_FAMILY_SPEC = {
         // 2.4x the drawn rim). 0 for either leaves the sprite alone.
         debrisCount: [[300, 400], "pair", 0, 480],
         shockShortSide: [0.32, "num", 0, 2],
-        filaments: [0.55, "num", 0, 1],
+        filaments: [0.70, "num", 0, 1.5],
+        // v11 remnant structure. Shares, all of them, and all defaulted from
+        // the two Cas A references rather than from taste: the interior is
+        // mostly dark bubbles, the sheets between the lit threads are dusty
+        // enough to dim the stars behind them, the rim is a field of isolated
+        // hot knots, there are red wisps past it and a pair of jets out of it.
+        cavities: [0.80, "num", 0, 1],
+        dustOpacity: [0.55, "num", 0, 1],
+        knotGain: [0.55, "num", 0, 2],
+        wispGain: [0.30, "num", 0, 1.5],
+        jetGain: [0.34, "num", 0, 1.5],
+        jetReach: [1.30, "num", 0, 3],
+        jetWidth: [0.10, "num", 0.01, 1],
         remnantSec: [[120, 300], "pair", 1, 1800],
         remnantGain: [0.26, "num", 0, 0.40],
         pulsarGain: [0.30, "num", 0, 0.60],

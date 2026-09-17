@@ -1640,8 +1640,23 @@ Item {
             e.shell = 0.5 * sample("shellShortSide", [0.25, 0.40], 0, 0.6, 11) * shortSide;
             e.shellGain = value("shellGain", 0.55, 0.80);
             e.spikeGain = value("spikeGain", 0.55, 1.5);
-            e.filaments = value("filaments", 0.55, 1);
+            e.filaments = value("filaments", 0.70, 1.5);
             e.remnantGain = value("remnantGain", 0.26, 0.40);
+            // v11 remnant structure. Every one of these is a share, and every
+            // one of them came off a reference rather than off a slider:
+            // `cavities` is how much of the body the dark bubbles eat (the JWST
+            // frame's interior is mostly holes), `dustOpacity` how hard the
+            // grey-brown sheets extinct the stars behind them, `knotGain` the
+            // isolated blue-white knots along the rim, `wispGain` the red outer
+            // wisps beyond it, and the jet is the pair of lobes both references
+            // have shooting out of the rim, measured in remnant radii.
+            e.cavities = value("cavities", 0.80, 1);
+            e.dustOpacity = value("dustOpacity", 0.55, 1);
+            e.knotGain = value("knotGain", 0.55, 2);
+            e.wispGain = value("wispGain", 0.30, 1.5);
+            e.jetGain = value("jetGain", 0.34, 1.5);
+            e.jetReach = clamp(cfg.jetReach === undefined ? 1.30 : cfg.jetReach, 0, 3);
+            e.jetWidth = clamp(cfg.jetWidth === undefined ? 0.10 : cfg.jetWidth, 0.01, 1);
             e.pulsarGain = value("pulsarGain", 0.30, 0.60);
             e.pulsarPeriod = Math.max(0.8, clamp(cfg.pulsarPeriodSec === undefined ? 1.4 : cfg.pulsarPeriodSec, 0, 60));
             // Birth-frozen orientation for the diffraction spikes and the
@@ -1668,8 +1683,18 @@ Item {
             e.precursorColour = [1, 0.66, 0.45];
             e.shellWarm = [1, 0.92, 0.60];
             e.shellCool = [1, 0.46, 0.28];
-            e.remnantHot = [0.52, 0.95, 0.88];
-            e.remnantTone = [1, 0.42, 0.36];
+            // v11, requirement E. The v10 remnant was TEAL and dark red in two
+            // radial wedges -- open his screenshot, that is the whole palette
+            // of it, and neither reference has a teal pixel in it. Cas A goes
+            // blue-white in the hot inner knots, orange and pink along the
+            // shocked rim, deep red in the outer wisps, grey-brown in the dusty
+            // sheets between them. Four tones, still saturation-sane, and the
+            // sky outside the remnant is untouched: he vetoed rainbow and
+            // whole-sky recolour, not a remnant that is hotter than a star.
+            e.remnantHot = [0.72, 0.86, 1];
+            e.remnantTone = [1, 0.58, 0.44];
+            e.remnantWisp = [0.95, 0.28, 0.22];
+            e.remnantDust = [0.50, 0.43, 0.38];
         } else if (kind === 9) {
             // A pulsar MODULATES; the validator floors (period >= 0.8 s, trough
             // >= 0.5 of peak, edge >= 0.10 s) make a square blink unreachable.
@@ -1896,13 +1921,17 @@ Item {
         const base = e.gain * 0.50;
         let core = e.core, halo = 0, coreAbs = 0, haloAbs = 0;
         let shellR = 0, shellW = 0, shellAbs = 0, innerR = 0, innerAbs = 0;
-        // The remnant's radius is published from the FIRST frame, whatever the
-        // remnant's own gain is doing: it is the unit the shader's filament
-        // field is measured in, and that field has to stay put while the shock
-        // sweeps through it rather than expanding with the front. Only the GAIN
-        // enlarges the box the shader pays for (see `reach` below).
-        let nebulaR = e.shell * 0.92, nebulaAbs = 0, pulsarAbs = 0, spikeAbs = 0, spikeLen = 0;
-        let filaments = 0, tone = 0;
+        // v11. The remnant's radius is the COMOVING FRAME the whole gas layer is
+        // drawn in, and it has to move with the material: v10 held the filament
+        // field still at a fixed radius because it was pretending to be the
+        // ambient medium lit up by a passing shock, and the result was a frozen
+        // picture with the sky streaming past it -- "this part looks flat: the
+        // cloud of the supernova is static and not moving with the rest". The
+        // ejecta expands homologously as t^0.4, so this does too, with a floor
+        // so the noise coordinate is never sampled at a degenerate scale in the
+        // first frames, and a slow creep through the remnant phase after that.
+        let nebulaR = 0, nebulaAbs = 0, pulsarAbs = 0, spikeAbs = 0, spikeLen = 0;
+        let filaments = 0, tone = 0, remnantV = 0;
         let colour = e.colour, second = e.peakColour;
         // v10: the shell's clock starts at the DETONATION, not at the end of
         // the flash. The shock leaves when the star explodes -- that is the
@@ -1996,7 +2025,7 @@ Item {
             const remnantAt = e.precursor + 0.6 * e.shellSpan;
             const remnantSpan = 0.4 * e.shellSpan + e.remnant;
             const rv = clamp((age - remnantAt) / Math.max(0.001, remnantSpan), 0, 1);
-            nebulaR = e.shell * (0.92 + 0.42 * rv);
+            remnantV = rv;
             if (rv > 0) {
                 nebulaAbs = e.remnantGain * ease(rv / 0.16) * ease((1 - rv) / 0.55);
                 const turn = modulo(d, e.pulsarPeriod) / e.pulsarPeriod;
@@ -2023,6 +2052,12 @@ Item {
             innerAbs = e.shellGain * 0.50 * ease(shockU / 0.05) * Math.pow(1 - shockU, 2.4);
             filaments = Math.max(filaments, e.filaments * ease(shockU / 0.35));
         }
+        // The comoving frame's radius: the material's own t^0.4 expansion, a
+        // floor of 0.34 of the shell so the first frames do not sample the noise
+        // at a degenerate scale, and a 40 % creep once the remnant is the thing
+        // on the screen. Published every frame the episode is alive, because the
+        // shock is drawn in this frame too.
+        nebulaR = e.shell * Math.max(0.34, Math.pow(Math.max(shockU, 0.02), 0.4)) * (1 + 0.40 * remnantV);
         // The spikes belong to the collapse alone. v11 deleted the SKY LIFT that
         // used to be computed beside them: it was an absolute gain main() used
         // to multiply every pixel of the screen by, and it is the thing he
@@ -2045,10 +2080,32 @@ Item {
                 bounds: [0, 0, 0, 0],
                 exempt: 0
             };
-        // nebulaR is live from the first frame as the filament field's unit, so
-        // only its GAIN may enlarge the box the shader actually pays for.
-        const reach = Math.max(Math.max(nebulaAbs > 0 ? nebulaR * 1.45 : 0, shellR + 3.5 * shellW),
+        // The BOUNDS box is the events slot's own -- the point sources only,
+        // since v11 moved the distributed half into the far layer, which
+        // rejects on its own circle (supernovaRemnant's `bound`). shellR is
+        // still in it because the harnesses and the sheets read shape.xy.
+        // It has to cover the FAR-LAYER kernel's own bound too, or the box is
+        // not the honest envelope of the episode: supernovaRemnant rejects at
+        // max(1.38 R, shockR + 4 shockW) and breaks its shock radius by up to
+        // +25 % with the same noise that ragged the rim. Measured before this
+        // line covered it: 9 pixels at 1.6/255 outside the published box, which
+        // is nothing to look at and everything to a test that says "nothing".
+        const reach = Math.max(Math.max(nebulaR * 1.38, shellR * 1.25 + 4 * shellW),
             Math.max(Math.max(3.6 * halo, 6 * core), spikeAbs > 0 ? spikeLen * 1.05 : 0));
+        // v11: the jets' 3-D axis, frozen at capture, and the frame the remnant
+        // kernel rotates into. supernovaParticles launches the particle jets on
+        // the SAME angle, so the drawn lobes and the material inside them are
+        // one object rather than two that happen to overlap.
+        const jetAngle = e.spin * 0.5;
+        // Display -> linear for everything that now composites into the far
+        // field. The shell dial is a display-unit number and always has been.
+        const shellLin = linearGain(shellAbs);
+        const innerLin = linearGain(innerAbs);
+        // 0.34 is a CALIBRATION, not taste: it is what puts the drawn remnant's
+        // 99th linear percentile at the `remnantGain` dial, the same way the
+        // nebula passage's 0.36 does (tools/nebula_sheet.py established that
+        // method; tools/sn_reference.py measures this one).
+        const bodyLin = linearGain(nebulaAbs) * 0.34;
         return {
             head: [site[0], site[1], core, peak],
             colour: colour.concat(6),
@@ -2062,15 +2119,28 @@ Item {
                 // v11. This vector used to be the sky lift's gain and radius.
                 // It is now the remnant's own frame: where it is, how big it is
                 // and how bright its body is. Nothing in it reaches a pixel
-                // outside `radiusPx`, which is the whole difference.
-                remnant: [site[0], site[1], nebulaR, nebulaAbs],
+                // outside 1.38 of `radiusPx`, which is the whole difference.
+                remnant: [site[0], site[1], nebulaR, bodyLin],
                 // The advection phase is the episode's own age and is NEVER
                 // wrapped: it indexes a noise field, where a wrap is a jump. An
                 // episode is bounded well under 2000 s, so 0.05 * age stays
                 // inside 100 and float32 carries it to five decimal places.
                 tone: second.concat(age * 0.05),
-                shell: [innerR, innerAbs / peak, nebulaR, nebulaAbs / peak],
-                extra: [spikeAbs / peak, spikeLen, pulsarAbs / peak, e.spin]
+                // v11: the SHOCK's own geometry. It was (innerR, innerGain,
+                // nebulaR, nebulaGain); the remnant took its own vector, so this
+                // is the front the far layer draws.
+                shell: [shellR, shellLin, shellW, innerLin],
+                extra: [spikeAbs / peak, spikeLen, pulsarAbs / peak, e.spin],
+                // hollowFrac: the shell is thin while the shock is young and
+                // thickens as the ejecta fills in behind it, which is the
+                // difference between a ring and a filled sphere at each end of
+                // the life cycle. cavityGain and dustOpacity are constants he
+                // can reach through the config if he ever wants to.
+                body: [0.84 - 0.12 * remnantV, e.cavities, e.filaments, e.dustOpacity],
+                hot: e.remnantHot.concat(e.knotGain),
+                wisp: e.remnantWisp.concat(e.wispGain * (0.25 + 0.75 * ease(shockU / 0.25))),
+                dust: e.remnantDust.concat(e.jetGain * ease(shockU / 0.18)),
+                jet: [Math.cos(jetAngle), Math.sin(jetAngle), e.jetReach, e.jetWidth]
             }
         };
     }
@@ -2103,6 +2173,17 @@ Item {
     //                  projection their own debris does.
     function supernovaShellReach(e: var): real {
         return e.shell;
+    }
+    // v11. The remnant is drawn into the FAR FIELD now, which is linear light,
+    // while every dial in this file is in DISPLAY units (0.95 is the 243/255 an
+    // ordinary bright star renders at). The events path decodes the whole event
+    // sum in main(); the far field does not, so the conversion happens here,
+    // once, on the published gain. Without it a 0.55 shell dial arrives as 0.55
+    // LINEAR -- 197/255 where it used to be 140 -- and every remnant on the
+    // sky would be half a stop too bright for a reason nobody could find.
+    function linearGain(display: real): real {
+        const c = Math.max(0, display);
+        return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
     }
     // The median ejecta speed that puts the debris cloud on the shell's own
     // radius at the end of the shell's own span. r(t) = (v0*t0/0.4)*((t/t0)^0.4
@@ -3090,6 +3171,14 @@ Item {
         shader.snTone = extras ? Qt.vector4d(extras.tone[0], extras.tone[1], extras.tone[2], extras.tone[3]) : Qt.vector4d(0, 0, 0, 0);
         shader.snShell = extras ? Qt.vector4d(extras.shell[0], extras.shell[1], extras.shell[2], extras.shell[3]) : Qt.vector4d(0, 0, 0, 0);
         shader.snExtra = extras ? Qt.vector4d(extras.extra[0], extras.extra[1], extras.extra[2], extras.extra[3]) : Qt.vector4d(0, 0, 0, 0);
+        // v11: five more, the remnant's structure and its palette. They are
+        // zeroed with the other four, and snRemnant.w / snShell.y are the two
+        // switches the kernel tests -- with both at 0 it returns on one compare.
+        shader.snBody = extras ? Qt.vector4d(extras.body[0], extras.body[1], extras.body[2], extras.body[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snHot = extras ? Qt.vector4d(extras.hot[0], extras.hot[1], extras.hot[2], extras.hot[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snWisp = extras ? Qt.vector4d(extras.wisp[0], extras.wisp[1], extras.wisp[2], extras.wisp[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snDust = extras ? Qt.vector4d(extras.dust[0], extras.dust[1], extras.dust[2], extras.dust[3]) : Qt.vector4d(0, 0, 0, 0);
+        shader.snJet = extras ? Qt.vector4d(extras.jet[0], extras.jet[1], extras.jet[2], extras.jet[3]) : Qt.vector4d(1, 0, 0, 0);
         for (let i = 0; i < phenomenonSlotCount; ++i) {
             const state = live[i];
             const head = state ? [state.head[0], state.head[1], state.head[2], state.head[3] * (state.exempt + (1 - state.exempt) * scale)] : [0, 0, 0, 0];
@@ -4289,12 +4378,19 @@ Item {
         property vector4d event5Bounds: Qt.vector4d(0, 0, 0, 0)
         // ---- v9 extras. This order IS the std140 layout in starfield.frag:
         // supernova (64 B), storm (64 B), nebula (112 B), 1600 -> 1840 B.
-        // v9 supernova extras, 64 B. One supernova is alive at a time, so these
-        // ride beside the phenomenon slots rather than inside one.
+        // v9 supernova extras, 144 B since v11. One supernova is alive at a
+        // time, so these ride beside the phenomenon slots rather than inside
+        // one. The last five are the remnant's structure and palette; Qt binds
+        // by name, but this order IS the layout in starfield.frag, so keep it.
         property vector4d snRemnant: Qt.vector4d(0, 0, 0, 0)
         property vector4d snTone: Qt.vector4d(0, 0, 0, 0)
         property vector4d snShell: Qt.vector4d(0, 0, 0, 0)
         property vector4d snExtra: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snBody: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snHot: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snWisp: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snDust: Qt.vector4d(0, 0, 0, 0)
+        property vector4d snJet: Qt.vector4d(1, 0, 0, 0)
         // The meteor storm: one slot for the whole shower, however many streaks
         // are in the air. stormShape.w is the gain AND the off switch.
         property vector4d stormHead: Qt.vector4d(0, 0, 0, 0)

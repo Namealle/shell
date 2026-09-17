@@ -45,9 +45,9 @@ export function previewShader() {
     // whole v9 catalogue -- every family, the storm and the passage -- through
     // one shader in main()'s own composite order. The filter keeps this list
     // valid against an older frag.
-    const kernels = ["hash4", "tailSegment", "cometField", "snPolar", "supernovaField", "radialField",
+    const kernels = ["hash4", "tailSegment", "cometField", "supernovaField", "radialField",
         "stormHash", "stormTrainSegment", "stormFireball", "meteorStorm", "nebulaTap", "nebulaStar",
-        "nebulaField", "eventSlot"]
+        "nebulaField", "supernovaRemnant", "eventSlot"]
         .filter(n => src.indexOf(n + "(") >= 0)
         .map(n => fragFunction(src, n)).join("\n\n");
     return `#version 450 core
@@ -65,6 +65,7 @@ layout(std140, binding = 0) uniform buf {
     vec4 event4Head; vec4 event4Colour; vec4 event4Tail01; vec4 event4Shape; vec4 event4Bounds;
     vec4 event5Head; vec4 event5Colour; vec4 event5Tail01; vec4 event5Shape; vec4 event5Bounds;
     vec4 snRemnant; vec4 snTone; vec4 snShell; vec4 snExtra;
+    vec4 snBody; vec4 snHot; vec4 snWisp; vec4 snDust; vec4 snJet;
     vec4 stormHead; vec4 stormShape; vec4 stormColour; vec4 stormSpan;
     vec4 nebulaHead; vec4 nebulaShape; vec4 nebulaTone0; vec4 nebulaTone1;
     vec4 nebulaStars; vec4 nebulaStars2; vec4 nebulaBounds;
@@ -96,7 +97,12 @@ void main() {
     if (ubuf.stormShape.w > 0.0) sky += decodeDisplay(meteorStorm(pixel));
     // v11: the supernova's whole-sky lift used to be copied here from main().
     // It is gone from both (ledger 2286, "I don't like that my screen flashes"),
-    // so there is nothing global left to copy.
+    // so there is nothing global left to copy. What took its vector IS a sky
+    // layer, and it joins the sky exactly the way the nebula above does -- same
+    // contract, same place in the order, so this is the shipped composite and
+    // not a third hand copy of one.
+    vec4 remnant = supernovaRemnant(pixel);
+    sky = sky * (1.0 - remnant.a) + remnant.rgb;
     vec3 events = eventSlot(pixel, ubuf.event0Head, ubuf.event0Colour, ubuf.event0Tail01, ubuf.event0Tail23, ubuf.event0Tail4, ubuf.event0Shape, ubuf.event0Bounds);
     events += eventSlot(pixel, ubuf.event1Head, ubuf.event1Colour, ubuf.event1Tail01, ubuf.event1Tail23, ubuf.event1Tail4, ubuf.event1Shape, ubuf.event1Bounds);
     events += eventSlot(pixel, ubuf.event2Head, ubuf.event2Colour, ubuf.event2Tail01, ubuf.event2Tail23, ubuf.event2Tail4, ubuf.event2Shape, ubuf.event2Bounds);
@@ -264,8 +270,12 @@ export function uniformText(width, height, entry) {
     v("Bounds", s.bounds);
     // v9 supernova extras: four vectors beside the slot, zero for every other
     // family, so one uniforms file format covers the whole catalogue.
-    const x = s.extras || { remnant: [0, 0, 0, 0], tone: [0, 0, 0, 0], shell: [0, 0, 0, 0], extra: [0, 0, 0, 0] };
-    for (const [name, vec] of [["snRemnant", x.remnant], ["snTone", x.tone], ["snShell", x.shell], ["snExtra", x.extra]])
+    const zero = [0, 0, 0, 0];
+    const x = s.extras || { remnant: zero, tone: zero, shell: zero, extra: zero,
+        body: zero, hot: zero, wisp: zero, dust: zero, jet: [1, 0, 0, 0] };
+    for (const [name, vec] of [["snRemnant", x.remnant], ["snTone", x.tone], ["snShell", x.shell],
+        ["snExtra", x.extra], ["snBody", x.body], ["snHot", x.hot], ["snWisp", x.wisp],
+        ["snDust", x.dust], ["snJet", x.jet]])
         lines.push(name + " " + vec.map(y => y.toFixed(6)).join(" "));
     return lines.join("\n") + "\n";
 }

@@ -44,7 +44,7 @@ function extract(name) {
     return "host[\"" + name + "\"] = function " + args + " " + qml.slice(open, i + 1) + ";";
 }
 
-const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "warmStart", "scheduleRadial", "mixColour", "supernovaShellReach", "supernovaEjecta", "cfgShockSpeed", "supernovaParticles", "supernovaSite", "supernovaState", "radialState", "eventPath", "cometHead", "eventState", "cometState", "cometRatio", "cometTurn", "cometParticles", "pushEvent", "drainPending", "publishEvents", "publishPhenomena", "stormValue", "stormTrailAngle", "captureStorm", "stormRate", "stormPhase", "stormRadiant", "stormState", "stormOff", "stormFireballState", "stormFireballParticles", "farBoost", "nebulaConfig", "nebulaEnabled", "nebulaFlowRate", "nebulaDrift", "nebulaBoundary", "nebulaDriftPerSec", "nebulaReach", "nebulaSink", "captureNebula", "scheduleNebula", "nebulaState", "pushNebula", "publishNebula"];
+const NAMES = ["clamp", "modulo", "random", "ease", "normalized", "parameterRange", "paletteSnapshot", "phenomenon", "moodState", "eventOff", "eventConfig", "eventEnabled", "familyDefaults", "cometLook", "chooseFamily", "captureEvent", "classifyCapture", "schedule", "rateScale", "holeReach", "radialPlacement", "captureRadial", "radialSchedule", "dramatic", "warmStart", "scheduleRadial", "mixColour", "linearGain", "supernovaShellReach", "supernovaEjecta", "cfgShockSpeed", "supernovaParticles", "supernovaSite", "supernovaState", "radialState", "eventPath", "cometHead", "eventState", "cometState", "cometRatio", "cometTurn", "cometParticles", "pushEvent", "drainPending", "publishEvents", "publishPhenomena", "stormValue", "stormTrailAngle", "captureStorm", "stormRate", "stormPhase", "stormRadiant", "stormState", "stormOff", "stormFireballState", "stormFireballParticles", "farBoost", "nebulaConfig", "nebulaEnabled", "nebulaFlowRate", "nebulaDrift", "nebulaBoundary", "nebulaDriftPerSec", "nebulaReach", "nebulaSink", "captureNebula", "scheduleNebula", "nebulaState", "pushNebula", "publishNebula"];
 
 // Readonly root constants the scheduler reads by bare name, taken from the
 // same source rather than restated here.
@@ -591,13 +591,14 @@ function tests() {
                 // exactly cancel is correctly read as no change at all.
                 gain: s.head[3] * (s.tail01[1] + s.tail01[2]),
                 shell: s.head[3] * s.tail01[3],
-                inner: s.head[3] * x.shell[1],
-                nebula: s.head[3] * x.shell[3],
+                shock: x.shell[1],
+                inner: x.shell[3],
                 spike: s.head[3] * x.extra[0],
                 sigma: s.head[2] / 100,
                 halo: s.tail01[0] / 100,
                 radius: s.shape[0] / 1000,
-                nebulaR: x.shell[2] / 1000,
+                nebulaR: x.remnant[2] / 1000,
+                shockW: x.shell[2] / 1000,
                 colourR: s.colour[0],
                 colourG: s.colour[1],
                 colourB: s.colour[2],
@@ -611,7 +612,7 @@ function tests() {
                     const step = Math.abs(now[key] - previous[key]);
                     const limit = key.startsWith("colour") ? limits.colour
                         : key === "sigma" || key === "halo" ? limits.sigma
-                            : key === "radius" || key === "nebulaR" ? limits.radius : limits.gain;
+                            : key === "radius" || key === "nebulaR" || key === "shockW" ? limits.radius : limits.gain;
                     if (step > limit && step / limit > worst.step) worst = { channel: key, step: step / limit, at: f * dt, value: step, limit };
                 }
             previous = s.head[3] > 0 ? now : null;
@@ -688,19 +689,26 @@ function tests() {
             h3.publishPhenomena();
             h3._state.clock = sn.precursor + sn.rise + sn.hold + 20;
             h3.publishPhenomena();
-            const live = ["snRemnant", "snTone", "snShell", "snExtra"].map(k => h3.shader[k]);
-            check("publishPhenomena publishes the supernova's four extra vectors",
-                live.every(v => !!v) && live[0].z > 0 && h3.shader.event3Colour.w === 6,
-                "style " + h3.shader.event3Colour.w + ", remnant radius " + live[0].z.toFixed(1) + " px");
+            const NAMES = ["snRemnant", "snTone", "snShell", "snExtra", "snBody", "snHot", "snWisp", "snDust", "snJet"];
+            const live = NAMES.map(k => h3.shader[k]);
+            check("publishPhenomena publishes the supernova's nine extra vectors",
+                live.every(v => !!v) && live[0].z > 0 && Math.abs(Math.hypot(live[8].x, live[8].y) - 1) < 1e-9
+                && h3.shader.event3Colour.w === 6,
+                "style " + h3.shader.event3Colour.w + ", remnant radius " + live[0].z.toFixed(1)
+                + " px, jet axis " + live[8].x.toFixed(3) + "," + live[8].y.toFixed(3));
             h3._state.events[8] = null;
             h3._state.phenomenonSlots = [null, null, null];
             h3._state.clock += 1;
             h3.publishPhenomena();
             check("and zeroes them when no supernova is live",
-                ["snRemnant", "snTone", "snShell", "snExtra"].every(k => {
+                NAMES.every(k => {
                     const v = h3.shader[k];
+                    // snJet's axis rests at (1,0): it is a rotation, and a zero
+                    // vector there would be a degenerate frame rather than an
+                    // off switch. The two switches are snRemnant.w and snShell.y.
+                    if (k === "snJet") return v.x === 1 && v.y === 0 && v.z === 0 && v.w === 0;
                     return v.x === 0 && v.y === 0 && v.z === 0 && v.w === 0;
-                }), "all four cleared");
+                }), "all nine cleared");
         }
         // The episode ends dark: no residue, no ring left on the screen.
         h2._state.clock = e.start + e.duration - 0.05;

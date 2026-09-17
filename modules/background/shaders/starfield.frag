@@ -105,13 +105,24 @@ layout(std140, binding = 0) uniform buf {
     //   snTone    = (rimR, rimG, rimB, turbulencePhase)
     //   snShell   = (shockRadiusPx, shockGain, shockWidthPx, innerGain)
     //   snExtra   = (spikeGain, spikeLengthPx, pulsarGain, seedAngle)
+    //   snBody    = (hollowFrac, cavityGain, filigreeGain, dustOpacity)
+    //   snHot     = (hotR, hotG, hotB, knotGain)        inner blue-white knots
+    //   snWisp    = (wispR, wispG, wispB, wispGain)     the outer red wisps
+    //   snDust    = (dustR, dustG, dustB, jetGain)      the grey-brown sheets
+    //   snJet     = (axisX, axisY, jetReach, jetWidth)  both in shell radii
     // v11 renamed snFlash -> snRemnant. It used to carry the whole-sky lift
-    // gain, which is gone (see main()); it now carries the comoving frame the
-    // remnant kernel below is drawn in, which is the vector that replaced it.
+    // gain, which is gone (see main()); it now carries the comoving frame
+    // supernovaRemnant() is drawn in, which is the vector that replaced it.
+    // 64 -> 144 B for the supernova; the block is 1920 of 16384.
     vec4 snRemnant;
     vec4 snTone;
     vec4 snShell;
     vec4 snExtra;
+    vec4 snBody;
+    vec4 snHot;
+    vec4 snWisp;
+    vec4 snDust;
+    vec4 snJet;
     // METEOR STORM (events.shower), ONE slot for the whole shower. Four vec4,
     // 64 B, whatever the peak rate is: the kernel generates every streak from
     // the storm's seed and its PHASE, so several meteors a second cost no more
@@ -759,39 +770,25 @@ vec3 cometField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 tail23, ve
     }
     return head.w * max(sum, vec3(0.0));
 }
-// v9 SUPERNOVA. Value noise on a POLAR grid: `N` cells around the circle, so
-// the angular index wraps exactly and nothing tears at atan's branch cut, and
-// cells counted in radius, so its features are elongated the way a shock's
-// filaments are. Three angular harmonics were tried first and are the wrong
-// tool: locked harmonics make a rosette, and warping them by radius to break it
-// makes either a kaleidoscope or a pinwheel, and this sky has no spiral in it.
-// Two channels per call, so the filament ridge and the two-tone pick share the
-// four hashes instead of paying for eight.
-vec2 snPolar(vec2 c, float N) {
-    vec2 i = floor(c), f = c - i;
-    f = f * f * (3.0 - 2.0 * f);
-    vec2 a = hash4(vec2(mod(i.x, N), i.y)).xy;
-    vec2 b = hash4(vec2(mod(i.x + 1.0, N), i.y)).xy;
-    vec2 u = hash4(vec2(mod(i.x, N), i.y + 1.0)).xy;
-    vec2 v = hash4(vec2(mod(i.x + 1.0, N), i.y + 1.0)).xy;
-    return mix(mix(a, b, f.x), mix(u, v, f.x), f.y);
-}
-// Style 6, supernova: precursor star, core-collapse flash with diffraction
-// spikes, filamentary Sedov shock shell with a hotter inner rim, and a two-tone
-// advected remnant nebula with the neutron star still blinking at its centre.
-// One kernel, because every phase is the same geometry at different radii and
-// gains; the CPU owns which of them are alive.
+// Style 6, supernova, THE POINT SOURCES: the precursor star, the core-collapse
+// flash and its bloom, the diffraction spikes, and the neutron star blinking at
+// the centre afterwards. Everything DISTRIBUTED -- the shock front, the sheets,
+// the cavities, the filigree rim, the jets and the outer wisps -- moved out of
+// here in v11 into supernovaRemnant(), which is a SKY layer: it composites into
+// the far field like the nebula passage does, so it can take light away as well
+// as add it and the stars shine through the remnant instead of over it.
 //   head    = (x, y, coreSigmaPx, peak)
 //   colour  = (r, g, b, 6)                      the phase's primary colour
-//   tail01  = (haloSigmaPx, haloGain, coreGain, shellGain)
-//   shape   = (shellRadiusPx, shellWidthPx, filamentAmp, toneWeight)
-// plus ubuf.snTone / snShell / snExtra. Every gain is a fraction of head.w.
+//   tail01  = (haloSigmaPx, haloGain, coreGain, unused since v11)
+//   shape   = (shellRadiusPx, shellWidthPx, filamentAmp, toneWeight)  published
+//             for the harnesses and the sheets; the shock is drawn from snShell
+// plus ubuf.snExtra. Every gain is a fraction of head.w.
 vec3 supernovaField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 shape) {
     vec2 p = pixel - head.xy;
     float r2 = dot(p, p);
     float sigma2 = head.z * head.z;
     float variance = sigma2 + 0.0833333;
-    vec3 hot = colour.rgb, second = ubuf.snTone.rgb;
+    vec3 hot = colour.rgb;
     // The point: the precursor star, the collapse core, and the halo that grows
     // into the flash's bloom and shrinks back out of it.
     float value = tail01.z * exp2(-0.7213475 * r2 / variance) * sigma2 / variance;
@@ -813,60 +810,6 @@ vec3 supernovaField(vec2 pixel, vec4 head, vec4 colour, vec4 tail01, vec4 shape)
                   + 0.45 * exp2(-1.4426950 * a2.y * a2.y / (wd * wd)) * t2.x * t2.x
                   + 0.45 * exp2(-1.4426950 * a2.x * a2.x / (wd * wd)) * t2.y * t2.y;
         sum += ubuf.snExtra.x * ray * vec3(0.82, 0.89, 1.0);
-    }
-    float far = max(shape.x + 3.5 * shape.y, ubuf.snShell.z * 1.45);
-    if ((tail01.w > 0.0 || ubuf.snShell.y > 0.0 || ubuf.snShell.w > 0.0) && r2 < far * far) {
-        float d = sqrt(r2);
-        float ang = atan(p.y, p.x) + ubuf.snExtra.w;
-        float amp = shape.z;
-        // ONE filament field for the whole life cycle, in units of the REMNANT's
-        // radius rather than the shell's: the medium's inhomogeneity does not
-        // expand, the shock lights it up as it passes, so the pattern has to
-        // stay put while the front sweeps through it. snShell.z is published
-        // from the first frame for exactly that reason, whatever the nebula's
-        // own gain is doing. Two octaves, ridged, advected in radius and angle.
-        float turn = ang * 0.15915494;
-        float nd = d / max(ubuf.snShell.z, 1.0);
-        float ph = ubuf.snTone.w;
-        vec2 c1 = snPolar(vec2(turn * 24.0 + 0.15 * ph, nd * 3.0 - 0.35 * ph), 24.0);
-        vec2 c2 = snPolar(vec2(turn * 48.0 - 0.22 * ph, nd * 7.0 + 0.50 * ph), 48.0);
-        // Ridged: 1 along the noise's own mid-level contours, which is what
-        // turns a field of blobs into a field of filaments.
-        float ridge = 1.0 - abs(2.0 * (0.62 * c1.x + 0.38 * c2.x) - 1.0);
-        float web = 2.0 * ridge - 1.0;
-        if (tail01.w > 0.0 && shape.y > 0.0) {
-            // Rim brightening: a thin spherical shell seen in projection is
-            // brightest at its limb, which is exactly what a Gaussian in
-            // (d - radius) is. The inner side is 2.2x broader, so the filaments
-            // trail INWARD from the front instead of making a symmetric ring,
-            // and the same web breaks the radius as well as the brightness -
-            // a ring broken only in brightness still reads as a circle.
-            float rr = shape.x * (1.0 + 0.055 * amp * web);
-            float t = (d - rr) / (shape.y * (d < rr ? 2.2 : 1.0));
-            sum += tail01.w * exp2(-1.4426950 * t * t) * max(0.0, 1.0 + 0.9 * amp * web) * hot;
-        }
-        if (ubuf.snShell.y > 0.0) {
-            // The hotter inner rim: narrower, its own radius, and it dies first.
-            float ir = ubuf.snShell.x * (1.0 + 0.045 * amp * web);
-            float t = (d - ir) / max(shape.y * 0.55, 1.0);
-            sum += ubuf.snShell.y * exp2(-1.4426950 * t * t) * max(0.0, 1.0 + 0.6 * amp * web) * second;
-        }
-        if (ubuf.snShell.w > 0.0) {
-            // The remnant: the same filament field, weighted by a soft body and
-            // warped by the coarse octave, so the nebula's EDGE moves with the
-            // advection and not only its brightness. The tone comes off that
-            // octave's second channel, sharpened, so a filament is teal OR red
-            // instead of the brown their average would be.
-            float warp = 1.0 + 0.16 * (2.0 * c1.x - 1.0);
-            float body = exp2(-1.4426950 * 1.7 * nd * nd * warp * warp);
-            // The polar grid has a singularity at its own centre, where every
-            // cell converges: fade the filament contrast out over the inner
-            // quarter so the middle reads as a bright core rather than as the
-            // hub of a wheel.
-            float fil = mix(0.85, 0.30 + 1.15 * ridge * ridge, smoothstep(0.06, 0.30, nd));
-            float pick = smoothstep(0.38, 0.62, c1.y);
-            sum += ubuf.snShell.w * body * fil * mix(hot, second, shape.w * pick);
-        }
     }
     // The neutron star the collapse left behind: a hard blue-white point on the
     // core's own sigma, blinking on the CPU's raised cosine.
@@ -1222,6 +1165,224 @@ vec4 nebulaField(vec2 pixel) {
     }
     return vec4(emission * ubuf.nebulaHead.w, opacity);
 }
+// ---- v11 SUPERNOVA REMNANT ---------------------------------------------
+// "It looks nothing like a real supernova. I want it hyper-detailed" and "this
+// part looks flat: the cloud is static and not moving with the rest" (ledger
+// 2286). The v10 remnant was ONE radial-noise disc on a polar grid, drawn at a
+// fixed pixel: brightest at its own centre, hard-edged at its own radius, and
+// frozen. His screenshot is a teal and red wheel of spokes.
+//
+// This is the opposite construction at every level, and every level of it comes
+// off one of the two Cas A references:
+//
+//   COMOVING. Everything is evaluated in q = (pixel - site)/R, the MATERIAL's
+//   own frame: the site travels on the far layer's streamline and R is the
+//   remnant's live radius, so the pattern travels, grows and shears with the
+//   debris instead of sitting still while the sky moves past it. Two dots and a
+//   divide. The axis it is rotated into is the same frozen axis the jets use.
+//
+//   HOLLOW, NOT SOLID. The body is the projected COLUMN through a spherical
+//   shell of inner radius `a`: sqrt(1-u^2) - sqrt(a^2-u^2). It peaks at the
+//   limb, thins to (1-a) through the middle and reaches zero at the rim. That
+//   single term is the difference between a sphere and a disc, and it is why
+//   the middle of the remnant is dark in both references and bright in v10's.
+//
+//   BROKEN, NOT CIRCULAR. The outer radius itself is modulated by the coarse
+//   octaves (+-25 %), so the rim is ragged at two scales. A shell broken only
+//   in brightness still reads as a drawn circle -- that hard circular edge is
+//   the first thing wrong with his screenshot.
+//
+//   FOAM. `cav` cuts dark cavities out of the body and `lobe` kills whole
+//   sectors of the rim, which is the bubble topology of the JWST frame and the
+//   reason a real remnant is bright on one side and absent on the other.
+//
+//   FILIGREE. A ridged high octave squared twice is a field of thin threads,
+//   concentrated in a band at the limb, plus an eighth-power channel for the
+//   isolated bright knots. Thousands of them per frame, at four texture taps.
+//
+//   IT TAKES LIGHT AWAY. Returning (emission, opacity) like nebulaField means
+//   main() composites it INTO the far field: the dust column multiplies the
+//   stars behind it, so they shine THROUGH the remnant and are dimmed by its
+//   sheets, which is what makes the JWST frame read as translucent layers. No
+//   additive sprite can do that.
+//
+// rgb = linear emission, a = the dust column's opacity to whatever is behind.
+// Four texture fetches and about 110 ALU inside the bound, one compare outside.
+vec4 supernovaRemnant(vec2 pixel) {
+    float gain = ubuf.snRemnant.w, shock = ubuf.snShell.y;
+    if (gain <= 0.0 && shock <= 0.0) return vec4(0.0);
+    float R = max(ubuf.snRemnant.z, 1.0);
+    vec2 d = pixel - ubuf.snRemnant.xy;
+    float r2 = dot(d, d);
+    // Two reaches: the remnant's own 1.38 R (the outer wisps live out to 1.34)
+    // and the shock front's, which early in the shell phase runs inside R and
+    // late in it runs past. One max, one compare.
+    float bound = max(R * 1.38, ubuf.snShell.x + 4.0 * ubuf.snShell.z);
+    if (r2 >= bound * bound) return vec4(0.0);
+    // The episode's own frame. snJet.xy is a unit vector, so this is a rotation
+    // and q.x is ALONG the jet axis, which the jet term below needs anyway.
+    vec2 ax = ubuf.snJet.xy;
+    vec2 q = vec2(dot(d, ax), dot(d, vec2(-ax.y, ax.x))) / R;
+    float nd = sqrt(r2) / R;
+    float t = ubuf.snTone.w;
+    // Domain warp, three octaves on top of it. Each is advected at its own
+    // velocity so the interior CHURNS through itself over tens of seconds
+    // rather than sliding across as one picture, and the phase is the episode's
+    // own age, never wrapped -- a wrap in a noise coordinate is a jump.
+    vec2 w = nebulaTap(q * 2.4 + vec2(0.29 * t, -0.17 * t)) - 0.5;
+    vec2 n1 = nebulaTap(q * 5.1 + w * 1.5 + vec2(-0.13 * t, 0.23 * t));
+    vec2 n2 = nebulaTap(q * 10.0 + w * 1.9 + vec2(7.3 + 0.19 * t, 3.1 - 0.15 * t));
+    // EACH SHARP OCTAVE ON ITS OWN AXES. nebulaTap is a bilinear value lattice,
+    // so it is only C0 across its own grid lines; one squaring hides that (the
+    // nebula passage never notices) and three turn the creases into straight
+    // segments aligned with the screen -- a visible rectilinear mesh over the
+    // whole remnant. Rotating the two sharpest octaves by 31 and 67 degrees
+    // puts each lattice on its own axes, so no two creases line up with each
+    // other or with the pixel grid, at four multiplies and two adds each.
+    vec2 q3 = vec2(q.x * 0.85717 - q.y * 0.51504, q.x * 0.51504 + q.y * 0.85717);
+    vec2 q4 = vec2(q.x * 0.39073 - q.y * 0.92050, q.x * 0.92050 + q.y * 0.39073);
+    vec2 n3 = nebulaTap(q3 * 19.0 + w * 1.1 + vec2(21.7 - 0.11 * t, 11.3 + 0.13 * t));
+    vec2 n4 = nebulaTap(q4 * 27.0 + w * 0.6 + vec2(5.9 + 0.08 * t, 17.3 - 0.07 * t));
+    // WHICH CHANNEL EACH OCTAVE READS IS NOT ARBITRARY. blackhole-noise.png's R
+    // channel has an x period of 32 texels and G one of 64 (nebulaTap's own
+    // comment), so an octave whose coordinate spans more cells than its
+    // channel's period repeats -- and a repeating ridged field does not read as
+    // noise, it reads as a row of identical glyphs, which is exactly what the
+    // first pass drew at q*43. The bound is |q| <= 1.38, so: scale 10 on R
+    // spans 14 cells, 19 on R spans 26 of 32, 27 on G spans 37 of 64. Nothing
+    // here may go above 23 on R or 46 on G.
+    // The rim's own radius, broken at two scales.
+    float edge = 1.0 + 0.26 * w.x + 0.30 * (n1.x - 0.5) + 0.18 * (n2.y - 0.5);
+    edge = max(edge, 0.30);
+    float u = nd / edge;
+    // THREE SCALES OF STRUCTURE, not one. A single ridged octave gives one
+    // thread width everywhere, which is the "spaghetti" the first version of
+    // this drew; what makes both references read as hyper-detailed is that
+    // there is structure at every scale you look at. So: broad SHEETS (one
+    // squaring), curling THREADS (two) and a near-speckle GRAIN (three), added
+    // rather than averaged so a thread can sit on a sheet. The warp falls with
+    // the octave -- a strongly warped fine octave curls into closed loops, and
+    // loops read as worms rather than as filaments.
+    float sheet = 1.0 - abs(2.0 * n2.y - 1.0);
+    sheet *= sheet;
+    // TANGENTIAL THREADS, on a POLAR grid. A shocked sheet seen edge-on lies
+    // ALONG the rim; a cartesian ridged octave closes into rings instead, and
+    // rings read as worms. 64 cells around the circle is a multiple of BOTH of
+    // the noise texture's x periods (32 and 64), so the angular index wraps
+    // exactly and nothing tears at atan's branch cut -- that is the one thing
+    // v9's snPolar got right and it is kept. At the limb its cells are about
+    // 2.4x longer around the rim than across it, which is the anisotropy the
+    // reference comparison measures as the tangential fraction, and it is the
+    // shader's half of the particle-side filament axis. The radial advection
+    // makes the threads creep through the shell instead of sitting still.
+    // The ANGULAR coordinate is warped by the coarse octave before it is
+    // sampled. Without that, the polar lattice's own radial grid lines survive
+    // the ridging as a comb of hairs pointing at the centre -- v9's snPolar
+    // comment calls the same failure a pinwheel, and it is the spoke he
+    // rejected wearing a different hat. The warp is a function of q, which is
+    // continuous across the branch cut, so the exact wrap is untouched.
+    float turn = atan(q.y, q.x) * 0.15915494;
+    float spin = turn * 64.0 + 9.5 * w.x + 5.0 * (n1.y - 0.5);
+    // ONE polar octave, not two. A second one at twice the angular rate put
+    // 128 of the lattice's radial creases across the outer wisps and they read
+    // as a comb of hairs pointing at the centre -- the same spoke, one more
+    // time. The fine scale comes from the rotated cartesian `grain` instead,
+    // which has no preferred direction at all.
+    vec2 pol = nebulaTap(vec2(spin, nd * 30.0 - 0.22 * t));
+    float thread = 1.0 - abs(2.0 * pol.x - 1.0);
+    thread *= thread;
+    thread *= thread;
+    float grain = 1.0 - abs(2.0 * n4.y - 1.0);
+    grain *= grain;
+    grain *= grain;
+    float fil = 0.32 * sheet + 0.52 * thread + 0.52 * grain;
+    // The shock front and the wisps take a softer ridge: a front broken by the
+    // thread octave alone reads as lightning rather than as shocked gas.
+    float ridge = 0.55 * sheet + 0.45 * thread;
+    vec3 hot = ubuf.snHot.rgb, rim = ubuf.snTone.rgb;
+    vec3 emission = vec3(0.0);
+    float opacity = 0.0;
+    float body = 0.0;
+    if (gain > 0.0 && u < 1.0) {
+        // The hollow-shell column, normalised so its limb peak is 1.
+        float a = ubuf.snBody.x;
+        float uu = u * u;
+        float inner = a * a - uu;
+        body = (sqrt(max(1.0 - uu, 0.0)) - sqrt(max(inner, 0.0))) / sqrt(max(1.0 - a * a, 0.01));
+        // Cavities, and whole sectors of rim that are simply not there.
+        float cav = smoothstep(0.62, 0.22, 0.58 * n2.x + 0.42 * n1.y);
+        float lobe = 0.26 + 0.74 * smoothstep(0.28, 0.80, 0.5 + w.y + 0.45 * (n1.x - 0.5));
+        body *= (1.0 - ubuf.snBody.y * cav) * lobe;
+        // The filigree band at the limb, where the shocked sheets are seen
+        // edge-on, and the isolated knots along it. A knot is where two
+        // INDEPENDENT fine channels both ridge, which is what makes them sparse
+        // and point-like instead of another texture: hundreds per frame, the
+        // way Cas A's bright knots are hundreds and not thousands.
+        float band = exp2(-1.4426950 * (u - a) * (u - a) / 0.0225);
+        float knot = (1.0 - abs(2.0 * n3.y - 1.0)) * (1.0 - abs(2.0 * n2.x - 1.0));
+        knot *= knot;
+        knot *= knot;
+        // Colour by radius: blue-white inner knots -> orange/pink rim -> red
+        // outer wisps, with a patchy hot channel on top so a knot is hot OR
+        // cool rather than the average of the two, the same lesson the nebula
+        // passage learned about a saturation-capped palette.
+        vec3 tint = mix(hot, rim, smoothstep(0.04, 0.84, u));
+        tint = mix(tint, ubuf.snWisp.rgb, smoothstep(0.78, 1.10, u));
+        tint = mix(tint, hot, 0.35 * smoothstep(0.58, 0.84, n1.y));
+        // The interior is NOT empty: a remnant seen through is translucent
+        // layered gas, and the 0.34 floor is the sheets projected through the
+        // middle. The band multiplies only the filigree, so the rim is where
+        // the detail is and the middle is where the light comes through.
+        emission += tint * (gain * body * (0.34 + 1.30 * ubuf.snBody.z * fil * (0.30 + 1.70 * band)));
+        emission += hot * (gain * ubuf.snHot.w * knot * body * (0.30 + 1.70 * band) * 3.2);
+        // The dust column. Densest where the gas is dense and NOT in a cavity
+        // and NOT on a bright filament, which is what leaves the sheets grey
+        // and brown between the lit threads.
+        opacity = clamp(ubuf.snBody.w * body * (0.30 + 0.90 * (0.5 + w.x)) * (1.0 - 0.55 * ridge), 0.0, 0.88);
+        emission += ubuf.snDust.rgb * (opacity * 0.26 * gain);
+    }
+    // The outer wisps: fast material beyond the rim, faint and stringy, the red
+    // wisps and the outer shock of the Chandra composite.
+    if (gain > 0.0 && ubuf.snWisp.w > 0.0) {
+        float out1 = smoothstep(0.84, 1.00, u) * (1.0 - smoothstep(1.02, 1.34, u));
+        emission += ubuf.snWisp.rgb * (gain * ubuf.snWisp.w * out1 * ridge);
+    }
+    // The jets: two opposed lobes on the frozen axis, widening as they go, cut
+    // off at their own reach. Both references have them coming out of the rim.
+    if (gain > 0.0 && ubuf.snDust.w > 0.0) {
+        float along = abs(q.x), across = abs(q.y);
+        float wj = max(ubuf.snJet.w, 0.01) * (0.35 + 0.90 * along);
+        float jet = exp2(-1.4426950 * across * across / (wj * wj))
+            * smoothstep(0.16, 0.58, along)
+            * max(0.0, 1.0 - along / max(ubuf.snJet.z, 0.1));
+        emission += mix(hot, rim, 0.45) * (gain * ubuf.snDust.w * jet * (0.30 + 1.60 * ridge));
+    }
+    // The shock front, in PIXELS: it has its own Sedov radius and runs through
+    // the comoving field rather than with it, which is what a blast wave into a
+    // medium does. Broken by the same octaves, so the front is filamentary and
+    // tangential instead of a drawn ring.
+    if (shock > 0.0) {
+        float sd = nd * R;
+        float sr = ubuf.snShell.x * edge;
+        float sw = max(ubuf.snShell.z, 1.0);
+        float su = (sd - sr) / (sd < sr ? sw * 2.4 : sw);
+        // The front is blue-white on its LEADING edge and cools to the rim tone
+        // behind it, because that is the temperature gradient across a shock
+        // and because one flat white ring is what made the first pass read as
+        // lightning. The grain rides on top of the softer ridge so the front is
+        // made of knots at the scale you zoom to.
+        vec3 frontTone = mix(rim, hot, clamp(0.30 + 0.60 * su, 0.0, 1.0));
+        emission += frontTone * (shock * exp2(-1.4426950 * su * su)
+            * (0.30 + 1.30 * ridge + 0.70 * grain));
+        if (ubuf.snShell.w > 0.0) {
+            float ir = ubuf.snShell.x * 0.66 * edge;
+            float iu = (sd - ir) / max(sw * 0.55, 1.0);
+            emission += mix(hot, rim, 0.30) * (ubuf.snShell.w * exp2(-1.4426950 * iu * iu)
+                * (0.35 + 1.25 * sheet + 0.60 * thread));
+        }
+    }
+    return vec4(max(emission, vec3(0.0)), opacity);
+}
 // ------------------------------------------------------------------------
 
 vec3 decodeDisplay(vec3 c) {
@@ -1374,6 +1535,8 @@ void legacyMain() {
     vec3 legacyColour = colour;
     float localEnvelope = 0.0;
     vec4 nebula = vec4(0.0);
+    // v11: the remnant is sky, exactly like the passage, in both paths.
+    vec4 remnant = vec4(0.0);
     if (ubuf.density > 0.0) {
         float scale = max(1.0, sqrt(ubuf.resolution.x * ubuf.resolution.y / (1024.0 * 576.0)));
         scale /= sqrt(max(0.0001, ubuf.density));
@@ -1385,7 +1548,8 @@ void legacyMain() {
             vec3 field = stars(pixel,baseAngle,scale,0.0,-2.0,pixel,1.0);
             // Only the far layer is behind the cloud; the other two are not.
             nebula = nebulaField(pixel);
-            field *= 1.0-nebula.a;
+            remnant = supernovaRemnant(pixel);
+            field *= (1.0-nebula.a)*(1.0-remnant.a);
             field += stars(pixel,baseAngle,scale,1.0,-2.0,pixel,1.0);
             field += stars(pixel,baseAngle,scale,2.0,-2.0,pixel,1.0);
             colour += field*ubuf.brightness;
@@ -1405,7 +1569,8 @@ void legacyMain() {
         // intact and avoids duplicating the entire star kernel in each branch.
         if (domain) farField = stars(farSource,farAngle,scale,0.0,-1.0,pixel,1.0);
         nebula = nebulaField(farSource);
-        farField *= 1.0-nebula.a;
+        remnant = supernovaRemnant(farSource);
+        farField *= (1.0-nebula.a)*(1.0-remnant.a);
         vec3 middleField = stars(materialSource,materialAngle,scale,1.0,pass,pixel,rimLife);
         vec3 nearField = stars(materialSource,materialAngle,scale,2.0,pass,pixel,rimLife);
         if (pass > 0.5 && ubuf.legacyMaterialAlive > 0.5) {
@@ -1426,6 +1591,11 @@ void legacyMain() {
     // the legacy overlap correction stay in step.
     if (nebula.a > 0.0 || max(nebula.r,max(nebula.g,nebula.b)) > 0.0) {
         vec3 glow = encodeDisplay(nebula.rgb);
+        colour += glow;
+        legacyColour += glow;
+    }
+    if (max(remnant.r,max(remnant.g,remnant.b)) > 0.0) {
+        vec3 glow = encodeDisplay(remnant.rgb);
         colour += glow;
         legacyColour += glow;
     }
@@ -1530,6 +1700,15 @@ void main() {
     vec3 stormLinear = vec3(0.0);
     if (ubuf.stormShape.w>0.0) stormLinear = decodeDisplay(far+meteorStorm(skySource)*ubuf.brightness)-farLinear;
     far = farLinear*(1.0-nebula.a)+nebula.rgb+stormLinear;
+    // v11: the supernova remnant is the sky's own gas, not a sprite on top of
+    // it. Same contract and the same place in the order as the nebula passage:
+    // its dust column multiplies whatever is behind it (so the stars shine
+    // THROUGH it) and its emission joins the far field, both before the shadow,
+    // so with the hole on it sinks behind the disk like everything else. It is
+    // evaluated at skySource, the LENSED coordinate, so it bends with the
+    // background it belongs to.
+    vec4 remnant = supernovaRemnant(skySource);
+    far = far*(1.0-remnant.a)+remnant.rgb*ubuf.brightness;
     if (hole) far *= 1.0-bhShadowMask(pixel);
     // Explicit particles live in the apparent plane. bhWarpMaterial is used
     // only by legacyMain; their swept death remains at Rh, never sqrt(2)*Rh.
