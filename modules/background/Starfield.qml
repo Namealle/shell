@@ -1036,6 +1036,53 @@ Item {
             // spectrum is absent below about 15 km/s, so a slow meteor must
             // get no violet precursor at all.
             event.speed01 = clamp((distance / Math.max(0.05, duration) / shortSide - 0.12) / 0.40, 0, 1);
+            // v12 FLARES, in MAGNITUDES. Gross fragmentation is what produces
+            // a bright flare: ordinary ones run to 1.5 mag, bright ones to 3,
+            // and a terminal burst measured -6.5 -> -11 is 4.5 mag in 0.3 s.
+            // The magnitudes drive the SATURATED DISC as well as the gain,
+            // which is the only half of it the display can show -- a value
+            // already at 255 cannot get brighter, but its disc can grow, and
+            // that is what a camera records and what the eye reads as a flare.
+            //
+            // A fireball flares repeatedly as successive fragments release
+            // (Zdar's first severe fragmentation was at 0.016 MPa and the
+            // later ones at 1.4-2.5 MPa: a weak early crumble, then a strong
+            // late shatter), and the LAST one is the biggest.
+            const mag = parameterRange(cfg, "flareMag", [1.5, 4.5], 0, 6);
+            event.flareSec = cfg.flareSec === undefined ? 0.22 : clamp(Number(cfg.flareSec), 0.10, 0.60);
+            event.flares = [];
+            if (fireball) {
+                const count = 2 + Math.floor(random(index, salt + 34) * 3);
+                for (let i = 0; i < count; ++i) {
+                    const last = i === count - 1;
+                    const at = last ? 0.90 + 0.07 * random(index, salt + 40 + i)
+                        : 0.55 + 0.30 * (i + random(index, salt + 40 + i)) / Math.max(1, count - 1);
+                    const m = last ? mag[1] * (0.85 + 0.15 * random(index, salt + 50 + i))
+                        : mag[0] + (mag[1] - mag[0]) * 0.55 * random(index, salt + 50 + i);
+                    event.flares.push([at, m]);
+                }
+            } else if (random(index, salt + 35) < (cfg.flareShare === undefined ? 0.12 : clamp(Number(cfg.flareShare), 0, 1))) {
+                // An ORDINARY meteor gets an ordinary flare. The census is
+                // blunt about this: 86.6 % of 1496 CAMO videos show continuous
+                // fragmentation with no discrete flare at all, 9.0 % show
+                // negligible fragmentation and only 4.3 % show the gross kind
+                // that produces one. An ordinary flare runs to about 1.5
+                // magnitudes; the 4.5-magnitude terminal burst belongs to a
+                // fireball, and giving it to a third of all meteors moved the
+                // whole population's light-curve maximum onto the flare --
+                // measured, F went 0.525 +- 0.075 to 0.592 +- 0.147, which is
+                // a sky of late-peaked meteors against a census that has 11 %.
+                event.flares.push([0.78 + 0.18 * random(index, salt + 36),
+                    mag[0] + (mag[1] - mag[0]) * 0.35 * random(index, salt + 37)]);
+            }
+            // The dustball model: a meteoroid is grains held by a glue with a
+            // lower boiling point, the outer grains go first and the core
+            // releases all at once. 18 % of an 891-event morphology census are
+            // double-peaked, and that is the mechanism.
+            const dbl = cfg.doublePeakShare === undefined ? 0.18 : clamp(Number(cfg.doublePeakShare), 0, 0.5);
+            event.doublePeak = random(index, salt + 38) < dbl;
+            event.secondF = clamp(event.curveF + 0.16 + 0.18 * random(index, salt + 39), 0.25, 0.95);
+            event.secondGain = 0.55 + 0.30 * random(index, salt + 60);
         }
         // A comet is not a streak with a wider brush. It carries a coma, a
         // straight ion tail pointing away from the only light source on the sky
@@ -2918,10 +2965,26 @@ Item {
         const drag = e.kind === 0 ? (e.fireball ? 0.22 : 0.05) : 0;
         const progress = e.kind === 0 ? (u - drag * u * u * u) / (1 - drag) : u;
         // v12 LIGHT CURVE for a meteor; the v6 in/out ease for everything else.
-        const envelope = e.kind === 0
-            ? lightCurveAt(progress, e.curveF === undefined ? 0.52 : e.curveF, e.curveSharp === undefined ? 4.5 : e.curveSharp)
+        const sharp = e.curveSharp === undefined ? 4.5 : e.curveSharp;
+        let envelope = e.kind === 0
+            ? lightCurveAt(progress, e.curveF === undefined ? 0.52 : e.curveF, sharp)
             : ease(u / 0.16) * ease((1 - u) / 0.20);
-        let gain = e.gain * envelope * (companion ? 0.5 : 1);
+        // The second grain release. max(), not a sum: the peak stays 1 and the
+        // curve gains a shoulder rather than a taller maximum.
+        if (e.kind === 0 && e.doublePeak)
+            envelope = Math.max(envelope, e.secondGain * lightCurveAt(progress, e.secondF, sharp * 1.8));
+        // Flares, summed in MAGNITUDES, Gaussian in TIME on the published FWHM.
+        let flareMag = 0;
+        if (e.kind === 0 && e.flares)
+            for (const f of e.flares) {
+                const t = (age - f[0] * e.duration) / Math.max(0.05, e.flareSec);
+                flareMag += f[1] * Math.exp(-2.7725887 * t * t);
+            }
+        // 10^(0.4 dm) is the linear factor; the slot's own gain is capped at
+        // 3.2x the family cap, because past that the value is clipped anyway
+        // and everything further belongs to the disc.
+        const boost = flareMag > 0 ? Math.pow(10, 0.4 * flareMag) : 1;
+        let gain = e.gain * Math.min(envelope * boost, 3.2) * (companion ? 0.5 : 1);
         if (e.family === "pulsating")
             gain *= (1 + e.pulseAmplitude * Math.sin(age * 2 * Math.PI / e.pulsePeriod)) / (1 + e.pulseAmplitude);
         if (e.family === "skipping")
@@ -2936,8 +2999,14 @@ Item {
         // already clipped by the display and cannot show anything more.
         let flash = 0;
         if (e.kind === 0) {
-            const bright = e.gain * envelope * (e.fireball ? 3.0 : 1);
-            flash = clamp(Math.log(1 + 18 * bright) / Math.log(1 + 18 * 2.6), 0, 1);
+            // The flare's magnitudes reach the disc UNCAPPED, which is the
+            // whole point: a head already at 255/255 cannot get brighter, and
+            // the disc is the only channel left that a camera -- or an eye --
+            // actually reads as a flare. The denominator puts an ordinary
+            // meteor's own maximum at about half the range, so a flare has
+            // somewhere to grow into instead of arriving already clipped.
+            const bright = e.gain * envelope * boost * (e.fireball ? 3.0 : 1);
+            flash = clamp(Math.log(1 + 18 * bright) / Math.log(1 + 18 * 12), 0, 1);
         }
         if (e.kind === 2 && e.glintGain > 1) {
             // A Gaussian in time: smooth at both edges by construction, so the

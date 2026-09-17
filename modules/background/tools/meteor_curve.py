@@ -226,11 +226,23 @@ def main():
         doubles += 1 if c["doublePeak"] else 0
         pk = max(f["peak255"] for f in m["frames"])
         sat = max(f.get("satPx", 0) for f in m["frames"])
+        # THE GLARE, as a growth factor. A head already at 255/255 cannot get
+        # brighter, so the flare has to show as the saturated disc growing --
+        # the disc at its largest, over the disc this meteor carries at its own
+        # ablation maximum when nothing is flaring.
+        quiet = [f.get("satPx", 0) for f in m["frames"]
+                 if f.get("headFlux", 0) > 0.5 * max(x.get("headFlux", 0) for x in m["frames"])]
+        m["discGrowth"] = sat / max(1.0, float(np.median(quiet))) if quiet else 0.0
         print(f"  {m['index']:2d}  {m['family']:<10} {m['duration']:5.2f}   "
               f"{c['F']:7.3f}  {g['F'] if g else 0:7.3f}  {s['F'] if s else 0:7.3f}  {c['P']:5.3f}  "
               f"{'yes' if c['doublePeak'] else ' no':>4}  {pk:7.1f}  {sat:5d}")
         m["stats"] = c
         m["statsDisc"] = s
+    growth = [m.get("discGrowth", 0) for m in manifest["meteors"] if m.get("discGrowth")]
+    if growth:
+        print(f"  saturated disc: median growth {np.median(growth):.2f}x, largest {max(growth):.2f}x "
+              f"(flare carried by the DISC, not by a value the display already clips)")
+        report["discGrowth"] = dict(median=float(np.median(growth)), max=float(max(growth)))
     if Fs:
         Fs = np.array(Fs)
         print(f"  population  F mean {Fs.mean():.3f}  sd {Fs.std(ddof=0):.3f}   "

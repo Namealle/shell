@@ -367,11 +367,21 @@ function main() {
         const e = h.captureEvent(0, k, 0, family);
         const frames = [];
         let arc = 0, px = null, py = null;
-        for (let a = 0; a < AGES; ++a) {
-            const u = (a + 0.5) / AGES;
+        // The uniform sweep, plus three samples inside each flare's own window.
+        // A 0.22 s FWHM flare on a one-second meteor is four frames of a 28
+        // step sweep away from being missed entirely, and the flare is where
+        // the saturated disc is measured.
+        const us = [];
+        for (let a = 0; a < AGES; ++a) us.push((a + 0.5) / AGES);
+        for (const f of (e.flares || []))
+            for (const d of [-0.5, 0, 0.5])
+                us.push(Math.max(0.002, Math.min(0.998, f[0] + d * e.flareSec / e.duration)));
+        us.sort((a, b) => a - b);
+        for (let a = 0; a < us.length; ++a) {
+            const u = us[a];
             h._state.clock = e.start + u * e.duration;
             const slot = h.eventState(e, 0, false, 3);
-            const keep = k === 0 && (a % Math.max(1, Math.floor(AGES / 6)) === 0);
+            const keep = k === 0 && (a % Math.max(1, Math.floor(us.length / 6)) === 0);
             const rec = render(`m${String(k).padStart(2, "0")}a${String(a).padStart(2, "0")}`, null, [slot], keep);
             if (px !== null) arc += Math.hypot(slot.head[0] - px, slot.head[1] - py);
             px = slot.head[0]; py = slot.head[1];
@@ -384,7 +394,7 @@ function main() {
         }
         const span = Math.max(1e-6, arc);
         for (const fr of frames) fr.pathU = Number((fr.arc / span).toFixed(4));
-        meteors.push({ index: k, family, fireball: !!e.fireball, duration: Number(e.duration.toFixed(3)), distance: Number(e.distance.toFixed(1)), tail: Number(e.tail.toFixed(1)), pointWidth: Number(e.pointWidth.toFixed(3)), arc: Number(arc.toFixed(1)), frames });
+        meteors.push({ index: k, family, fireball: !!e.fireball, duration: Number(e.duration.toFixed(3)), distance: Number(e.distance.toFixed(1)), tail: Number(e.tail.toFixed(1)), pointWidth: Number(e.pointWidth.toFixed(3)), arc: Number(arc.toFixed(1)), curveF: Number(e.curveF.toFixed(3)), headShare: Number(e.headShare.toFixed(3)), speed01: Number(e.speed01.toFixed(3)), doublePeak: !!e.doublePeak, flares: (e.flares || []).map(f => [Number(f[0].toFixed(3)), Number(f[1].toFixed(2))]), frames });
     }
 
     // ---- 2. the ordinary fireball -----------------------------------------
@@ -396,11 +406,17 @@ function main() {
         if (!e.fireball) { e.fireball = true; e.pointWidth *= 1.5; }
         const frames = [];
         let arc = 0, px = null, py = null;
-        for (let a = 0; a < AGES; ++a) {
-            const u = (a + 0.5) / AGES;
+        const us = [];
+        for (let a = 0; a < AGES; ++a) us.push((a + 0.5) / AGES);
+        for (const f of (e.flares || []))
+            for (const d of [-0.6, -0.2, 0, 0.2, 0.6])
+                us.push(Math.max(0.002, Math.min(0.998, f[0] + d * e.flareSec / e.duration)));
+        us.sort((a, b) => a - b);
+        for (let a = 0; a < us.length; ++a) {
+            const u = us[a];
             h._state.clock = e.start + u * e.duration;
             const slot = h.eventState(e, 0, false, 3);
-            const keep = k === 0 && (a % Math.max(1, Math.floor(AGES / 6)) === 0);
+            const keep = k === 0 && (a % Math.max(1, Math.floor(us.length / 6)) === 0);
             const rec = render(`f${k}a${String(a).padStart(2, "0")}`, null, [slot], keep);
             if (px !== null) arc += Math.hypot(slot.head[0] - px, slot.head[1] - py);
             px = slot.head[0]; py = slot.head[1];
@@ -408,7 +424,7 @@ function main() {
         }
         const span = Math.max(1e-6, arc);
         for (const fr of frames) fr.pathU = Number((fr.arc / span).toFixed(4));
-        fireballs.push({ index: 500 + k, duration: Number(e.duration.toFixed(3)), frames });
+        fireballs.push({ index: 500 + k, duration: Number(e.duration.toFixed(3)), curveF: Number(e.curveF.toFixed(3)), flares: (e.flares || []).map(f => [Number(f[0].toFixed(3)), Number(f[1].toFixed(2))]), frames });
     }
 
     // ---- 3. the storm fireball's persistent train --------------------------
