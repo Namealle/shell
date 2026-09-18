@@ -121,8 +121,30 @@ Item {
             readerOpenedAt = Date.now();
             r.reenter();
             const from = l.fullResults.indexOf(readerEntry);
-            if (want !== from)
+            if (want !== from) {
                 browseReader(want - from);
+                // Re-aim the leading-slot morph at the entry actually opened.
+                //
+                // reenter() latched it on the entry being LEFT, which is right
+                // for the header -- that really is the old row flying back up
+                // -- and wrong for the picture. morphIndex latches so that a
+                // step made MID-MORPH leaves the morph finishing onto the entry
+                // it lifted off; the browse here is not that step. It is the
+                // same keypress as the re-entry, and nothing of the old entry's
+                // return has been drawn yet, so there is no continuity to keep.
+                //
+                // Left latched, the morph grew the picture of the row you left
+                // while the entry you opened drew its own image at full size
+                // with no morph at all (handedOff is keyed on morphTarget).
+                // Traced: exit at t, `->` at t+250ms taking this branch,
+                // beginMorph latching index 3, browseReader moving to 4, and
+                // the overlay then running 3's picture for the whole open. He
+                // reported both halves of that -- "switch to the next entry
+                // that is an image and the image skips the animation of
+                // expanding and moving", and, with the kinds swapped, "the
+                // image started expanding even though I'm opening the text".
+                r.beginMorph();
+            }
             return;
         }
         if (!l?.currentEntry)

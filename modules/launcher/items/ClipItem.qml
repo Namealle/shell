@@ -88,6 +88,62 @@ Item {
     // genuinely a smaller version of a strong one rather than a shorter one.
     property real entranceStrength: 1
 
+    // Stamped by AppList.settleTo for every row the view hands a transition to,
+    // so a jump carrying an older stamp than the current change is a placement
+    // the view made without one -- see AppList.repairAt.
+    property double transitionedAt: 0
+    property real lastY: 0
+    property bool laidOut: false
+
+    // The view moved this row without animating it: carry the travel on the
+    // row's own Translate instead, which is the same answer the filter entrance
+    // gives and the same curve the rows the view DID animate are running.
+    //
+    // Handled here rather than a frame later on a timer because the write is
+    // synchronous with the view's own: setting the offset inside this handler
+    // means the frame that renders the new y already carries it, so there is no
+    // moment where the row is drawn at the placed position. A frame late would
+    // just be the teleport followed by a slide back.
+    //
+    // ADDED to whatever offset is there rather than replacing it: the
+    // reader-close cascade below fires in the same turn, so overwriting its
+    // offset would trade this jump for a smaller one instead of removing it.
+    onYChanged: {
+        const prev = root.lastY;
+        root.lastY = root.y;
+        // A row built into its slot has no previous position to be moved from.
+        if (!root.laidOut) {
+            root.laidOut = true;
+            return;
+        }
+        const l = root.list;
+        if (!l)
+            return;
+        const at = l.repairAt;
+        // Only inside the change that stamped it, and only if this row is not
+        // one the view took care of.
+        if (at <= 0 || Date.now() - at > 40 || root.transitionedAt >= at)
+            return;
+        const d = root.y - prev;
+        if (Math.abs(d) < 1)
+            return;
+        // Rows below the fold move a stride on every lift and no one sees it.
+        // Against BOTH heights: implicitHeight is the list's resting extent,
+        // but the panel is still animating down from the reader's size, so for
+        // part of the exit the window is taller than the list and a row past
+        // implicitHeight is genuinely on screen. The reverse holds mid-morph.
+        const view = Math.max(l.height, l.implicitHeight);
+        if (root.y + root.implicitHeight < l.contentY || root.y > l.contentY + view)
+            return;
+        entranceAnim.stop();
+        // No stagger: this is not an entrance, it is one row's own interrupted
+        // travel resumed, and it has to stay in step with the rows the view is
+        // animating on the same curve.
+        root.entranceStrength = 0;
+        entrance.y -= d;
+        entranceAnim.start();
+    }
+
     function playEntrance(fade: bool, strength: real): void {
         // STOPPED first, and that is the whole of a row that went blank and
         // stayed blank. start() on an already-running animation does nothing,
@@ -139,7 +195,9 @@ Item {
         PauseAnimation {
             // Capped: past a screenful the delay stops meaning anything, and
             // the list only ever enters from the top anyway.
-            duration: Math.min(root.index, 6) * 24 * root.entranceStrength
+            // Floored: a recycled delegate can report index -1, and a negative
+            // duration is a QML warning plus a silently dropped pause.
+            duration: Math.max(0, Math.min(root.index, 6) * 24 * root.entranceStrength)
         }
 
         ParallelAnimation {

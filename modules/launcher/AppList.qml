@@ -144,11 +144,37 @@ StyledListView {
         root.pendingIndex = -1;
     }
 
+    // -- the rows a SECOND model change moves without animating them --
+    //
+    // A change that lands inside an earlier change's transitions is handled by
+    // the view on its own terms: it animates the row next to the change and
+    // hard-places every other one. Measured on a reader opened and shut inside
+    // its own gap-close -- five rows owed a stride back down, one animated and
+    // four moved in a single frame, which is the row he filmed "teleporting
+    // from default position to existing one in one frame".
+    //
+    // Distinct from the corrupt (0,0) destination settleTo repairs, and not
+    // fixable there: these rows are handed no transition at all, so nothing of
+    // ours runs for them. Two theories were tested and dropped -- it is not the
+    // add/displaced split (removing addDisplaced so the change falls through to
+    // displaced leaves the same single row animating), and the rows are not
+    // rebuilt (delegate identities are unchanged across the frame).
+    //
+    // So the answer is the ROW's, exactly as it is for the rows a filter brings
+    // in without moving them: only what actually arrived without motion should
+    // move, and a row can tell -- settleTo stamps every row the view DID hand a
+    // transition to, so a jump carrying an older stamp than this change is a
+    // placement. See ClipItem's onYChanged.
+    property double repairAt: 0
+
     Timer {
         id: coalesce
 
         interval: 1
         onTriggered: {
+            // Before the model change, so a transition started inside it stamps
+            // later than this and the row knows it was animated after all.
+            root.repairAt = Date.now();
             if (root.wantLift === root.liftedEntry)
                 return;
             root.pendingIndex = root.wantIndex;
@@ -521,6 +547,8 @@ StyledListView {
     function settleTo(item: Item, index: int, destY: real): void {
         if (!item)
             return;
+        // The row's proof that the view is animating it -- see repairAt.
+        item.transitionedAt = Date.now();
         const want = root.rowY(index);
         if (Math.abs(destY - want) > 0.5) {
             const stride = Tokens.sizes.launcher.itemHeight + root.spacing;
