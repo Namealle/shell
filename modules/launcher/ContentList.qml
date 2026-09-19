@@ -121,8 +121,9 @@ Item {
             // the same way, as a browse from the old entry's place on the rail.
             //
             // So end the exit here -- everything its handoff would do -- and
-            // fall through to an ordinary open from the row the highlight is
-            // on. Nothing is cut short that anyone can see: a key after the
+            // run an ordinary open from the row the highlight is on, in the
+            // reader that is already alive (see ClipReader.reopen for why not a
+            // new one). Nothing is cut short that anyone can see: a key after the
             // `<-` is 100ms away at the fastest, and this curve has the header
             // within a pixel or two of its row by then.
             //
@@ -130,16 +131,13 @@ Item {
             // issues it), so currentItem is the row itself; inside that one
             // turn the old path below still stands.
             if (want !== l.fullResults.indexOf(readerEntry) && !l.wantLift && !l.liftedEntry && l.currentEntry === l.fullResults[want]) {
-                // Not the handoff: tearing the reader down stops its slide, and
-                // a stopped slide runs whatever callback it still holds.
-                r.exitCb = null;
                 partTimer.stop();
                 l.maskedEntry = null;
-                readerEntry = null;
-                // Last: with readerActive already false this is what drops the
-                // Loader, and `r` with it.
-                readerExiting = false;
+                // Active BEFORE exiting, exactly as below: the Loader must not
+                // see both false between the two writes.
                 root.openReader();
+                readerExiting = false;
+                r.reopen();
                 return;
             }
             partTimer.stop();
@@ -516,6 +514,7 @@ Item {
 
         target: root.screenState
     }
+
 
     anchors.horizontalCenter: parent.horizontalCenter
     anchors.bottom: parent.bottom

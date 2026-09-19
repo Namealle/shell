@@ -348,6 +348,45 @@ Item {
         root.beginBodySlide(slideAnim.to - slideAnim.from, true);
     }
 
+    // A NEW open in the reader that is already here: another row, asked for
+    // while the last exit was still sliding (ContentList.enterReader). Everything
+    // Component.onCompleted does, from whatever state the exit left behind.
+    //
+    // In place because building a reader is not free once you are deep in the
+    // history -- the rail instantiates every body within three frame-heights
+    // either side. Measured 30 rows down: ~85ms to build one and ~65ms to tear
+    // it down, and a burst of <- / down / -> does that per keypress while the
+    // keys queue up behind it: 1.0s of event-loop stall over 70 keys, single
+    // stalls of 360-410ms, against 60ms with the reader kept. It froze.
+    //
+    // startY, index and startHeight are bindings and already say the new row.
+    function reopen(): void {
+        // First, for the reason exitTo gives: stopping the slide runs it.
+        root.exitCb = null;
+        slideAnim.stop();
+        slideXAnim.stop();
+        root.exiting = false;
+        root.resetZoom();
+        // The rail goes to the new entry AT ONCE -- this is an open, and an
+        // open's motion is the header's, not a browse across the rail.
+        rail.jump();
+        root.slideY = root.startY + root.rowAlignY;
+        root.slideX = root.rowAlignX;
+        slideAnim.from = root.slideY;
+        slideAnim.to = 0;
+        slideXAnim.from = root.slideX;
+        slideXAnim.to = 0;
+        slideAnim.start();
+        slideXAnim.start();
+        root.morphRewind = true;
+        root.morphT = 0;
+        root.morphRewind = false;
+        root.beginMorph();
+        root.morphT = 1;
+        root.bodyFade = 1;
+        root.beginBodySlide(-(root.startY + root.rowAlignY), true, true);
+    }
+
     Anim {
         id: slideAnim
 
@@ -676,15 +715,18 @@ Item {
             }
         }
 
-        Component.onCompleted: {
-            // Nothing else would bring the first entry into existence: with no
-            // currentIndex the view only builds what is around contentY, which
-            // starts at 0. Instant on purpose -- the open is the header's morph,
-            // not a rail move.
+        // Nothing else would bring the first entry into existence: with no
+        // currentIndex the view only builds what is around contentY, which
+        // starts at 0. Instant on purpose -- the open is the header's morph,
+        // not a rail move. positionViewAtIndex writes contentY from C++, past
+        // the Behavior, which for once is the point.
+        function jump(): void {
             rail.positionViewAtIndex(root.index, ListView.Beginning);
             rail.target = rail.contentY;
             rail.pin();
         }
+
+        Component.onCompleted: rail.jump()
 
         // The entry being read moved without the index changing -- which is what
         // happens when a neighbour ABOVE it finishes decoding and grows. Without
@@ -796,7 +838,12 @@ Item {
     // mid-flight reversals all stay glued.
     property real morphT: 0
 
+    // Off for the one write that rewinds the morph -- see reopen().
+    property bool morphRewind: false
+
     Behavior on morphT {
+        enabled: !root.morphRewind
+
         Anim {
             id: morphAnim
         }
