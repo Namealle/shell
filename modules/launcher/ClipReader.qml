@@ -122,6 +122,9 @@ Item {
     // it, so it unfolds beneath as the header rises. exitTo() runs the reverse
     // and only then lets ContentList swap back to the list.
     property real startY: 0
+    // How tall the panel was when the reader was opened, i.e. where its bottom
+    // edge is -- see enterDistance.
+    property real startHeight: 0
     property real slideY: 0
     property real slideX: 0
     property bool exiting: false
@@ -181,12 +184,33 @@ Item {
     }
     readonly property int bodySlideDuration: Math.max(Tokens.anim.durations.expressiveFastEffects, Math.round(Tokens.anim.durations.expressiveDefaultSpatial * root.bodySlideDistance / root.bodySlideMax))
 
+    // -- where an ENTERING body starts: on the panel's bottom edge --
+    //
+    // The distance above is a nudge sized to the body, and on the way in it was
+    // not a slide at all. The Translate moves the rail WITH its clip, so that
+    // clip never crops anything the slide does; the only edge the text can come
+    // in across is the panel's own. And 195px below the header is nowhere near
+    // it on a seven-row list: filmed at 28ms a frame, the text is simply there
+    // on the first frame, whole and at full opacity in the middle of the panel
+    // on top of rows that are still fading, and then travels. "Appearing and
+    // sliding", where a browse inside the reader truly slides.
+    //
+    // So start the rail exactly on the bottom edge. No duration scaling either,
+    // and not for simplicity: the panel's height, the header's slide and this
+    // all run the same curve over the same 500ms, so the three stay in lockstep
+    // and the text crosses the edge and rides up at the pace the panel resizes,
+    // whether it is growing for a page or shrinking for a one-liner.
+    //
+    // Zero or less means the row opened sits so low that the rail, anchored
+    // under the header, already starts at the edge and rides up with it.
+    readonly property real enterDistance: root.startHeight - (root.topInset + root.startY + root.rowAlignY + header.implicitHeight + Tokens.spacing.small)
+
     // Asked of the ENTRY, not of `body`: the delegates register themselves a
     // moment after this reader is built, so on the way in there is nothing to
     // ask yet. Same three tests ClipBody makes.
     readonly property bool entryIsText: !!root.entry && !root.entry.binMatch && Clipboard.colourEntryOf(root.entry).length === 0
 
-    function beginBodySlide(travel: real, entering: bool): void {
+    function beginBodySlide(travel: real, entering: bool, fresh = false): void {
         bodySlideAnim.stop();
         bodyFadeAnim.stop();
 
@@ -209,10 +233,17 @@ Item {
         // Taking the raw sign there sent the body up on the way out while the
         // panel collapsed downwards underneath it.
         const dir = Math.abs(travel) > 4 ? (travel > 0 ? 1 : -1) : (entering ? -1 : 1);
+        // From the edge only when the body comes up from below, which is every
+        // open but the odd one whose header travels downwards.
+        const fromEdge = fresh && dir < 0 && root.startHeight > 0;
         if (entering) {
             // Start on the far side of where the header is going, so the body
             // arrives travelling the same way the header does.
-            root.bodySlide = -dir * root.bodySlideDistance;
+            //
+            // Only on a fresh open. A re-entry half-way through an exit turns
+            // the body round from wherever it has got to.
+            if (fresh)
+                root.bodySlide = fromEdge ? Math.max(0, root.enterDistance) : -dir * root.bodySlideDistance;
             // Deliberately NOT faded up from nothing. The rail clips, so the
             // body scrolls in from outside the frame with its text readable the
             // whole way -- which is the point, since scrolling never fades. It
@@ -228,7 +259,7 @@ Item {
         }
         // Set here rather than bound, so a body that resolves its height
         // mid-flight cannot change the duration of the run already going.
-        bodySlideAnim.duration = root.bodySlideDuration;
+        bodySlideAnim.duration = fromEdge ? Tokens.anim.durations.expressiveDefaultSpatial : root.bodySlideDuration;
         // Kept under the slide's, so the body is always gone before the slide
         // ends rather than lingering over the list coming back.
         bodyFadeAnim.duration = Math.min(Tokens.anim.durations.expressiveDefaultEffects, Math.round(root.bodySlideDuration * 0.7));
@@ -381,7 +412,7 @@ Item {
         beginMorph();
         morphT = 1;
         // to: 0, so the header's travel is the negation of where it starts.
-        beginBodySlide(-(startY + rowAlignY), true);
+        beginBodySlide(-(startY + rowAlignY), true, true);
     }
 
     // -- header: same icon + title as the row --

@@ -618,6 +618,9 @@ Item {
             // cleared but the exit slide is still running.
             index: Math.max(0, (appList.item?.fullResults ?? []).indexOf(root.readerEntry))
             startY: root.readerStartY
+            // Read once, as the reader is built: the panel has not begun to
+            // resize yet, so this is where its bottom edge is.
+            startHeight: root.height
             exitScroll: root.readerExiting ? (appList.item?.contentY ?? 0) - root.exitContentY : 0
             // Search text minus the `;` prefix: seeded with the list filter on
             // entry, live as the user keeps typing (the list itself is frozen).
