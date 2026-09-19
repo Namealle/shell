@@ -210,7 +210,10 @@ Item {
     // ask yet. Same three tests ClipBody makes.
     readonly property bool entryIsText: !!root.entry && !root.entry.binMatch && Clipboard.colourEntryOf(root.entry).length === 0
 
-    function beginBodySlide(travel: real, entering: bool, fresh = false): void {
+    // `exitEdge`: on the way out, how far below its resting place the rail has
+    // to end to sit exactly on the bottom edge of the panel the list is about
+    // to have -- the mirror of enterDistance. Negative when unknown.
+    function beginBodySlide(travel: real, entering: bool, fresh = false, exitEdge = -1): void {
         bodySlideAnim.stop();
         bodyFadeAnim.stop();
 
@@ -236,6 +239,16 @@ Item {
         // From the edge only when the body comes up from below, which is every
         // open but the odd one whose header travels downwards.
         const fromEdge = fresh && dir < 0 && root.startHeight > 0;
+        // And back out across it. The way out used to be a 195px nudge under a
+        // fade, which is its own thing to look at -- a body dissolving is not a
+        // body leaving -- and it is what made every open after the first look
+        // like the old one: close and re-open inside the header's slide and the
+        // reader is still alive, so the body was picked up a nudge below its
+        // place and half faded, and "came back" by appearing while it slid.
+        // Leaving across the edge at full strength, a re-entry finds it either
+        // still in view and simply turns it round, or past the edge, where
+        // coming back IS sliding in.
+        const toEdge = !entering && dir > 0 && exitEdge >= 0;
         if (entering) {
             // Start on the far side of where the header is going, so the body
             // arrives travelling the same way the header does.
@@ -253,13 +266,17 @@ Item {
             // half-way through an exit brings it back from where it got to.
             bodySlideAnim.to = 0;
             bodyFadeAnim.to = 1;
+        } else if (toEdge) {
+            bodySlideAnim.to = Math.max(root.bodySlide, exitEdge);
+            bodyFadeAnim.to = 1;
         } else {
             bodySlideAnim.to = dir * root.bodySlideDistance;
             bodyFadeAnim.to = 0;
         }
         // Set here rather than bound, so a body that resolves its height
         // mid-flight cannot change the duration of the run already going.
-        bodySlideAnim.duration = fromEdge ? Tokens.anim.durations.expressiveDefaultSpatial : root.bodySlideDuration;
+        // A re-entry too: it is undoing an exit that ran at the panel's pace.
+        bodySlideAnim.duration = fromEdge || toEdge || (entering && !fresh) ? Tokens.anim.durations.expressiveDefaultSpatial : root.bodySlideDuration;
         // Kept under the slide's, so the body is always gone before the slide
         // ends rather than lingering over the list coming back.
         bodyFadeAnim.duration = Math.min(Tokens.anim.durations.expressiveDefaultEffects, Math.round(root.bodySlideDuration * 0.7));
@@ -282,7 +299,7 @@ Item {
     readonly property real rowAlignY: (Tokens.sizes.launcher.itemHeight - header.implicitHeight) / 2 - root.topInset
     readonly property real rowAlignX: Tokens.padding.medium - Tokens.padding.large
 
-    function exitTo(targetY: real, cb: var): void {
+    function exitTo(targetY: real, cb: var, endHeight = 0): void {
         // Stop BEFORE storing the callback: stopping a still-running enter
         // slide fires onStopped, which must not consume (and instantly fire)
         // the exit callback.
@@ -305,7 +322,10 @@ Item {
         root.morphT = 0;
         slideAnim.start();
         slideXAnim.start();
-        root.beginBodySlide(slideAnim.to - slideAnim.from, false);
+        // Where the rail ends up under the landed header, against where the
+        // panel's bottom edge ends up.
+        const edge = endHeight > 0 ? Math.max(0, endHeight - (root.topInset + slideAnim.to + header.implicitHeight + Tokens.spacing.small)) : -1;
+        root.beginBodySlide(slideAnim.to - slideAnim.from, false, false, edge);
     }
 
     // Mid-exit reversal: stop the outbound slide wherever it is and return the

@@ -312,6 +312,11 @@ Item {
             l.readerCascade = Math.max(0, Math.min(1, (Date.now() - root.readerOpenedAt) / root.Tokens.anim.durations.expressiveFastSpatial));
             l.readerClosedAt = Date.now();
             readerActive = false;
+            // The panel height the list is going back to, counted from the FULL
+            // results: the entry is still lifted here, so the list's own
+            // implicitHeight is a row short on a history that fits the panel.
+            const stride = root.Tokens.sizes.launcher.itemHeight + l.spacing;
+            const endHeight = Math.min(root.maxHeight, stride * Math.min(root.Config.launcher.maxShown, l.fullResults.length) - l.spacing);
             r.exitTo(target, () => {
                 // In order, and never partly: the row goes back into the model
                 // first (normally partTimer did that mid-slide already, and
@@ -326,7 +331,7 @@ Item {
                 l.maskedEntry = null;
                 root.readerEntry = null;
                 root.readerExiting = false;
-            });
+            }, endHeight);
             // The staged re-insert is right only for a list that has SETTLED:
             // it exists so the neighbours are seen parting mid-slide, which
             // needs them to be sitting still first.
