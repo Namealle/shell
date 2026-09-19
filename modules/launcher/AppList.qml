@@ -121,6 +121,7 @@ StyledListView {
     property double liftRequestedAt: 0
 
     function setLifted(entry: var, index: int): void {
+        root.readerGapIndex = -1;
         root.maskedEntry = entry;
         root.wantLift = entry;
         root.wantIndex = index;
@@ -137,6 +138,7 @@ StyledListView {
     // Teardown, where no animation is owed to anyone.
     function resetLift(): void {
         coalesce.stop();
+        root.readerGapIndex = -1;
         root.wantLift = null;
         root.wantIndex = -1;
         root.liftedEntry = null;
@@ -216,6 +218,10 @@ StyledListView {
     // 0..1, how much of that cascade to play -- see
     // ContentList, which sets it from how long the reader was actually open.
     property real readerCascade: 0
+    // Which row of the LIFTED list the closing reader's entry returns above, or
+    // -1 when the re-insert is not staged. Rows from here down are about to be
+    // parted a stride by it -- see ClipItem's gapHold.
+    property int readerGapIndex: -1
     property string lastTopState: ""
     property var lastLifted: null
 

@@ -107,6 +107,9 @@ Item {
             // Before anything below touches the lift or partTimer.
             const want = exitHighlightIndex();
             partTimer.stop();
+            // The staged re-insert is off, so nothing is coming to part the
+            // rows held for it -- see ClipItem's gapHold.
+            l.readerGapIndex = -1;
             if (l.wantLift !== readerEntry) {
                 const i = l.fullResults.indexOf(readerEntry);
                 l.setLifted(readerEntry, Math.max(0, Math.min(i, l.fullResults.length - 2)));
@@ -302,6 +305,10 @@ Item {
             // Deliberately elapsed TIME and not the fade's current opacity:
             // these curves are front-loaded, so opacity is already 0.03 after
             // 80ms and would call that a completed departure.
+            // Staged or at once -- decided here rather than at the bottom
+            // because the rows need it as the cascade is stamped.
+            const settled = Date.now() - l.liftRequestedAt >= root.Tokens.anim.durations.expressiveDefaultSpatial;
+            l.readerGapIndex = settled && l.liftedEntry ? i : -1;
             l.readerCascade = Math.max(0, Math.min(1, (Date.now() - root.readerOpenedAt) / root.Tokens.anim.durations.expressiveFastSpatial));
             l.readerClosedAt = Date.now();
             readerActive = false;
@@ -337,10 +344,10 @@ Item {
             // they have got to -- settleTo keeps a mid-flight row on its
             // trajectory rather than snapping it, which is exactly the
             // turn-around this needs.
-            if (Date.now() - l.liftRequestedAt < root.Tokens.anim.durations.expressiveDefaultSpatial)
-                root.reinsert();
-            else
+            if (settled)
                 partTimer.restart();
+            else
+                root.reinsert();
         } else {
             resetReader();
         }

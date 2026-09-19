@@ -74,9 +74,14 @@ Item {
     // neighbours is what makes a list look like it is settling into place. The
     // app list gets that quality for free, because its rows each move a
     // different distance and so never arrive in step.
-    transform: Translate {
-        id: entrance
-    }
+    transform: [
+        Translate {
+            id: entrance
+        },
+        Translate {
+            id: gapHold
+        }
+    ]
 
     // `fade` only for rows that are genuinely NEW. A row coming back from
     // behind the reader was never gone, and hiding it to bring it back is what
@@ -116,6 +121,16 @@ Item {
             root.laidOut = true;
             return;
         }
+        let d = root.y - prev;
+        // The re-insert this row was held for -- see gapHold. Spent against the
+        // view's own travel as it happens, so the two cancel to the pixel on
+        // every frame instead of as closely as two animations can be started
+        // together, and whether the view animates the row or places it.
+        if (gapHold.y > 0 && d > 0) {
+            const used = Math.min(gapHold.y, d);
+            gapHold.y -= used;
+            d -= used;
+        }
         const l = root.list;
         if (!l)
             return;
@@ -124,7 +139,6 @@ Item {
         // one the view took care of.
         if (at <= 0 || Date.now() - at > 40 || root.transitionedAt >= at)
             return;
-        const d = root.y - prev;
         if (Math.abs(d) < 1)
             return;
         // Rows below the fold move a stride on every lift and no one sees it.
@@ -174,10 +188,37 @@ Item {
     // are not rebuilt -- they were behind the reader all along -- so they have
     // to be told. The row being read is excluded: it is still masked, and the
     // header morph is already carrying it back onto its slot.
+    //
+    // A row BELOW the gap is owed one more thing. While its neighbour is being
+    // read it rests a stride high, on the slot it inherited, and the re-insert
+    // that parts it back down is staged 140ms into the exit. Left to that, the
+    // cascade and the parting are the same stride in opposite directions a
+    // beat apart: measured on the second row after a close from the first, it
+    // began on its own slot (the cascade's offset happens to equal the stride),
+    // was carried 58px up over the returning row, and was pushed back down when
+    // the re-insert landed -- the "nudge up and then down". It only shows on a
+    // close that barely resizes the panel; anywhere else the panel's own travel
+    // buries it.
+    //
+    // So the row is held on the slot it is coming BACK to, and the hold is
+    // spent against the view's travel in onYChanged. What is left on screen is
+    // the cascade alone, identical to the rows above the gap.
     Connections {
+        function onReaderGapIndexChanged(): void {
+            // A re-entry before the re-insert landed: the row stays a stride
+            // high after all, under a reader that is covering it again.
+            if (root.list.readerGapIndex < 0 && gapHold.y !== 0)
+                holdRelease.start();
+        }
+
         function onReaderClosedAtChanged(): void {
             if (root.list?.maskedEntry === root.modelData)
                 return;
+            const gap = root.list?.readerGapIndex ?? -1;
+            if (gap >= 0 && root.index >= gap) {
+                holdRelease.stop();
+                gapHold.y = Tokens.sizes.launcher.itemHeight + Tokens.spacing.small;
+            }
             const strength = root.list?.readerCascade ?? 0;
             // Nothing worth moving for -- a reader that opened and shut in the
             // same gesture leaves this at essentially zero.
@@ -187,6 +228,14 @@ Item {
         }
 
         target: root.list
+    }
+
+    Anim {
+        id: holdRelease
+
+        target: gapHold
+        property: "y"
+        to: 0
     }
 
     SequentialAnimation {
