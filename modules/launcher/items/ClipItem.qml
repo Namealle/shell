@@ -93,6 +93,10 @@ Item {
     // genuinely a smaller version of a strong one rather than a shorter one.
     property real entranceStrength: 1
 
+    // Where the row is drawn, as opposed to where the view has laid it out: the
+    // reader's header has to lift off the former.
+    readonly property real visualY: root.y + entrance.y + gapHold.y
+
     // Stamped by AppList.settleTo for every row the view hands a transition to,
     // so a jump carrying an older stamp than the current change is a placement
     // the view made without one -- see AppList.repairAt.

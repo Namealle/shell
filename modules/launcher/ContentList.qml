@@ -60,7 +60,10 @@ Item {
 
     function currentRowY(): real {
         const l = appList.item;
-        return l?.currentItem ? l.currentItem.y - l.contentY : 0;
+        // Where the row is DRAWN, which mid-cascade is not where it is laid out
+        // -- see ClipItem.visualY. Other modes' rows have no such offset.
+        const it = l?.currentItem;
+        return it ? (it.visualY ?? it.y) - l.contentY : 0;
     }
 
     function resetReader(): void {
@@ -106,6 +109,39 @@ Item {
                 return;
             // Before anything below touches the lift or partTimer.
             const want = exitHighlightIndex();
+            // Onto ANOTHER row, with the list already whole again: that is not
+            // a re-entry, it is a new open that happens to be early.
+            //
+            // Reversing in place sends the header back up from wherever the
+            // OLD entry's header is, carrying the new entry's title -- and by
+            // the time three keys have been pressed that header has landed, so
+            // the title jumps from its own row to the row that was left and
+            // flies from there. Filmed: closed row 3, stepped to row 6, `->`,
+            // and the next frame has row 6's header on row 3. The body came in
+            // the same way, as a browse from the old entry's place on the rail.
+            //
+            // So end the exit here -- everything its handoff would do -- and
+            // fall through to an ordinary open from the row the highlight is
+            // on. Nothing is cut short that anyone can see: a key after the
+            // `<-` is 100ms away at the fastest, and this curve has the header
+            // within a pixel or two of its row by then.
+            //
+            // Only once the re-insert has LANDED (the step during the exit
+            // issues it), so currentItem is the row itself; inside that one
+            // turn the old path below still stands.
+            if (want !== l.fullResults.indexOf(readerEntry) && !l.wantLift && !l.liftedEntry && l.currentEntry === l.fullResults[want]) {
+                // Not the handoff: tearing the reader down stops its slide, and
+                // a stopped slide runs whatever callback it still holds.
+                r.exitCb = null;
+                partTimer.stop();
+                l.maskedEntry = null;
+                readerEntry = null;
+                // Last: with readerActive already false this is what drops the
+                // Loader, and `r` with it.
+                readerExiting = false;
+                root.openReader();
+                return;
+            }
             partTimer.stop();
             // The staged re-insert is off, so nothing is coming to part the
             // rows held for it -- see ClipItem's gapHold.
@@ -150,6 +186,11 @@ Item {
             }
             return;
         }
+        root.openReader();
+    }
+
+    function openReader(): void {
+        const l = appList.item;
         if (!l?.currentEntry)
             return;
         readerStartY = currentRowY();
