@@ -532,8 +532,15 @@ Item {
         visible: root.bodyFade > 0
         opacity: root.bodyFade
 
+        // Plus the exit scroll, which the header SUBTRACTS (see slidePos) to
+        // stay on a row the list is scrolling away with. The rail hangs off the
+        // header, so it would follow -- and it is leaving for the panel's edge,
+        // which does not scroll. Close the last visible row and step down: the
+        // list scrolls a stride, and the body parked just past the edge was
+        // carried a stride back up into view, at full strength, over the row
+        // below its own.
         transform: Translate {
-            y: root.bodySlide
+            y: root.bodySlide + root.exitScroll
         }
 
         anchors.top: header.bottom
