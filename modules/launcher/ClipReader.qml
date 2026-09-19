@@ -650,9 +650,51 @@ Item {
         // about to be needed anyway: those are exactly the entries the rail is
         // about to scroll past, and it collapses back to the base the moment the
         // rail settles.
-        readonly property real lead: rail.target - rail.contentY
-        displayMarginBeginning: 3 * root.maxHeight + Math.max(0, -rail.lead)
-        displayMarginEnd: 3 * root.maxHeight + Math.max(0, rail.lead)
+        //
+        // Not while the reader is leaving, and that is a freeze, not a nicety.
+        // Nothing browses during an exit, so there is no travel to build ahead
+        // of -- but when the exit lands ContentList clears readerEntry, the
+        // index falls to 0, and the view drops contentY to the top while
+        // `target` still says where the entry WAS. Deep in the history that is
+        // a lead of the whole distance scrolled: measured 71,752px, 87,294px
+        // and 101,534px at entries 358, 416 and 470, and the view obediently
+        // built every body in it -- 402, 454 and 556 of them -- in the tick
+        // before the reader was destroyed. 870-960ms of frozen shell at the end
+        // of every close, growing with how far down you had read.
+        //
+        // Nor across a jump, for the same reason from the other side: the view
+        // is repositioned first and `target` caught up a statement later, and
+        // in between the two disagree by the whole distance. A reader opened at
+        // entry 470 read a lead of -101,392px and built 71 bodies above itself
+        // (214ms) before the next line took the margin away again.
+        property bool jumping: false
+        readonly property real lead: root.exiting || rail.jumping ? 0 : rail.target - rail.contentY
+        //
+        // The base budget is GROWN INTO over the open rather than paid on it. A
+        // pixel budget is a count that depends on what is around: among
+        // one-liners three frame-heights is ~25 bodies either side, ~3.3ms
+        // each, all built in the statement that creates the reader -- measured
+        // 113-175ms of frozen shell per open, 300+ entries down where the
+        // history is mostly short commands. Starting from two rows' worth still
+        // builds both immediate neighbours (they begin where the entry ends),
+        // so the first step after opening has its delegate; the rest arrive a
+        // few per frame while the header is still flying.
+        property real marginGrowth: 0
+        readonly property real marginBase: (Tokens.sizes.launcher.itemHeight + Tokens.spacing.small) * 2
+        readonly property real margin: rail.marginBase + (3 * root.maxHeight - rail.marginBase) * rail.marginGrowth
+
+        NumberAnimation {
+            id: marginRamp
+
+            target: rail
+            property: "marginGrowth"
+            from: 0
+            to: 1
+            duration: Tokens.anim.durations.expressiveDefaultSpatial
+        }
+
+        displayMarginBeginning: rail.margin + Math.max(0, -rail.lead)
+        displayMarginEnd: rail.margin + Math.max(0, rail.lead)
 
         // NOT padding -- nothing is drawn here, the rail never rests in it, and
         // `interactive: false` means it cannot be flicked into. It exists to put
@@ -721,12 +763,17 @@ Item {
         // not a rail move. positionViewAtIndex writes contentY from C++, past
         // the Behavior, which for once is the point.
         function jump(): void {
+            rail.jumping = true;
             rail.positionViewAtIndex(root.index, ListView.Beginning);
             rail.target = rail.contentY;
             rail.pin();
+            rail.jumping = false;
         }
 
-        Component.onCompleted: rail.jump()
+        Component.onCompleted: {
+            rail.jump();
+            marginRamp.start();
+        }
 
         // The entry being read moved without the index changing -- which is what
         // happens when a neighbour ABOVE it finishes decoding and grows. Without
