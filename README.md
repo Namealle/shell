@@ -1,3 +1,8 @@
+> [!NOTE]
+> This is a fork of [`caelestia-dots/shell`](https://github.com/caelestia-dots/shell) that adds a
+> clipboard history reader and an emoji picker to the launcher. See **[FORK.md](FORK.md)**.
+> The rest of this README is upstream's, unmodified.
+
 <h1 align=center>caelestia-shell</h1>
 
 <div align=center>
