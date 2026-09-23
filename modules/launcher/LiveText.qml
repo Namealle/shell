@@ -146,9 +146,11 @@ Item {
             if (!word || !line || !word.chars.length)
                 return;
             const text = word.chars.map(c => c.c).join("");
-            // Tesseract reads icons and noise as short junk; keep words it
-            // trusts, and longer runs it is unsure of
-            if (word.conf < 40 && !/\w{3,}/.test(text))
+            // Tesseract reads icons and noise as short junk: drop the unsure
+            // words with no letter or digit in them. Requiring three letters
+            // in a row (as this did) threw away real text read at low
+            // confidence: dates like 10-04, numbers like 4.
+            if (word.conf < 40 && !/[\p{L}\p{N}]/u.test(text))
                 return;
             if (line.chars.length) {
                 const prev = line.chars[line.chars.length - 1];
@@ -271,6 +273,7 @@ Item {
             }
         }
         flushLine();
+        evenLines(cs, ls);
         // Overlapping neighbours share the space between them at the middle,
         // so their highlights tile instead of covering each other
         for (let i = 1; i < ls.length; i++) {
@@ -288,6 +291,38 @@ Item {
         lines = ls;
         words = ws;
         chars = cs;
+    }
+
+    // Even bands, as a text view draws a selection. Tesseract's glyph extents
+    // change with what a line holds (capitals, a slash, descenders or none):
+    // on one screenshot they ran 16 to 22 px while the baselines sat exactly
+    // 29 px apart, so boxes built from them came out uneven. Each line now
+    // hangs off its baseline (the median bottom of its letters, which the few
+    // descenders do not move) at the text's own line pitch, the same height
+    // and the same gap for every line. A line far off the common size (a
+    // heading, small print) keeps a pitch of its own.
+    function evenLines(cs: var, ls: var): void {
+        const med = a => {
+            const s = a.slice().sort((x, y) => x - y);
+            return s.length ? s[Math.floor((s.length - 1) / 2)] : 0;
+        };
+        for (const l of ls)
+            l.base = med(cs.slice(l.first, l.last + 1).filter(c => c.word >= 0).map(c => c.b));
+        const medH = med(ls.map(l => l.bottom - l.top));
+        const pitches = [];
+        for (let i = 1; i < ls.length; i++) {
+            const d = ls[i].base - ls[i - 1].base;
+            if (d > medH * 0.9 && d < medH * 2.2)
+                pitches.push(d);
+        }
+        const pitch = pitches.length ? med(pitches) : medH * 1.35;
+        for (const l of ls) {
+            const h = l.bottom - l.top;
+            const p = h > medH * 1.6 || h < medH * 0.55 ? h * 1.35 : pitch;
+            const gap = p * 0.06;
+            l.y = l.base - p * 0.78 + gap;
+            l.h = p - gap * 2;
+        }
     }
 
     // ---------------------------------------------------------------- hitting
@@ -405,7 +440,12 @@ Item {
 
         property string path
 
-        command: ["tesseract", path, "-", "-c", "hocr_char_boxes=1", "hocr"]
+        // At twice the size, and light-on-dark turned dark-on-light, which is
+        // what tesseract is built for: on a dark terminal shot it read 10-03
+        // as 10-83 and 10-04 as 18-84 at 1x, all three dates right at 2x,
+        // and faster (431 against 478 ms). The page it reports is then 2x;
+        // pageScale takes that as it is. Plain tesseract without ImageMagick.
+        command: ["sh", "-c", "if command -v magick >/dev/null; then neg=$(magick \"$1\" -alpha off -colorspace Gray -format '%[fx:mean<0.5?1:0]' info:); magick \"$1\" -alpha off -resize 200% $([ \"$neg\" = 1 ] && echo -negate) png:- | tesseract stdin - -c hocr_char_boxes=1 hocr; else tesseract \"$1\" - -c hocr_char_boxes=1 hocr; fi", "ocr", path]
         stdout: StdioCollector {
             onStreamFinished: {
                 // A newer image arrived while this one was being read
