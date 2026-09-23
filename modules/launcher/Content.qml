@@ -151,6 +151,12 @@ Item {
                     event.accepted = true;
                     return;
                 }
+                // Text selected in an image entry; with none, Ctrl+C stays
+                // with the find field
+                if (event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier) && list.readerCopySelection()) {
+                    event.accepted = true;
+                    return;
+                }
             }
 
             // Del removes the highlighted clipboard entry (cliphist delete) --

@@ -215,6 +215,10 @@ Item {
         clipReader.item?.scrollEdge(dir);
     }
 
+    function readerCopySelection(): bool {
+        return clipReader.item?.copySelection() ?? false;
+    }
+
     // ↑/↓ inside the reader step through the UNFILTERED results and move the
     // lift with them (the previous entry returns to the hidden list).
     function browseReader(step: int): void {

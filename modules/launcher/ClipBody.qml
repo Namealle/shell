@@ -437,6 +437,11 @@ Item {
         root.panY = Math.max(-root.maxPanY, Math.min(root.maxPanY, y));
     }
 
+    // Ctrl+C in the reader: the text selected in the picture, if any
+    function copySelection(): bool {
+        return root.isImage && liveText.copy();
+    }
+
     function resetZoom(): void {
         root.zoom = 1;
         root.panX = 0;
@@ -1148,6 +1153,7 @@ Item {
                 cursorShape: Qt.OpenHandCursor
             }
 
+            // Off text: a double-click on a word selects it (LiveText)
             TapHandler {
                 enabled: root.active
                 onDoubleTapped: root.resetZoom()
@@ -1205,6 +1211,18 @@ Item {
                 Behavior on opacity {
                     Anim {}
                 }
+            }
+
+            // Text in the picture, selectable by dragging over it (tesseract,
+            // read once the entry has been the one read for a moment). Last,
+            // so it is over the picture; it takes a press only on text.
+            LiveText {
+                id: liveText
+
+                anchors.fill: parent
+                source: root.isImage && root.imgSrc ? root.imgCache : ""
+                active: root.active && root.isImage && root.handedOff
+                zoomed: root.zoomed
             }
             // The painted box, NOT the full content width: PreserveAspectFit
             // fills the item it is given, so a box wider than the image would

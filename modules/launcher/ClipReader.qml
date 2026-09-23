@@ -117,6 +117,10 @@ Item {
         root.body?.resetZoom();
     }
 
+    function copySelection(): bool {
+        return root.body?.copySelection() ?? false;
+    }
+
     // Shared-element morph: the header IS the row. It starts at the row's y
     // (startY, from ContentList) and slides to the top; the rail is anchored to
     // it, so it unfolds beneath as the header rises. exitTo() runs the reverse
