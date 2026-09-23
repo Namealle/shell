@@ -103,8 +103,11 @@ Item {
         // mid-close flips the content back to the list while the frozen reader
         // width is still on screen, which is visible for the whole close anim.
         onTextChanged: {
-            if (root.screenState.launcher && list.readerActive && !text.startsWith(GlobalConfig.launcher.clipboardPrefix))
-                list.exitReader();
+            // Not an exit to the row: the clipboard list is leaving too (see
+            // ContentList.dropReader). Also mid-exit, whose slide would land
+            // in a list that is no longer there.
+            if (root.screenState.launcher && (list.readerActive || list.readerExiting) && !text.startsWith(GlobalConfig.launcher.clipboardPrefix))
+                list.dropReader();
         }
 
         Keys.onUpPressed: list.readerActive ? list.browseReader(-1) : list.listStep(-1)

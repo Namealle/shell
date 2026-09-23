@@ -215,8 +215,49 @@ Item {
         clipReader.item?.scrollEdge(dir);
     }
 
+    // Text copied out of a picture lands in the history, but the list only
+    // reloads when the launcher opens: without this the new entry was missing
+    // until the next open. Reloaded once the reader has handed back to the
+    // list (exitReader), not now: a reload under the rail would move the
+    // entry being read.
+    property bool copiedInReader
+
     function readerCopySelection(): bool {
-        return clipReader.item?.copySelection() ?? false;
+        const copied = clipReader.item?.copySelection() ?? false;
+        if (copied)
+            copiedInReader = true;
+        return copied;
+    }
+
+    // `;` erased while reading: a switch of mode, not a return to the row. The
+    // list the header would slide back into is leaving, so the morph, the
+    // cascade and the re-insert all played over the apps coming in: clipboard
+    // rows overlapping app rows until they faded (his "ghost entries"). Now
+    // the reader fades out where it is, the lift comes off at once, and the
+    // list stays hidden until it has swapped to its new mode.
+    property bool readerFading
+    property bool listHeld
+    // The rail's entries as they were: the list's own switch to the new mode
+    // would otherwise rebuild the rail under the fade
+    property var fadeEntries: []
+
+    function dropReader(): void {
+        if (!readerActive && !readerExiting)
+            return;
+        const l = appList.item;
+        fadeEntries = l?.fullResults ?? [];
+        partTimer.stop();
+        // Before clearing the flags: the reader Loader must not see all three
+        // false between the writes (see enterReader)
+        readerFading = true;
+        listHeld = true;
+        l?.resetLift();
+        readerActive = false;
+        readerExiting = false;
+        // The clipboard mode reloads on its own when it comes back
+        copiedInReader = false;
+        readerFade.restart();
+        listHeldMax.restart();
     }
 
     // ↑/↓ inside the reader step through the UNFILTERED results and move the
@@ -361,6 +402,10 @@ Item {
             const stride = root.Tokens.sizes.launcher.itemHeight + l.spacing;
             const endHeight = Math.min(root.maxHeight, stride * Math.min(root.Config.launcher.maxShown, l.fullResults.length) - l.spacing);
             r.exitTo(target, () => {
+                // Dropped mid-slide (`;` erased): dropReader already undid
+                // the lift, and the fading rail must keep its entry
+                if (root.readerFading)
+                    return;
                 // In order, and never partly: the row goes back into the model
                 // first (normally partTimer did that mid-slide already, and
                 // this is then a no-op), then the mask comes off. So the entry
@@ -374,6 +419,10 @@ Item {
                 l.maskedEntry = null;
                 root.readerEntry = null;
                 root.readerExiting = false;
+                if (root.copiedInReader) {
+                    root.copiedInReader = false;
+                    Clipboard.reload();
+                }
             }, endHeight);
             // The staged re-insert is right only for a list that has SETTLED:
             // it exists so the neighbours are seen parting mid-slide, which
@@ -602,7 +651,7 @@ Item {
         // finish re-captures a lower base every cycle and decays the list's
         // opacity geometrically to zero, permanently, across every launcher
         // mode. A binding has a fixed target and cannot drift.
-        opacity: root.state === "reader" ? 0 : 1
+        opacity: root.state === "reader" || root.listHeld ? 0 : 1
 
         // Reader enter/exit: the other rows melt out fast under the travelling
         // header (the shared element carries the continuity, not a crossfade).
@@ -647,12 +696,52 @@ Item {
         }
     }
 
+    SequentialAnimation {
+        id: readerFade
+
+        Anim {
+            target: clipReader
+            property: "opacity"
+            to: 0
+            type: Anim.FastEffects
+        }
+        ScriptAction {
+            script: {
+                root.readerFading = false;
+                root.readerEntry = null;
+                root.readerStep = 0;
+                root.fadeEntries = [];
+                clipReader.opacity = 1;
+            }
+        }
+    }
+
+    // The list comes back once it has swapped to its new mode, so the
+    // clipboard rows never show through on the way out
+    Connections {
+        function onDisplayTextChanged(): void {
+            if (root.listHeld && appList.item.displayState !== "clipboard")
+                root.listHeld = false;
+        }
+
+        target: appList.item
+        enabled: root.listHeld
+    }
+
+    // Never held for good, whatever the list does
+    Timer {
+        id: listHeldMax
+
+        interval: 800
+        onTriggered: root.listHeld = false
+    }
+
     Loader {
         id: clipReader
 
         // Not state-driven: the reader must survive the flip back to the list
         // (readerExiting) so its header can finish sliding down onto the row.
-        active: root.readerActive || root.readerExiting
+        active: root.readerActive || root.readerExiting || root.readerFading
 
         anchors.fill: parent
 
@@ -661,11 +750,11 @@ Item {
             // open, so fullResults is stable for the reader's whole lifetime --
             // which is what lets the rail keep seven live delegates without
             // anything reshuffling underneath them.
-            entries: appList.item?.fullResults ?? []
+            entries: root.readerFading ? root.fadeEntries : (appList.item?.fullResults ?? [])
             // readerEntry stays the thing that is owned (the lift is keyed on
             // it); this is just where it sits. -1 while the entry has been
             // cleared but the exit slide is still running.
-            index: Math.max(0, (appList.item?.fullResults ?? []).indexOf(root.readerEntry))
+            index: Math.max(0, (root.readerFading ? root.fadeEntries : (appList.item?.fullResults ?? [])).indexOf(root.readerEntry))
             startY: root.readerStartY
             // Read once, as the reader is built: the panel has not begun to
             // resize yet, so this is where its bottom edge is.
