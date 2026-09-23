@@ -150,7 +150,10 @@ Item {
             // words with no letter or digit in them. Requiring three letters
             // in a row (as this did) threw away real text read at low
             // confidence: dates like 10-04, numbers like 4.
-            if (word.conf < 40 && !/[\p{L}\p{N}]/u.test(text))
+            // (Explicit ranges: Qt's JS engine rejects \p{L} as an invalid
+            // regular expression, and the filter then dropped every unsure
+            // word, **Next and **Open among them.)
+            if (word.conf < 40 && !/[0-9A-Za-z\u00C0-\u024F\u0400-\u04FF]/.test(text))
                 return;
             if (line.chars.length) {
                 const prev = line.chars[line.chars.length - 1];
