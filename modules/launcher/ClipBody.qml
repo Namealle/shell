@@ -409,12 +409,16 @@ Item {
     property real panX: 0
     property real panY: 0
 
-    // 1:1 with the source pixels is the meaningful ceiling, exactly as it is in
-    // any viewer: past it there is no more picture to find. The floor of 2 is for
-    // images the reader already upscales (a 40x30 clip is drawn ~14x up), where
-    // that ratio is below 1 and would otherwise mean no zoom at all -- they have
-    // no detail to reveal, but the gesture should still work.
-    readonly property real maxZoom: Math.max(2, Math.min(16, root.imgNatW / Math.max(1, root.imgBoxW)))
+    // The zoom at which one source pixel is one screen pixel
+    readonly property real nativeZoom: root.imgNatW / Math.max(1, root.imgBoxW)
+    // Past 1:1 on request (his, 2026-09-23: "much higher zoom"): 8x beyond the
+    // source's own pixels, and at least 8x for pictures the reader already
+    // shows at or above 1:1, so text in a small clip can be read letter by
+    // letter. 64x at most. It used to stop at 1:1 (and 16x), on the ground
+    // that past it there is no more picture to find: true of detail, not of
+    // reading what is there. Past 1:1 the pixels are drawn crisp (see the
+    // hi-res image), as a viewer shows them, not smeared.
+    readonly property real maxZoom: Math.min(64, Math.max(8, root.nativeZoom * 8))
     readonly property bool zoomed: root.zoom > 1.001
 
     // Latched rather than bound to `zoomed`, so pinching back to fit and in again
@@ -1185,7 +1189,9 @@ Item {
                 // Exactly what maxZoom can ask for and no more -- past 1:1 with
                 // the source there is nothing further to resolve, so a bigger
                 // decode would be memory spent on nothing.
-                readonly property int hiResW: Math.round(root.imgBoxW * root.maxZoom)
+                // Never above the source's own width: past 1:1 is magnified
+                // on the GPU, and a bigger decode would be memory for nothing
+                readonly property int hiResW: Math.round(root.imgNatW > 0 ? Math.min(root.imgNatW, root.imgBoxW * root.maxZoom) : root.imgBoxW * root.maxZoom)
 
                 visible: root.isImage
                 // Cleared with wantHiRes when the body goes inactive, which is
@@ -1206,6 +1212,8 @@ Item {
                 // Drawn magnified when it matters, so unlike the base image this
                 // one really does sample below the base level.
                 mipmap: true
+                // Past 1:1 each source pixel is a crisp square, not a blur
+                smooth: root.zoom <= root.nativeZoom * 1.001
                 opacity: status === Image.Ready ? 1 : 0
 
                 Behavior on opacity {
