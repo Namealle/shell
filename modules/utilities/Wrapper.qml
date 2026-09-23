@@ -78,7 +78,11 @@ Item {
         anchors.margins: Tokens.padding.large
 
         asynchronous: true
-        active: root.shouldBeActive || root.visible
+        // Kept loaded while hidden: rebuilding the cards on every open held
+        // the GUI thread ~25 ms a few frames into the slide (measured), so
+        // every shell window froze mid-animation and came back out of step
+        // with the others. Hidden, it costs no rendering.
+        active: Config.utilities.enabled || root.shouldBeActive || root.visible
 
         sourceComponent: Content {
             implicitWidth: root.implicitWidth - root.totalPadding
