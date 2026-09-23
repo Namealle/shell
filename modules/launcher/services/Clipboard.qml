@@ -483,6 +483,27 @@ Singleton {
         listProc.running = true;
     }
 
+    // The history read now and applied later: the reader's return folds a
+    // clip copied inside it into its own cascade (ContentList.exitReader),
+    // which needs the new list the moment the exit starts, not a process
+    // round trip after it. Null until read, and again once applied.
+    property var stagedEntries: null
+
+    function stage(): void {
+        stagedEntries = null;
+        stageProc.running = false;
+        stageProc.running = true;
+    }
+
+    function applyStaged(): bool {
+        if (!stagedEntries)
+            return false;
+        root.rawEntries = stagedEntries;
+        stagedEntries = null;
+        root.updateLineCounts();
+        return true;
+    }
+
     function transformSearch(text: string): string {
         return text.slice(GlobalConfig.launcher.clipboardPrefix.length);
     }
@@ -1087,6 +1108,15 @@ Singleton {
 
         function del(): void {
             root.deleteEntry(entry.raw);
+        }
+    }
+
+    Process {
+        id: stageProc
+
+        command: ["cliphist", "-preview-width", "999", "list"]
+        stdout: StdioCollector {
+            onStreamFinished: root.stagedEntries = text.split("\n").filter(l => l.length > 0)
         }
     }
 

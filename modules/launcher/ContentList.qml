@@ -75,6 +75,7 @@ Item {
         readerStep = 0;
         readerActive = false;
         readerExiting = false;
+        railEntries = null;
     }
 
     // The row hands itself off to the reader: mask+lift it out of the model
@@ -137,6 +138,7 @@ Item {
                 // see both false between the two writes.
                 root.openReader();
                 readerExiting = false;
+                railEntries = null;
                 r.reopen();
                 return;
             }
@@ -155,6 +157,7 @@ Item {
             // context, so r.reenter() explodes) and builds a fresh one.
             readerActive = true;
             readerExiting = false;
+            railEntries = null;
             readerOpenedAt = Date.now();
             r.reenter();
             const from = l.fullResults.indexOf(readerEntry);
@@ -216,16 +219,20 @@ Item {
     }
 
     // Text copied out of a picture lands in the history, but the list only
-    // reloads when the launcher opens: without this the new entry was missing
-    // until the next open. Reloaded once the reader has handed back to the
-    // list (exitReader), not now: a reload under the rail would move the
-    // entry being read.
+    // reloads when the launcher opens. The new history is read now (once
+    // cliphist has stored it) and applied as the exit STARTS, so the copied
+    // row comes in with the exit's own cascade: one motion, and the highlight
+    // stays on the entry that was read. Applied after the landing, it was a
+    // second one: a row fading in over the first row, then everything
+    // shifting and the highlight jumping to the new row.
     property bool copiedInReader
 
     function readerCopySelection(): bool {
         const copied = clipReader.item?.copySelection() ?? false;
-        if (copied)
+        if (copied) {
             copiedInReader = true;
+            stageLater.restart();
+        }
         return copied;
     }
 
@@ -237,15 +244,17 @@ Item {
     // list stays hidden until it has swapped to its new mode.
     property bool readerFading
     property bool listHeld
-    // The rail's entries as they were: the list's own switch to the new mode
-    // would otherwise rebuild the rail under the fade
-    property var fadeEntries: []
+    // The rail's entries, held while the reader leaves: the list's own switch
+    // to a new mode (dropReader), or the copied row arriving (exitReader),
+    // would otherwise rebuild the rail and move the entry under the header.
+    // Null while the rail follows the list.
+    property var railEntries: null
 
     function dropReader(): void {
         if (!readerActive && !readerExiting)
             return;
         const l = appList.item;
-        fadeEntries = l?.fullResults ?? [];
+        railEntries = l?.fullResults ?? [];
         partTimer.stop();
         // Before clearing the flags: the reader Loader must not see all three
         // false between the writes (see enterReader)
@@ -351,6 +360,22 @@ Item {
         const r = clipReader.item;
         const l = appList.item;
         if (r?.exitTo && l) {
+            // The copied row, in before anything below reads an index: the
+            // header's landing spot and the gap are the entry's NEW place
+            if (copiedInReader) {
+                const held = l.fullResults.slice();
+                const cur = l.currentEntry;
+                if (Clipboard.applyStaged()) {
+                    railEntries = held;
+                    copiedInReader = false;
+                    // New values reset the list's index to 0 (AppList's
+                    // onValuesChanged); put it back on the same row in this
+                    // turn, before a frame shows the highlight up top
+                    const at = l.results.indexOf(cur);
+                    if (at >= 0)
+                        l.currentIndex = at;
+                }
+            }
             readerExiting = true;
             const i = Math.max(0, l.fullResults.indexOf(readerEntry));
             // The landing spot comes from the LAYOUT, not the animated item: on
@@ -406,6 +431,7 @@ Item {
                 // the lift, and the fading rail must keep its entry
                 if (root.readerFading)
                     return;
+                root.railEntries = null;
                 // In order, and never partly: the row goes back into the model
                 // first (normally partTimer did that mid-slide already, and
                 // this is then a no-op), then the mask comes off. So the entry
@@ -710,7 +736,7 @@ Item {
                 root.readerFading = false;
                 root.readerEntry = null;
                 root.readerStep = 0;
-                root.fadeEntries = [];
+                root.railEntries = null;
                 clipReader.opacity = 1;
             }
         }
@@ -726,6 +752,15 @@ Item {
 
         target: appList.item
         enabled: root.listHeld
+    }
+
+    // cliphist stores the copy through wl-paste --watch, a moment after
+    // wl-copy returns
+    Timer {
+        id: stageLater
+
+        interval: 150
+        onTriggered: Clipboard.stage()
     }
 
     // Never held for good, whatever the list does
@@ -750,11 +785,11 @@ Item {
             // open, so fullResults is stable for the reader's whole lifetime --
             // which is what lets the rail keep seven live delegates without
             // anything reshuffling underneath them.
-            entries: root.readerFading ? root.fadeEntries : (appList.item?.fullResults ?? [])
+            entries: root.railEntries ?? appList.item?.fullResults ?? []
             // readerEntry stays the thing that is owned (the lift is keyed on
             // it); this is just where it sits. -1 while the entry has been
             // cleared but the exit slide is still running.
-            index: Math.max(0, (root.readerFading ? root.fadeEntries : (appList.item?.fullResults ?? [])).indexOf(root.readerEntry))
+            index: Math.max(0, (root.railEntries ?? appList.item?.fullResults ?? []).indexOf(root.readerEntry))
             startY: root.readerStartY
             // Read once, as the reader is built: the panel has not begun to
             // resize yet, so this is where its bottom edge is.
