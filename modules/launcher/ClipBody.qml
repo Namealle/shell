@@ -1231,6 +1231,15 @@ Item {
                 source: root.isImage && root.imgSrc ? root.imgCache : ""
                 active: root.active && root.isImage && root.handedOff
                 zoomed: root.zoomed
+                // What the viewport shows of the picture: the image is scaled
+                // about its centre by zoom, then moved by the pan, and the
+                // viewport is the unscaled box, so undo both
+                view: {
+                    const w = root.imgBoxW, h = root.imgFitH, z = root.zoom;
+                    const x0 = w / 2 + (-w / 2 - root.panX) / z;
+                    const y0 = h / 2 + (-h / 2 - root.panY) / z;
+                    return Qt.rect(x0, y0, w / z, h / z);
+                }
             }
             // The painted box, NOT the full content width: PreserveAspectFit
             // fills the item it is given, so a box wider than the image would

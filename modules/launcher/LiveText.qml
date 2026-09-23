@@ -30,6 +30,12 @@ Item {
     property bool active
     // The picture is zoomed: off text, the cursor is the pan hand
     property bool zoomed
+    // The part of the picture on screen, in this item's coordinates. Zoomed
+    // in, only the text in view is selected and copied: a drag reached lines
+    // scrolled out of sight, and a copy took whole lines past the edges.
+    property rect view: Qt.rect(0, 0, width, height)
+    // `view` in page pixels
+    readonly property rect pageView: Qt.rect(view.x / pageScale, view.y / pageScale, view.width / pageScale, view.height / pageScale)
 
     // One entry per character in reading order ({c, x, w, word, line}), the
     // space between two words and the break between two lines as entries of
@@ -106,7 +112,8 @@ Item {
     function copy(): bool {
         if (!hasSelection)
             return false;
-        const text = chars.slice(selLo, selHi).map(c => c.c).join("").trim();
+        const v = pageView;
+        const text = chars.slice(selLo, selHi).filter(c => lineVisible(lines[c.line]) && (c.w <= 0 || (c.x < v.x + v.width && c.x + c.w > v.x))).map(c => c.c).join("").trim();
         if (!text)
             return false;
         Quickshell.execDetached(["wl-copy", "--", text]);
@@ -297,9 +304,16 @@ Item {
         return Qt.point(x / pageScale, y / pageScale);
     }
 
+    function lineVisible(l: var): bool {
+        const v = pageView;
+        return !!l && l.x < v.x + v.width && l.x + l.w > v.x && l.y < v.y + v.height && l.y + l.h > v.y;
+    }
+
     function lineAt(p: point): int {
         for (let i = 0; i < lines.length; i++) {
             const l = lines[i];
+            if (!lineVisible(l))
+                continue;
             if (p.y >= l.y && p.y <= l.y + l.h && p.x >= l.x - l.h * 0.4 && p.x <= l.x + l.w + l.h * 0.4)
                 return i;
         }
@@ -315,6 +329,8 @@ Item {
         let best = 1e18;
         for (let i = 0; i < lines.length; i++) {
             const l = lines[i];
+            if (!lineVisible(l))
+                continue;
             const dy = p.y < l.y ? l.y - p.y : p.y > l.y + l.h ? p.y - l.y - l.h : 0;
             const dx = p.x < l.x ? l.x - p.x : p.x > l.x + l.w ? p.x - l.x - l.w : 0;
             const d = dy * dy * 4 + dx * dx;
