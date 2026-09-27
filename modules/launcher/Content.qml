@@ -167,11 +167,8 @@ Item {
             // below-neighbour, not the entry being read, so it would delete
             // the wrong one.
             if (event.key === Qt.Key_Delete && !list.readerActive && text.startsWith(GlobalConfig.launcher.clipboardPrefix)) {
-                const item = list.currentList?.currentItem;
-                if (item?.modelData?.del) {
-                    item.modelData.del();
+                if (list.currentList?.deleteCurrent && list.currentList.deleteCurrent())
                     event.accepted = true;
-                }
                 return;
             }
 

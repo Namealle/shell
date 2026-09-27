@@ -79,6 +79,26 @@ StyledListView {
     property var maskedEntry: null
     property int pendingIndex: -1
 
+    // Del in the clipboard picker. The deletion reaches the model a
+    // `cliphist delete` + `cliphist list` round trip later, as an ordinary
+    // values change -- which resets to the top exactly like a new query, so
+    // every delete threw the view back to the newest entry. Remember the row
+    // and the query it belongs to; that change then keeps the index, and the
+    // highlight lands on the entry that slid up into the gap. Typing before
+    // the reload lands is a real query change and still resets.
+    property int deleteIndex: -1
+    property string deleteQuery: ""
+
+    function deleteCurrent(): bool {
+        const entry = root.currentItem?.modelData;
+        if (!entry?.del)
+            return false;
+        root.deleteIndex = root.currentIndex;
+        root.deleteQuery = root.displayText;
+        entry.del();
+        return true;
+    }
+
     // The model change is taken OUT of the keypress and onto the next event
     // loop turn, and that is the whole of it.
     //
@@ -266,10 +286,17 @@ StyledListView {
         comparisonMode: ObjectComparison.Identity
 
         // Lift/unlift must not yank the view back to the top: they pass the
-        // index to keep via pendingIndex; genuine query changes still reset.
+        // index to keep via pendingIndex, a delete via deleteIndex; genuine
+        // query changes still reset.
         onValuesChanged: {
-            root.currentIndex = root.pendingIndex >= 0 ? root.pendingIndex : 0;
+            if (root.pendingIndex >= 0)
+                root.currentIndex = root.pendingIndex;
+            else if (root.deleteIndex >= 0 && root.deleteQuery === root.displayText)
+                root.currentIndex = Math.min(root.deleteIndex, root.results.length - 1);
+            else
+                root.currentIndex = 0;
             root.pendingIndex = -1;
+            root.deleteIndex = -1;
         }
     }
 
