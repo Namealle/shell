@@ -4,6 +4,8 @@ This is a fork of [`caelestia-dots/shell`](https://github.com/caelestia-dots/she
 adds one thing: a clipboard history **reader** inside the launcher. Nothing upstream has
 been removed, and the upstream README is unmodified apart from a link to this file.
 
+https://github.com/user-attachments/assets/3c89fd41-ff01-4fd8-a8f7-29328551f911
+
 **Branch:** `clipboard` = upstream + the launcher work below, and nothing else. It is
 kept current by merging `upstream/main` into it, so it is never force-pushed and you can
 `git pull` it.
