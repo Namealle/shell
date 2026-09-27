@@ -1,7 +1,9 @@
 > [!NOTE]
 > This is a fork of [`caelestia-dots/shell`](https://github.com/caelestia-dots/shell) that adds a
 > clipboard history reader to the launcher. See **[FORK.md](FORK.md)**.
-> The rest of this README is upstream's, unmodified.
+> Everything below the video is upstream's README, unmodified.
+
+https://github.com/user-attachments/assets/3c89fd41-ff01-4fd8-a8f7-29328551f911
 
 <h1 align=center>caelestia-shell</h1>
 
