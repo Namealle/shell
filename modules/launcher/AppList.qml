@@ -35,8 +35,6 @@ StyledListView {
     function stateForText(text: string): string {
         if (text.startsWith(GlobalConfig.launcher.clipboardPrefix))
             return "clipboard";
-        if (text.startsWith(GlobalConfig.launcher.emojiPrefix))
-            return "emoji";
 
         const prefix = GlobalConfig.launcher.actionPrefix;
         if (text.startsWith(prefix)) {
@@ -54,8 +52,6 @@ StyledListView {
         switch (stateForText(text)) {
         case "clipboard":
             return Clipboard.query(text);
-        case "emoji":
-            return Emoji.query(text);
         case "actions":
             return Actions.query(text);
         case "calc":
@@ -282,7 +278,7 @@ StyledListView {
         // structural walk buys nothing here: clipboard entries are the shared
         // ClipEntry instances resolved through Clipboard.entryFor, apps are
         // DesktopEntry objects, actions/schemes/variants are declared QtObject
-        // instances, emoji are plain integer indices and calc is a literal.
+        // instances, and calc is a literal.
         comparisonMode: ObjectComparison.Identity
 
         // Lift/unlift must not yank the view back to the top: they pass the
@@ -380,8 +376,6 @@ StyledListView {
             Schemes.reload();
         else if (state === "clipboard")
             Clipboard.reload();
-        else if (state === "emoji")
-            Emoji.reload();
     }
 
     Component.onCompleted: displayText = search.text
@@ -427,13 +421,6 @@ StyledListView {
 
             PropertyChanges {
                 root.delegate: clipItem
-            }
-        },
-        State {
-            name: "emoji"
-
-            PropertyChanges {
-                root.delegate: emojiItem
             }
         }
     ]
@@ -704,14 +691,6 @@ StyledListView {
         id: clipItem
 
         ClipItem {
-            list: root
-        }
-    }
-
-    Component {
-        id: emojiItem
-
-        EmojiItem {
             list: root
         }
     }

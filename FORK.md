@@ -1,9 +1,8 @@
 # Caelestia shell + a clipboard reader
 
 This is a fork of [`caelestia-dots/shell`](https://github.com/caelestia-dots/shell) that
-adds one thing: a clipboard history **reader** inside the launcher, plus the emoji picker
-and native fuzzy search that grew up next to it. Nothing upstream has been removed, and
-the upstream README is unmodified apart from a link to this file.
+adds one thing: a clipboard history **reader** inside the launcher. Nothing upstream has
+been removed, and the upstream README is unmodified apart from a link to this file.
 
 **Branch:** `clipboard` = upstream + the launcher work below, and nothing else. It is
 kept current by merging `upstream/main` into it, so it is never force-pushed and you can
@@ -25,8 +24,7 @@ The launcher is where most of the work went.
 A clipboard history browser backed by `cliphist`, with a reading pane rather than a
 plain list.
 
-- Type `;` in the launcher to browse history; entries are ranked with the fuzzy matcher
-  described below.
+- Type `;` in the launcher to browse history; typing after the `;` filters it.
 - Each entry gets a content-derived Material icon (URL, path, JSON, hex colour, stack
   trace, SQL, and ~35 others) instead of one generic clipboard glyph.
 - Selecting an entry opens it in a reader pane that morphs out of the list row it came
@@ -43,38 +41,21 @@ plain list.
 Files: `modules/launcher/services/Clipboard.qml`, `modules/launcher/ClipReader.qml`,
 `modules/launcher/ClipBody.qml`, `modules/launcher/items/ClipItem.qml`.
 
-### Emoji picker (`:` prefix)
-
-Type `:` to search emoji by name and copy on select.
-
-Files: `modules/launcher/services/Emoji.qml`, `modules/launcher/items/EmojiItem.qml`.
-
-### Native fuzzy search
-
-The launcher's ranking moved from QML into a C++ `Search` singleton — fuzzy matching
-with a substring fast path, plus a standalone test binary.
-
-Files: `plugin/src/Caelestia/search{.cpp,.hpp}`, `plugin/src/Caelestia/searchcore{.cpp,.hpp}`,
-`plugin/tests/search_test.cpp`.
-
 ### Other launcher changes
 
 - Keybinds that open the launcher with text already typed, so a single shortcut can
-  drop you straight into the clipboard or emoji picker. Pressing the same bind again
+  drop you straight into the clipboard. Pressing the same bind again
   while that query is showing closes the launcher (`modules/UserShortcuts.qml`).
 
 ### Configuration
 
-Both prefixes are configurable, alongside the existing upstream ones:
+The prefix is configurable, alongside the existing upstream ones:
 
 | Option             | Default |
 | ------------------ | ------- |
 | `clipboardPrefix`  | `;`     |
-| `emojiPrefix`      | `:`     |
 
 Set in `~/.config/caelestia/shell.json` under `launcher`.
-
----
 
 ---
 
@@ -98,8 +79,8 @@ second one is not specific to this fork.
 Requirements beyond upstream's: [`cliphist`](https://github.com/sentriz/cliphist) storing
 your clipboard (`wl-paste --watch cliphist store`), and `wl-clipboard`.
 
-The fork changes the C++ plugin (the `Search` singleton and two launcher config
-options), so the plugin has to be built and installed — copying the QML is not enough:
+The fork changes the C++ plugin (the `clipboardPrefix` launcher config option), so the
+plugin has to be built and installed — copying the QML is not enough:
 
 ```sh
 git clone -b clipboard https://github.com/Namealle/shell ~/.config/quickshell/caelestia
@@ -112,7 +93,7 @@ sudo cmake --install build   # installs to /usr/local
 If a distro package of caelestia-shell is also installed, its plugin in
 `/usr/lib/qt6/qml` wins unless the session exports
 `QML_IMPORT_PATH=/usr/local/lib/qt6/qml`. The symptom of the wrong plugin being loaded
-is silent: `;` and `:` simply do nothing. To try a build without installing it:
+is silent: `;` simply does nothing. To try a build without installing it:
 
 ```sh
 QML_IMPORT_PATH=$PWD/build/qml caelestia shell -r -d

@@ -60,6 +60,7 @@ PageBase {
         }
 
         TextFieldRow {
+            last: true
             label: Tr.tr("Clipboard prefix")
             subtext: Tr.tr("Prefix used to browse clipboard history in the launcher")
             errorText: Tr.tr("Prefix must not be alphanumeric")
@@ -73,25 +74,6 @@ PageBase {
                     return;
                 GlobalConfig.launcher.clipboardPrefix = value || ";";
                 if (GlobalConfig.launcher.clipboardPrefix === ";")
-                    clear();
-            }
-        }
-
-        TextFieldRow {
-            last: true
-            label: Tr.tr("Emoji prefix")
-            subtext: Tr.tr("Prefix used to search emoji in the launcher")
-            errorText: Tr.tr("Prefix must not be alphanumeric")
-            value: GlobalConfig.launcher.emojiPrefix === ":" ? "" : GlobalConfig.launcher.emojiPrefix
-            placeholderText: ":"
-            maximumLength: 1
-            smallField: true
-            validate: /^[^a-zA-Z0-9\s]$/
-            onEditingFinished: value => {
-                if (!field.valid)
-                    return;
-                GlobalConfig.launcher.emojiPrefix = value || ":";
-                if (GlobalConfig.launcher.emojiPrefix === ":")
                     clear();
             }
         }

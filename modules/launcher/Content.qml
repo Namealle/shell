@@ -78,8 +78,6 @@ Item {
                     root.screenState.launcher = false;
                 } else if (text.startsWith(GlobalConfig.launcher.clipboardPrefix)) {
                     currentItem.modelData.onClicked(list.currentList);
-                } else if (text.startsWith(GlobalConfig.launcher.emojiPrefix)) {
-                    currentItem.activate();
                 } else if (text.startsWith(GlobalConfig.launcher.actionPrefix)) {
                     if (text.startsWith(`${GlobalConfig.launcher.actionPrefix}calc `))
                         currentItem.onClicked();
