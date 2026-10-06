@@ -462,12 +462,25 @@ Item {
     // delta so a high-resolution wheel or a touchpad stays proportional instead
     // of jumping a full notch per event.
     function zoomAt(cx: real, cy: real, delta: real): void {
+        root.zoomBy(cx, cy, Math.pow(1.15, delta / 120));
+    }
+
+    // (cx, cy) is in the IMAGE's own frame, which is what its handlers report:
+    // Qt maps a handler's point through the item's transform, so it arrives
+    // unscaled and unpanned already (qmltestrunner, 2026-10-06: a point that
+    // sits at 150,80 on screen arrived as 110,60 on a 2x-scaled item). p is
+    // then just the offset from the centre. Reading it as a screen point, as
+    // this did before, only came out right while every step stayed on the
+    // point the zoom started from: zoom in at one spot, move the pointer (or
+    // drag the pan) and zoom again, and the picture slid ~19 px off the
+    // pointer in the same test.
+    function zoomBy(cx: real, cy: real, factor: real): void {
         const from = root.zoom;
-        const to = Math.max(1, Math.min(root.maxZoom, from * Math.pow(1.15, delta / 120)));
+        const to = Math.max(1, Math.min(root.maxZoom, from * factor));
         if (to === from)
             return;
-        const px = (cx - root.imgBoxW / 2 - root.panX) / from;
-        const py = (cy - root.imgFitH / 2 - root.panY) / from;
+        const px = cx - image.width / 2;
+        const py = cy - image.height / 2;
         root.zoom = to;
         if (to > 1)
             root.wantHiRes = true;
@@ -1124,6 +1137,18 @@ Item {
                 enabled: root.active
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                 onWheel: event => root.zoomAt(event.x, event.y, event.angleDelta.y)
+            }
+
+            // A touchpad pinch, which Hyprland hands to the window when no
+            // gesture of its own claims two fingers. scaleChanged carries the
+            // step since the last update as a ratio, so it feeds the same
+            // anchored zoom as the wheel and the two can be mixed mid-gesture.
+            // target: null for the same reason as the pan: the clamps in
+            // zoomBy/setPan stay in charge, not the handler.
+            PinchHandler {
+                target: null
+                enabled: root.active
+                onScaleChanged: delta => root.zoomBy(centroid.position.x, centroid.position.y, delta)
             }
 
             // target: null -- this drives root.panX/panY through the clamp rather
