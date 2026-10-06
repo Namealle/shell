@@ -1140,15 +1140,35 @@ Item {
             }
 
             // A touchpad pinch, which Hyprland hands to the window when no
-            // gesture of its own claims two fingers. scaleChanged carries the
-            // step since the last update as a ratio, so it feeds the same
-            // anchored zoom as the wheel and the two can be mixed mid-gesture.
-            // target: null for the same reason as the pan: the clamps in
-            // zoomBy/setPan stay in charge, not the handler.
+            // gesture of its own claims two fingers. It feeds the same anchored
+            // zoom as the wheel, so the two can be mixed mid-gesture. target:
+            // null for the same reason as the pan: the clamps in zoomBy/setPan
+            // stay in charge, not the handler.
+            //
+            // A touchpad's steps are not ratios. The compositor sends the
+            // finger spread as a running scale; Qt hands each step on as
+            // 1 + (the scale's increment) and multiplies those up, which
+            // compounds: fingers spread to 3.8x zoomed 15.4x (uinput touchpad,
+            // 2026-10-06), straight to the ceiling. Summing the increments
+            // back into the spread and taking its ratio step by step makes the
+            // picture grow exactly as far as the fingers. A touchscreen's
+            // steps are true ratios already and pass through.
             PinchHandler {
+                property real spread: 1
+
                 target: null
                 enabled: root.active
-                onScaleChanged: delta => root.zoomBy(centroid.position.x, centroid.position.y, delta)
+
+                onActiveChanged: spread = 1
+                onScaleChanged: delta => {
+                    let factor = delta;
+                    if (centroid.device?.type === PointerDevice.TouchPad) {
+                        const next = Math.max(0.05, spread + delta - 1);
+                        factor = next / spread;
+                        spread = next;
+                    }
+                    root.zoomBy(centroid.position.x, centroid.position.y, factor);
+                }
             }
 
             // target: null -- this drives root.panX/panY through the clamp rather
