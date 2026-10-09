@@ -92,6 +92,16 @@ Singleton {
             if (target)
                 target[slot] = component;
         }
+        // A change handler never runs for a binding's initial value, so a
+        // window built while its screen's Components already exist -- every
+        // window rebuilt after a monitor is removed and re-added -- would
+        // never register, and the old window's onDestruction has already
+        // cleared the slot. find()/findAll() on that screen then return
+        // nothing (the launcher-open IPC lost its search bar this way).
+        Component.onCompleted: {
+            if (target)
+                target[slot] = component;
+        }
         Component.onDestruction: {
             if (target && target[slot] === component)
                 target[slot] = null;
