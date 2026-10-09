@@ -86,21 +86,41 @@ Singleton {
         required property string slot
         required property var component
 
-        readonly property QtObject target: ShellState.componentsFor(screen)
+        // The screen this ref was created for. When a monitor goes away, Qt
+        // moves its window onto a remaining screen before destroying it.
+        // Following that move let the dying window claim the survivor's slot
+        // and then clear it on destruction, so find() on the survivor returned
+        // null until a restart -- one sleep/wake of the second monitor and
+        // `launcher open <query>` opened with an empty search bar. Windows are
+        // per screen, so a ref never has a reason to change screens.
+        //
+        // `pinned` is separate from `home` on purpose: an object property
+        // pointing at a destroyed screen reads null, and that must mean "my
+        // screen is gone" (no target), not "adopt whatever screen comes next".
+        property ShellScreen home: null
+        property bool pinned: false
+        readonly property QtObject target: pinned ? (home ? ShellState.componentsFor(home) : null) : ShellState.componentsFor(screen)
 
-        onTargetChanged: {
+        function claim(): void {
             if (target)
                 target[slot] = component;
         }
+
+        function pin(): void {
+            if (pinned || !screen)
+                return;
+            home = screen;
+            pinned = true;
+        }
+
+        onScreenChanged: pin()
+        onTargetChanged: claim()
         // A change handler never runs for a binding's initial value, so a
-        // window built while its screen's Components already exist -- every
-        // window rebuilt after a monitor is removed and re-added -- would
-        // never register, and the old window's onDestruction has already
-        // cleared the slot. find()/findAll() on that screen then return
-        // nothing (the launcher-open IPC lost its search bar this way).
+        // window built while its screen's Components already exist would
+        // otherwise never register.
         Component.onCompleted: {
-            if (target)
-                target[slot] = component;
+            pin();
+            claim();
         }
         Component.onDestruction: {
             if (target && target[slot] === component)
