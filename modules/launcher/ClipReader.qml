@@ -564,12 +564,41 @@ Item {
     // within ~50ms but are only crisp at ~200-250ms: Default on their fade and
     // Slow (300ms; 0.95 at 167ms) on the blur. Default for the incoming blur
     // looked sharp by 100ms, visibly faster than the reference.
-    readonly property real swapBlurMax: 20
+    //
+    // And a SWELL, his second verdict on the first build ("very subtle ... in
+    // original there was some shrink and expansion"). Measured off the same
+    // reference: the pill grows 130 -> 152px (+16 %) over ~7 frames, settles
+    // over ~11 more and dips ~1.5 % under its rest size once before resting;
+    // the glyphs that arrive are ~10-12 % oversized and shrink to size while
+    // they sharpen. From its peak the reference has half the excess left at
+    // 83ms and none at ~167ms. DefaultSpatial (500ms) has 46 % left at 83ms
+    // and 6 % at 167ms -- the same settle -- and its one undershoot is 1.4 %
+    // of the excess, 0.14 % of the size: there, but not a bounce. (Tried
+    // FastSpatial first, filmed: it is spent by 100ms, while the incoming
+    // glyphs are still blurred, and what is left to see is its 0.9 % dip
+    // crawling back for 250ms.) So the incoming face starts at swapInScale
+    // and settles to exactly 1 on the default curve, alongside the Slow
+    // blur, and a leaving face swells by the same amount while it blurs out
+    // (Fast spatial over its fade -- it is gone before it would settle, so
+    // that is pure growth). Both scale about the
+    // header's left-centre, i.e. the icon's left edge, so the title does not
+    // drift sideways and nothing reaches into the left padding; what a long
+    // title pushes past the right edge is cut at the reader's own right inset
+    // (swapClip), never at the panel's edge.
+    readonly property real swapBlurMax: 48
     // Blur of the incoming content on a single step, and of a leaving ghost at
     // the end of its fade, as fractions of swapBlurMax.
     readonly property real swapInBlur: 1
     readonly property real swapOutBlur: 1
+    // Where a leaving face's blur starts on its first frame, as a fraction of
+    // swapBlurMax. MultiEffect barely blurs below ~0.15, so a ghost launched
+    // from a sharp face spent its first two frames only dimming, the old
+    // title fully legible.
+    readonly property real swapOutBlurFloor: 0.3
     readonly property real swapInOpacity: 0.3
+    readonly property real swapInScale: 1.1
+    readonly property real swapOutScale: 1.1
+    readonly property int swapScaleDuration: Tokens.anim.durations.expressiveDefaultSpatial
     // While steps keep arriving: a light blur that still reads (~2px), and a
     // leaving face that is gone within about one key repeat (~33ms), so at
     // most one ghost is ever under the title. That fade is the one number here
@@ -578,6 +607,11 @@ Item {
     // each other (filmed). A third of expressiveFastEffects.
     readonly property real swapHeldBlur: 0.1
     readonly property real swapHeldOpacity: 0.85
+    // The scale under a hold: a step arriving mid-transition never raises
+    // the live face again -- it carries on settling from where it is, so a
+    // held arrow does not pump on every repeat -- and a leaving face swells
+    // only this much over its short fade.
+    readonly property real swapHeldOutScale: 1.02
     readonly property int swapHeldFadeDuration: Math.round(Tokens.anim.durations.expressiveFastEffects / 3)
     readonly property int swapOutBlurDuration: Tokens.anim.durations.expressiveFastEffects
     readonly property int swapOutFadeDuration: Tokens.anim.durations.expressiveDefaultEffects
@@ -588,6 +622,9 @@ Item {
     // layer at all.
     property real swapBlur: 0
     property real swapOpacity: 1
+    // At rest exactly 1: a visual transform only, so nothing that measures
+    // the header (implicitHeight, slotS, the title's x) sees it.
+    property real swapScale: 1
     // The entry the header last drew, so a change that is not a change (the
     // rail's entries array replaced around the same entry) does nothing.
     property var swapShown: null
@@ -638,20 +675,34 @@ Item {
                 if (c && c.busy && c !== g)
                     c.hurry(root.swapHeldFadeDuration);
             }
+        // From what is on screen -- blur, opacity and scale -- except that a
+        // single step's ghost starts no softer than swapOutBlurFloor (see
+        // there). A burst's stays light, which is the cap.
+        const blur0 = burst ? root.swapBlur : Math.max(root.swapBlur, root.swapOutBlurFloor);
+        const swell = (burst ? root.swapHeldOutScale : root.swapOutScale) - 1;
         if (g)
-            g.launch(Clipboard.iconOf(prev), prev?.name ?? "", root.metaFor(prev, pb), root.swapBlur, root.swapOpacity, burst ? root.swapHeldBlur : root.swapOutBlur, burst ? root.swapHeldFadeDuration : root.swapOutFadeDuration, burst ? root.swapHeldFadeDuration : root.swapOutBlurDuration);
+            g.launch(Clipboard.iconOf(prev), prev?.name ?? "", root.metaFor(prev, pb), blur0, root.swapOpacity, burst ? root.swapHeldBlur : root.swapOutBlur, burst ? root.swapHeldFadeDuration : root.swapOutFadeDuration, burst ? root.swapHeldFadeDuration : root.swapOutBlurDuration, root.swapScale, root.swapScale + swell);
         swapIn.stop();
         root.swapBlur = burst ? Math.min(root.swapHeldBlur, root.swapInBlur) : root.swapInBlur;
         root.swapOpacity = burst ? root.swapHeldOpacity : root.swapInOpacity;
         swapIn.start();
+        // The swell: a single step arrives oversized; a step inside a
+        // transition leaves the scale where it is and only restarts its
+        // settle from there, so a held arrow never pumps it.
+        swapScaleAnim.stop();
+        if (!burst)
+            root.swapScale = root.swapInScale;
+        swapScaleAnim.start();
     }
 
     // reopen(): a new open, so the header is a lifted row again and whatever a
     // browse left in flight has no business on it.
     function resetSwap(): void {
         swapIn.stop();
+        swapScaleAnim.stop();
         root.swapBlur = 0;
         root.swapOpacity = 1;
+        root.swapScale = 1;
         for (let i = 0; i < ghosts.count; i++)
             ghosts.itemAt(i)?.clear();
     }
@@ -698,6 +749,18 @@ Item {
         }
     }
 
+    // Apart from swapIn, whose `running` is what says "burst": the settle is
+    // longer than the blur, and folding it in would widen that window.
+    Anim {
+        id: swapScaleAnim
+
+        target: root
+        property: "swapScale"
+        to: 1
+        type: Anim.DefaultSpatial
+        duration: root.swapScaleDuration
+    }
+
     // A copy of the header's face holding what was on screen, leaving.
     component HeaderGhost: Item {
         id: ghost
@@ -708,16 +771,19 @@ Item {
         property real blur: 0
         readonly property bool busy: gOut.running
 
-        function launch(icon: string, title: string, meta: string, blur: real, op: real, blurTo: real, fadeDur: int, blurDur: int): void {
+        function launch(icon: string, title: string, meta: string, blur: real, op: real, blurTo: real, fadeDur: int, blurDur: int, scale0: real, scaleTo: real): void {
             gOut.stop();
             ghost.icon = icon;
             ghost.title = title;
             ghost.meta = meta;
             ghost.blur = blur;
             ghost.opacity = op;
+            ghost.scale = scale0;
             gBlur.to = blurTo;
+            gScale.to = scaleTo;
             gFade.duration = fadeDur;
             gBlur.duration = blurDur;
+            gScale.duration = fadeDur;
             gOut.start();
         }
 
@@ -729,6 +795,7 @@ Item {
             gOut.stop();
             gFade.duration = dur;
             gBlur.duration = dur;
+            gScale.duration = dur;
             gOut.start();
         }
 
@@ -736,9 +803,12 @@ Item {
             gOut.stop();
             ghost.opacity = 0;
             ghost.blur = 0;
+            ghost.scale = 1;
         }
 
-        anchors.fill: parent
+        // Geometry comes from the Repeater (the header's box inside
+        // swapClip). Swells about its left-centre, as the live face does.
+        transformOrigin: Item.Left
         opacity: 0
         visible: ghost.opacity > 0
         // Always on, so the effect is built before a ghost is first needed:
@@ -770,6 +840,15 @@ Item {
                 target: ghost
                 property: "blur"
                 type: Anim.FastEffects
+            }
+            // The swell, over the fade: the face is gone before it would
+            // settle, so it is spent as pure growth.
+            Anim {
+                id: gScale
+
+                target: ghost
+                property: "scale"
+                type: Anim.FastSpatial
             }
         }
 
@@ -912,76 +991,107 @@ Item {
 
         implicitHeight: Math.max(headerIcon.implicitHeight, headerText.implicitHeight)
 
-        // The live face. Fills the header exactly, so every anchor below lays
-        // out as it did when these were the header's own children. The layer
-        // exists only while a blur is in flight: at rest the text renders
-        // straight, with no FBO in the way of its crispness.
+        // Where a swelling face is cut: at the reader's own edge on the right
+        // (header's right margin), so the end of a long title scaled 1.1x
+        // about the left runs into the inset and never past the panel. Clear
+        // of the blur's spread above and below. At rest nothing reaches it,
+        // so the scissor changes no pixel.
         Item {
-            id: headerLive
+            id: swapClip
 
-            anchors.fill: parent
-            opacity: root.swapOpacity
-            layer.enabled: root.swapBlur > 0
-            layer.effect: MultiEffect {
-                blurEnabled: true
-                blur: root.swapBlur
-                blurMax: root.swapBlurMax
-            }
+            readonly property real padX: Tokens.padding.large
+            readonly property real padY: root.swapBlurMax
 
-            MaterialIcon {
-                id: headerIcon
+            x: -padX
+            y: -padY
+            width: header.width + padX * 2
+            height: header.height + padY * 2
+            clip: true
 
-                anchors.verticalCenter: parent.verticalCenter
-                // Natural width, matching ClipItem's leading slot exactly: the row
-                // reserves one 1em square for every entry type, so the header does
-                // too, and the title sits at the same x in both. Any mismatch here
-                // rides visibly through the whole slide and teleports across when
-                // the handoff unmasks the row.
-                text: Clipboard.iconOf(root.entry)
-                color: Colours.palette.m3onSurfaceVariant
-                fontStyle: Tokens.font.icon.builders.large.scale(1.3).build()
-            }
-
+            // The live face. Exactly the header's box, so every anchor below lays
+            // out as it did when these were the header's own children. The layer
+            // exists only while a blur is in flight: at rest the text renders
+            // straight, with no FBO in the way of its crispness.
             Item {
-                id: headerText
+                id: headerLive
 
-                anchors.left: headerIcon.right
-                anchors.leftMargin: Tokens.spacing.medium
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                implicitHeight: title.implicitHeight + meta.implicitHeight
-
-                StyledText {
-                    id: title
-
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    text: root.entry?.name ?? ""
-                    font: Tokens.font.body.medium
-                    elide: Text.ElideRight
+                x: swapClip.padX
+                y: swapClip.padY
+                width: header.width
+                height: header.height
+                opacity: root.swapOpacity
+                // The swell, about the left-centre: the icon's left edge stays
+                // put. A transform, so implicitHeight, slotS and the title's x
+                // never see it.
+                scale: root.swapScale
+                transformOrigin: Item.Left
+                layer.enabled: root.swapBlur > 0
+                layer.effect: MultiEffect {
+                    blurEnabled: true
+                    blur: root.swapBlur
+                    blurMax: root.swapBlurMax
                 }
 
-                StyledText {
-                    id: meta
+                MaterialIcon {
+                    id: headerIcon
 
-                    anchors.left: parent.left
-                    anchors.top: title.bottom
-                    text: root.metaFor(root.entry, root.body)
-                    font: Tokens.font.body.small
-                    color: Colours.palette.m3outline
+                    anchors.verticalCenter: parent.verticalCenter
+                    // Natural width, matching ClipItem's leading slot exactly: the row
+                    // reserves one 1em square for every entry type, so the header does
+                    // too, and the title sits at the same x in both. Any mismatch here
+                    // rides visibly through the whole slide and teleports across when
+                    // the handoff unmasks the row.
+                    text: Clipboard.iconOf(root.entry)
+                    color: Colours.palette.m3onSurfaceVariant
+                    fontStyle: Tokens.font.icon.builders.large.scale(1.3).build()
+                }
+
+                Item {
+                    id: headerText
+
+                    anchors.left: headerIcon.right
+                    anchors.leftMargin: Tokens.spacing.medium
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    implicitHeight: title.implicitHeight + meta.implicitHeight
+
+                    StyledText {
+                        id: title
+
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        text: root.entry?.name ?? ""
+                        font: Tokens.font.body.medium
+                        elide: Text.ElideRight
+                    }
+
+                    StyledText {
+                        id: meta
+
+                        anchors.left: parent.left
+                        anchors.top: title.bottom
+                        text: root.metaFor(root.entry, root.body)
+                        font: Tokens.font.body.small
+                        color: Colours.palette.m3outline
+                    }
                 }
             }
-        }
 
-        // Leaving faces, newest last. Four is enough for a held arrow: each
-        // one is gone within swapOutFadeDuration, and a fifth step inside that
-        // window reuses the faintest.
-        Repeater {
-            id: ghosts
+            // Leaving faces, newest last. Four is enough for a held arrow: each
+            // one is gone within swapOutFadeDuration, and a fifth step inside that
+            // window reuses the faintest.
+            Repeater {
+                id: ghosts
 
-            model: 4
+                model: 4
 
-            HeaderGhost {}
+                HeaderGhost {
+                    x: swapClip.padX
+                    y: swapClip.padY
+                    width: header.width
+                    height: header.height
+                }
+            }
         }
     }
 
