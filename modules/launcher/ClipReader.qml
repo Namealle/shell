@@ -1262,9 +1262,10 @@ Item {
             // covering) while showing the departing one twice.
             //
             // And held while an orphaned morph of this entry is still in the
-            // air (see latchMorph): the orphan is the picture, wherever it is,
-            // and this body is where it lands when the reader is open.
-            readonly property bool orphanTarget: root.orphanEntries.indexOf(bodyDelegate.modelData) >= 0
+            // air on its way HERE (see latchMorph): the orphan is the picture,
+            // and this body is where it lands. One folding home to its row is
+            // not coming here, so it holds nothing.
+            readonly property bool orphanTarget: root.bodyOrphanEntries.indexOf(bodyDelegate.modelData) >= 0
             handedOff: (!bodyDelegate.morphTarget || (root.morphT >= 1 && !root.morphing)) && !bodyDelegate.orphanTarget
 
             // Stands in for ListView.currentItem, which the rail deliberately
@@ -1394,8 +1395,11 @@ Item {
     // picture the row was drawing.
     readonly property string morphSrc: root.morphEntry?.isImage && root.morphEntry.entryId ? `file:///tmp/caelestia-clip-preview-${root.morphEntry.entryId}.png` : ""
 
-    function beginMorph(): void {
-        root.latchMorph(root.index, false, false);
+    // `shown`: a snapMorph() taken earlier in the same turn, for a caller that
+    // turned the channel round in between (ContentList's re-entry browse) --
+    // the orphan must leave going the way the picture was going on screen.
+    function beginMorph(shown = null): void {
+        root.latchMorph(root.index, false, false, shown);
     }
 
     // The whole enter/exit morph, including the tail of the overshoot. See the
@@ -1570,14 +1574,25 @@ Item {
     //     picture or swatch still in flight towards a different entry, that
     //     exact rect -- position, size, radius, the top cut -- becomes an
     //     ORPHAN: an independent object that animates from where it is to
-    //     where its entry lives now. With the list coming back that is its own
+    //     where it was GOING. A picture that was closing goes on to its own
     //     row's thumbnail slot, glued to the row as the list cascades and
-    //     scrolls; with the reader open, its own body on the rail.
+    //     scrolls (the list stays laid out under an open reader too, so that
+    //     holds whatever the reader does next); one that was opening goes on
+    //     to its own body on the rail -- unless an exit made it, below.
     //   - what arrives starts from where it is drawn. Latching onto an entry
     //     that has an orphan in the air adopts the orphan's rect as the
     //     channel's start, so it turns round from there instead of starting
     //     again at the slot. Latching onto the entry being read mid-flight
     //     (an exit) adopts the rect its body is painted in.
+    //
+    // Only two things turn an object round once it is in the air: the reader
+    // opened again on ITS entry (the adoption above), and an exit while it
+    // was still opening (onExitingChanged, spawnOrphan). Nothing the reader
+    // does for ANOTHER entry may: an orphan used to take its direction from
+    // the reader's current state, so an open on the next row turned every
+    // picture still folding home round into a body nobody was reading, and a
+    // fast Right/Left/Down burst stacked them -- filmed, five rows "opening"
+    // at once (recording_20261114_23-37-02, frames 350-380 and 500-545).
     //
     // Same curve and duration as everything else (Anim's default), so an
     // orphan made by an exit lands on the header's beat.
@@ -1663,6 +1678,8 @@ Item {
             index: root.morphIndex,
             entry: root.morphEntry,
             inFlight: root.morphInFlight,
+            // Which way it was going -- the orphan keeps that (spawnOrphan).
+            goal: root.morphGoal,
             rect: root.morphInFlight ? root.liveMorphRect() : null,
             isColour: !root.morphIsImage,
             colour: root.morphColour,
@@ -1723,6 +1740,7 @@ Item {
     // -- orphans --
     property var orphans: []
     readonly property var orphanEntries: root.orphans.map(o => o.entry)
+    readonly property var bodyOrphanEntries: root.orphans.filter(o => !o.toRow).map(o => o.entry)
 
     function spawnOrphan(s: var): void {
         const o = orphanComp.createObject(orphanLayer, {
@@ -1739,7 +1757,12 @@ Item {
             sH: s.rect.h,
             sClip: s.rect.clip,
             sR: s.rect.r,
-            toRow: root.exiting
+            // Where it was going, from the snapshot -- not from what the
+            // reader is doing now, which is the latch's business. reopen()
+            // and reenter() take the snapshot of a picture that was folding
+            // home, and that is where it carries on to. An exit turns an
+            // opening one round, as it turns the channel.
+            toRow: root.exiting || s.goal < 0.5
         });
         if (!o)
             return;
@@ -1762,11 +1785,18 @@ Item {
             root.finishExit();
     }
 
-    // The list coming back or going away again: every orphan turns for where
-    // its entry lives now, from where it is.
+    // An exit turns every orphan still opening round for its row, from where
+    // it is -- the same thing the exit does to the channel. The reverse never
+    // happens: an orphan folding home keeps folding home when the reader comes
+    // back (reenter, reopen), and lands on its row's slot under the reader.
+    // The one way back into a body is to be adopted by an open of its own
+    // entry (latchMorph).
     onExitingChanged: {
+        if (!root.exiting)
+            return;
         for (const o of root.orphans)
-            o.retarget();
+            if (!o.toRow)
+                o.turnHome();
     }
 
     // Where a row's leading slot is drawn, in this item's coordinates (the
@@ -1856,8 +1886,13 @@ Item {
 
         readonly property real cX: orphan.sX + (orphan.tX - orphan.sX) * orphan.o
         readonly property real cY: orphan.sY + (orphan.tY - orphan.sY) * orphan.o
-        readonly property real cW: orphan.sW + (orphan.tW - orphan.sW) * orphan.o
-        readonly property real cH: orphan.sH + (orphan.tH - orphan.sH) * orphan.o
+        // Folding home, the size stops at the slot: the curve's overshoot
+        // would take it a few px under the thumbnail and grow it back, and a
+        // picture on its way home only ever shrinks. Position keeps the
+        // overshoot.
+        readonly property bool shrinkHome: orphan.toRow && orphan.sW >= orphan.tW && orphan.sH >= orphan.tH
+        readonly property real cW: orphan.shrinkHome ? Math.max(orphan.tW, orphan.sW + (orphan.tW - orphan.sW) * orphan.o) : orphan.sW + (orphan.tW - orphan.sW) * orphan.o
+        readonly property real cH: orphan.shrinkHome ? Math.max(orphan.tH, orphan.sH + (orphan.tH - orphan.sH) * orphan.o) : orphan.sH + (orphan.tH - orphan.sH) * orphan.o
         // The top cut, carried over from the overlay it was made from (which
         // may have been passing under the header) and eased out to nothing by
         // the landing on a row -- never ahead of the picture's own top, the
@@ -1898,7 +1933,9 @@ Item {
             oAnim.start();
         }
 
-        function retarget(): void {
+        // Turn round for the row, from where it is. One way only -- see
+        // onExitingChanged.
+        function turnHome(): void {
             const r = orphan.liveRect();
             orphan.sFade = orphan.rowFade;
             orphan.sX = r.x;
@@ -1907,7 +1944,7 @@ Item {
             orphan.sH = r.h;
             orphan.sClip = r.clip;
             orphan.sR = r.r;
-            orphan.toRow = root.exiting;
+            orphan.toRow = true;
             orphan.launch();
         }
 

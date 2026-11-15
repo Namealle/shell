@@ -159,6 +159,12 @@ Item {
             readerExiting = false;
             railEntries = null;
             readerOpenedAt = Date.now();
+            // What the morph is drawing before reenter() turns it round: if
+            // the browse below re-aims it, the left entry's picture leaves as
+            // an orphan going where it WAS going -- home to its row, since it
+            // was folding back -- not into the body reenter() just pointed it
+            // at (ClipReader.latchMorph).
+            const shown = r.snapMorph();
             r.reenter();
             const from = l.fullResults.indexOf(readerEntry);
             if (want !== from) {
@@ -183,7 +189,7 @@ Item {
                 // that is an image and the image skips the animation of
                 // expanding and moving", and, with the kinds swapped, "the
                 // image started expanding even though I'm opening the text".
-                r.beginMorph();
+                r.beginMorph(shown);
             }
             return;
         }
