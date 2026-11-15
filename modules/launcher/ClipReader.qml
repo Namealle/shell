@@ -964,6 +964,14 @@ Item {
         height: Tokens.sizes.launcher.itemHeight
         radius: Tokens.rounding.large
         visible: root.exiting || pillAnim.running || root.pillTint > 0
+        // With the header (declared next, so the title draws over it), over
+        // the rail and over any orphaned morph (orphanLayer). An orphan is a
+        // leftover from another entry going home; the row being closed is one
+        // solid object and the leftover passes BEHIND it. Left at z 0 the
+        // orphan covered the pill and only the title showed above the picture:
+        // bare text over an image, which is what the pill exists to prevent
+        // (his frame, 2026-11-15). The row's own morph (morphClip) stays above.
+        z: 1
         color: {
             const s = Colours.tPalette.m3surface;
             return Qt.tint(Qt.rgba(s.r, s.g, s.b, 1), Qt.alpha(Colours.palette.m3onSurface, 0.08 * root.clamp01(root.pillTint)));
@@ -2350,7 +2358,7 @@ Item {
         }
     }
 
-    // Orphans: over the rail, UNDER the header.
+    // Orphans: over the rail, UNDER the header and its pill.
     //
     // An orphan made by an exit and the header it was interrupted by are
     // flying to different rows, and usually they have to cross: the header
