@@ -694,6 +694,11 @@ Item {
             screenState: root.screenState
             frozen: root.readerActive
             exiting: root.readerExiting
+            // Rows whose picture is still in the reader's air -- an
+            // interrupted morph folding back into its own thumbnail slot
+            // (ClipReader.latchMorph). Their thumbnail only is masked, the way
+            // maskedEntry masks the whole row under the header.
+            thumbMaskedEntries: clipReader.item?.orphanEntries ?? []
         }
     }
 
@@ -795,6 +800,7 @@ Item {
             // resize yet, so this is where its bottom edge is.
             startHeight: root.height
             exitScroll: root.readerExiting ? (appList.item?.contentY ?? 0) - root.exitContentY : 0
+            listView: appList.item
             // Search text minus the `;` prefix: seeded with the list filter on
             // entry, live as the user keeps typing (the list itself is frozen).
             findTerm: {

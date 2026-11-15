@@ -277,6 +277,19 @@ Item {
     // the same object twice.
     visible: root.list?.maskedEntry !== root.modelData
 
+    // The same, for the leading slot alone: a reader morph that was
+    // interrupted on its way into the body folds back into THIS row's
+    // thumbnail while the header lands on another row, and until it lands the
+    // flying picture is this row's picture (ClipReader.latchMorph). The row's
+    // text stays, and the slot keeps its place in the layout.
+    readonly property bool thumbMasked: (root.list?.thumbMaskedEntries ?? []).indexOf(root.modelData) >= 0
+    // Where the leading slot is drawn inside the row, for the orphan to land
+    // on -- read off the laid-out items, not restated, so the landing is
+    // pixel-exact by construction. The thumbnail and the swatch share this
+    // geometry exactly (same anchors, same square).
+    readonly property real leadX: content.x + thumbWrapper.x
+    readonly property real leadY: content.y + thumbWrapper.y
+
     anchors.left: parent?.left
     anchors.right: parent?.right
 
@@ -334,7 +347,7 @@ Item {
         StyledRect {
             id: swatch
 
-            visible: root.isColour
+            visible: root.isColour && !root.thumbMasked
             anchors.verticalCenter: parent.verticalCenter
             // Square on the icon's ADVANCE, so the leading slot is one width for
             // every entry type and the titles line up down the list. Both
@@ -351,7 +364,7 @@ Item {
         StyledClippingRect {
             id: thumbWrapper
 
-            visible: root.isImage
+            visible: root.isImage && !root.thumbMasked
             anchors.verticalCenter: parent.verticalCenter
             // Same square as the swatch -- see there.
             implicitWidth: icon.implicitWidth

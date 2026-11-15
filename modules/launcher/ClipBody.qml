@@ -706,15 +706,35 @@ Item {
         if (!e)
             return;
         if (root.isImage) {
-            // Images are different: the file has to exist on disk before an
-            // Image can show anything at all, and `test -s` makes this a no-op
-            // for everything the launcher's preload already wrote. So every
-            // image body on the rail runs it, active or not -- otherwise a
-            // neighbour would slide past as an empty box.
-            imgDecoder.running = false;
-            imgDecoder.running = true;
+            // Pointed STRAIGHT at the file, exactly as ClipItem's row thumbnail
+            // is (read its note on decodeKey). The file is normally on disk
+            // already -- the launcher's preload wrote it, and the row this
+            // entry was lifted from has been drawing it -- so every copy here
+            // resolves at once: the ratio probe and the reader's opening morph
+            // as synchronous pixmap-cache hits on the row's own thumbnail.
+            //
+            // This used to wait for imgDecoder's `test -s` to EXIT before
+            // assigning anything, i.e. a process spawn on every body, and the
+            // morph's first frames read this url: the row's picture became an
+            // empty dark square for ~4 frames the instant -> was pressed
+            // (filmed at 165fps, frames 417-420), then popped in. The Process
+            // is now the repair path only -- see ratioProbe.
+            //
+            // Not bounced through "" when it is already this url: refresh()
+            // also runs on every activation, and re-pointing would restart
+            // every consumer (LiveText's OCR among them) for nothing.
+            if (Clipboard.noCache) {
+                // The old path, kept for noCache: there the decode is the point.
+                imgDecoder.running = false;
+                imgDecoder.running = true;
+                return;
+            }
+            const url = `file://${root.imgCache}`;
+            if (root.imgSrc !== url)
+                root.imgSrc = url;
             return;
         }
+        root.imgSrc = "";
         if (!root.isText)
             return;
         // A cliphist reload can destroy the entry object mid-read; its
@@ -878,6 +898,16 @@ Item {
         }
     }
 
+    // Repair path (and the whole path under noCache): makes sure the file is
+    // on disk, then points every copy at it. Reached from ratioProbe failing,
+    // i.e. an entry past the preloaded set whose file was never written.
+    //
+    // Bounced through "" on the way back because an Image does not retry a
+    // url that failed: re-assigning the same string would be a no-op.
+    // `repairedFor` makes it once per file -- an entry cliphist cannot decode
+    // would otherwise fail, repair, fail again, forever.
+    property string repairedFor: ""
+
     Process {
         id: imgDecoder
 
@@ -885,8 +915,10 @@ Item {
         // under noCache re-runs cliphist every open.
         command: Clipboard.noCache ? ["sh", "-c", "printf '%s' \"$1\" | cliphist decode > \"$2\"", "dec", root.entry?.raw ?? "", root.imgCache] : ["sh", "-c", "test -s \"$2\" || (printf '%s' \"$1\" | cliphist decode > \"$2\")", "dec", root.entry?.raw ?? "", root.imgCache]
         onExited: {
-            if (root.isImage)
-                root.imgSrc = `file://${root.imgCache}`;
+            if (!root.isImage)
+                return;
+            root.imgSrc = "";
+            root.imgSrc = `file://${root.imgCache}`;
         }
     }
 
@@ -894,6 +926,9 @@ Item {
     // caching on at both ends, so this is a synchronous pixmap-cache hit rather
     // than a decode -- which is what lets a body report a truthful height before
     // its reader-sized copy exists. Never painted.
+    //
+    // Also the detector for the repair path: it loads for every image body,
+    // and it is the cheapest copy to fail.
     Image {
         id: ratioProbe
 
@@ -904,6 +939,12 @@ Item {
         asynchronous: true
         sourceSize.width: Clipboard.thumbSize
         sourceSize.height: Clipboard.thumbSize
+        onStatusChanged: {
+            if (status !== Image.Error || !root.isImage || Clipboard.noCache || imgDecoder.running || root.repairedFor === root.imgCache)
+                return;
+            root.repairedFor = root.imgCache;
+            imgDecoder.running = true;
+        }
     }
 
     // Physics, not a timed curve. Every easing curve has to end at a fixed

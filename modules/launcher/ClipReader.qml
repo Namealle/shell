@@ -145,6 +145,11 @@ Item {
     property real exitScroll: 0
     readonly property real slidePos: root.slideY - root.exitScroll
 
+    // The list underneath (AppList), for the one thing that has to land on a
+    // row other than the header's: an orphaned leading-slot morph folding back
+    // into its own row's thumbnail. See rowSlotOf.
+    property var listView: null
+
     // -- the body's own slide --
     //
     // The text travels WITH the header. Entering, the header flies up from the
@@ -314,16 +319,22 @@ Item {
         // computed for the fitted one. Back to fit before the slide starts.
         root.resetZoom();
         root.exitCb = cb;
+        // Before the latch: any orphan already in flight turns for its row
+        // here (see onExitingChanged), and one made by the latch starts out
+        // aimed at its row.
         root.exiting = true;
         // The exit morph is aimed at the entry you are LEAVING FROM, which is
         // the one being read now. Re-latch, since a browse has almost certainly
-        // moved off whatever the enter morph was aimed at.
-        root.beginMorph();
+        // moved off whatever the enter morph was aimed at. If the enter morph
+        // was still in flight towards another entry, the latch hands that
+        // picture to an orphan, which folds it into its own row -- see
+        // latchMorph.
+        root.latchMorph(root.index, false, true);
         slideAnim.from = root.slideY;
         slideAnim.to = targetY + root.rowAlignY;
         slideXAnim.from = root.slideX;
         slideXAnim.to = root.rowAlignX;
-        root.morphT = 0;
+        root.setMorphT(0);
         slideAnim.start();
         slideXAnim.start();
         // Where the rail ends up under the landed header, against where the
@@ -346,7 +357,7 @@ Item {
         slideAnim.to = 0;
         slideXAnim.from = root.slideX;
         slideXAnim.to = 0;
-        root.morphT = 1;
+        root.setMorphT(1);
         slideAnim.start();
         slideXAnim.start();
         root.beginBodySlide(slideAnim.to - slideAnim.from, true);
@@ -365,6 +376,10 @@ Item {
     //
     // startY, index and startHeight are bindings and already say the new row.
     function reopen(): void {
+        // What the leading-slot overlay is drawing right now, taken before
+        // anything below moves it -- the jump and the header's teleport both
+        // move its live endpoints. See latchMorph.
+        const shown = root.snapMorph();
         // First, for the reason exitTo gives: stopping the slide runs it.
         root.exitCb = null;
         slideAnim.stop();
@@ -382,11 +397,9 @@ Item {
         slideXAnim.to = 0;
         slideAnim.start();
         slideXAnim.start();
-        root.morphRewind = true;
-        root.morphT = 0;
-        root.morphRewind = false;
-        root.beginMorph();
-        root.morphT = 1;
+        // Rewinds morphT past its Behavior, then latches -- see latchMorph.
+        root.latchMorph(root.index, true, false, shown);
+        root.setMorphT(1);
         root.bodyFade = 1;
         root.beginBodySlide(-(root.startY + root.rowAlignY), true, true);
     }
@@ -396,12 +409,22 @@ Item {
 
         target: root
         property: "slideY"
-        onStopped: {
-            const cb = root.exitCb;
-            root.exitCb = null;
-            if (cb)
-                cb();
-        }
+        onStopped: root.finishExit()
+    }
+
+    // The exit's handoff back to the list, which tears this reader down --
+    // and with it every orphan still folding a picture into its own row. So
+    // it waits for them: the header has landed and sits exactly on its row,
+    // which looks the same whether the reader is still drawing it or the row
+    // is, and the orphans land on the same beat anyway (same curve, same
+    // duration, started by the same keypress). See latchMorph.
+    function finishExit(): void {
+        if (root.orphans.length > 0)
+            return;
+        const cb = root.exitCb;
+        root.exitCb = null;
+        if (cb)
+            cb();
     }
 
     Anim {
@@ -473,7 +496,7 @@ Item {
         slideAnim.start();
         slideXAnim.start();
         beginMorph();
-        morphT = 1;
+        setMorphT(1);
         // to: 0, so the header's travel is the negation of where it starts.
         beginBodySlide(-(startY + rowAlignY), true, true);
     }
@@ -493,6 +516,11 @@ Item {
     // thing that does not move.
     Item {
         id: header
+
+        // Over the rail and over any orphaned morph (orphanLayer), under the
+        // live morph overlay (morphClip), which lifts off this header's own
+        // icon slot. See orphanLayer for why the orphans go under the title.
+        z: 1
 
         anchors.top: parent.top
         anchors.left: parent.left
@@ -837,7 +865,12 @@ Item {
             // step mid-morph and those stop being the same entry, and keying on
             // active would then hide the arriving picture (which no morph is
             // covering) while showing the departing one twice.
-            handedOff: !bodyDelegate.morphTarget || (root.morphT >= 1 && !root.morphing)
+            //
+            // And held while an orphaned morph of this entry is still in the
+            // air (see latchMorph): the orphan is the picture, wherever it is,
+            // and this body is where it lands when the reader is open.
+            readonly property bool orphanTarget: root.orphanEntries.indexOf(bodyDelegate.modelData) >= 0
+            handedOff: (!bodyDelegate.morphTarget || (root.morphT >= 1 && !root.morphing)) && !bodyDelegate.orphanTarget
 
             // Stands in for ListView.currentItem, which the rail deliberately
             // does not have. Whichever delegate is active announces itself, and
@@ -888,6 +921,10 @@ Item {
     // live binding (the slot follows slideX/slideY), so enter, exit and
     // mid-flight reversals all stay glued.
     property real morphT: 0
+    // Where morphT is HEADED. The Behavior's own `to` is internal, and the
+    // adopted path below has to know which end it is travelling to. Every
+    // write to morphT goes through setMorphT so the two cannot disagree.
+    property real morphGoal: 0
 
     // Off for the one write that rewinds the morph -- see reopen().
     property bool morphRewind: false
@@ -897,7 +934,37 @@ Item {
 
         Anim {
             id: morphAnim
+
+            // An adopted start (see adopt) is spent once the run that began
+            // from it is over. Both ends of the adopted path are the plain
+            // path's own endpoints, so dropping it at rest changes nothing on
+            // screen.
+            onRunningChanged: {
+                if (!running)
+                    root.adopted = false;
+            }
         }
+    }
+
+    function setMorphT(v: real): void {
+        // Turning an ADOPTED morph round: its path ran from a snapshot, not
+        // from the slot, so the plain path at the same t is somewhere else.
+        // Re-snapshot what is on screen and run from there instead. A plain
+        // morph needs nothing -- it is the same expression in both directions,
+        // which is why reversing it mid-flight was always continuous.
+        //
+        // Only while the run is actually going. Straight after reopen()'s
+        // rewind the snapshot was taken AT the current t with nothing run yet,
+        // so it already is the start; re-reading it there measured the
+        // degenerate goal == t0 state and handed the slot back as the "live"
+        // rect -- an orphan adopted by a reopen jumped onto the slot.
+        if (root.adopted && root.morphing && v !== root.morphGoal) {
+            const r = root.liveMorphRect();
+            if (r)
+                root.adopt(r);
+        }
+        root.morphGoal = v;
+        root.morphT = v;
     }
 
     // The entry the morph is aimed at, LATCHED when it starts -- not read live
@@ -921,9 +988,19 @@ Item {
     // Its live body, registered by the delegate exactly as `body` is, and for
     // the same reason -- the rail has no currentItem to ask.
     property var morphBody: null
+    // The entry itself, which -- unlike morphBody -- exists from the first
+    // frame. The delegates register a moment after this reader is built, and
+    // the opening morph's first frame cannot wait for them: that is the frame
+    // that has to draw the row's own thumbnail.
+    readonly property var morphEntry: root.entries[root.morphIndex] ?? null
+    // The exact url ClipItem assigns to the row's thumbnail -- `file://` plus
+    // the same `/tmp/...` path -- so with the same sourceSize, fillMode and
+    // caching the morph's first frame is a synchronous pixmap-cache hit on the
+    // picture the row was drawing.
+    readonly property string morphSrc: root.morphEntry?.isImage && root.morphEntry.entryId ? `file:///tmp/caelestia-clip-preview-${root.morphEntry.entryId}.png` : ""
 
     function beginMorph(): void {
-        root.morphIndex = root.index;
+        root.latchMorph(root.index, false, false);
     }
 
     // The whole enter/exit morph, including the tail of the overshoot. See the
@@ -946,10 +1023,12 @@ Item {
     // implicitHeight -- the line box is 1.2em and a morph starting from it would
     // begin 8px larger than the thumbnail it is supposed to be lifting off.
     //
-    // Also fixes the thumbnail sourceSize on both ends at 2x this: ClipItem's
-    // `thumb` and this file's `mThumb` load the same url at the same size, which
-    // is what makes the morph's first frame a synchronous cache hit rather than
-    // an empty rect. They have to move together or that silently stops working.
+    // This used to fix the thumbnail sourceSize too, at 2x this, back when
+    // ClipItem decoded at the same 2x. ClipItem moved to the flat
+    // Clipboard.thumbSize and this did not, so the two copies asked for
+    // different sizes -- a different pixmap-cache key -- and the morph's first
+    // frames drew an empty rect where the row's picture had just been. Both
+    // now read Clipboard.thumbSize itself, so they cannot drift apart again.
     readonly property real slotS: headerIcon.implicitWidth
     readonly property real slotX: Tokens.padding.large + root.slideX
     readonly property real slotY: root.topInset + root.slidePos + (header.implicitHeight - root.slotS) / 2
@@ -968,9 +1047,15 @@ Item {
     // Geometry of the body being morphed to, read off the live ClipBody rather
     // than recomputed here -- so the handoff at t=1 is exact by construction
     // instead of by two expressions agreeing.
-    readonly property bool morphIsImage: root.morphBody?.isImage ?? false
-    readonly property bool morphIsColour: root.morphBody?.isColour ?? false
-    readonly property color morphColour: root.morphBody?.colourValue ?? "transparent"
+    //
+    // The KIND is asked of the entry until the body has registered, but only
+    // for the entry being read: that is the opening morph's first frame. A
+    // latched target that has lost its body is one the rail carried far
+    // away, and drawing it with no body to measure would snap it back to the
+    // header -- so that stays hidden, as it always was.
+    readonly property bool morphIsImage: root.morphBody ? root.morphBody.isImage : (root.morphIndex === root.index && (root.morphEntry?.isImage ?? false))
+    readonly property bool morphIsColour: root.morphBody ? root.morphBody.isColour : (root.morphIndex === root.index && !!root.morphEntry && Clipboard.colourEntryOf(root.morphEntry).length > 0)
+    readonly property color morphColour: root.morphBody ? root.morphBody.colourValue : (root.morphIsColour ? Clipboard.colourEntryOf(root.morphEntry) : "transparent")
     readonly property real bodyContentW: root.morphBody?.contentW ?? (root.minWidth - Tokens.padding.large * 2)
     // Where that content box sits inside the frame -- non-zero exactly while the
     // frame is a different width from the entry, which is the whole of a move.
@@ -980,9 +1065,40 @@ Item {
     readonly property real bodyImgBoxW: root.morphBody?.imgBoxW ?? 0
     readonly property real bodyImgFitH: root.morphBody?.imgFitH ?? 0
     readonly property string bodyImgSrc: root.morphBody?.imgSrc ?? ""
-    readonly property int bodyImgDecodeW: root.morphBody?.imgDecodeW ?? Clipboard.readerMaxWidth
+    // ClipBody's own formula when there is no body yet, so the decode the
+    // overlay asks for on the first frame is the one the body asks for next.
+    readonly property int bodyImgDecodeW: root.morphBody?.imgDecodeW ?? (root.morphEntry?.imgDims ? Clipboard.readerDecodeWidth(root.morphEntry.imgDims) : Clipboard.readerMaxWidth)
     readonly property bool bodyImgReady: root.morphBody?.imgReady ?? false
     readonly property real bodySwatchHeight: root.morphBody?.swatchHeight ?? 0
+    // The row's thumbnail url, from the entry. Through the body's imgSrc once
+    // there is a body, because that is the one ClipBody bounces when it has to
+    // repair a missing file -- an Image does not retry a url that failed, and
+    // the entry's url never changes.
+    readonly property string morphThumbSrc: root.morphBody ? root.bodyImgSrc : root.morphSrc
+
+    // The rect the body's image actually paints -- the same imgBoxW the body
+    // Image is sized to, so the handoff at t=1 is exact. Only horizontal
+    // centring can occur: the box is the image's own shape, so there is no
+    // letterbox.
+    readonly property real morphFitW: root.bodyImgBoxW > 0 ? root.bodyImgBoxW : root.bodyContentW
+    readonly property real morphFitH: root.bodyImgBoxW > 0 ? root.bodyImgFitH : root.bodyContentW
+    readonly property real imgDstX: Tokens.padding.large + root.bodyContentX + (root.bodyContentW - root.morphFitW) / 2
+    readonly property real swatchDstX: Tokens.padding.large + root.bodyContentX
+
+    // Cross-fade of the full-size copy over the thumbnail -- see MorphPicture.
+    // Effects-fast, not spatial: the geometry is already animating underneath
+    // and a slow fade would just read as the picture arriving late.
+    property real morphFullOpacity: root.bodyImgReady ? 1 : 0
+    // Off for the one write that hands an orphan's opacity back -- latchMorph.
+    property bool fullOpacityJump: false
+
+    Behavior on morphFullOpacity {
+        enabled: !root.fullOpacityJump
+
+        Anim {
+            type: Anim.FastEffects
+        }
+    }
 
     // -- corner rounding --
     //
@@ -1023,38 +1139,513 @@ Item {
     // matching the component matches its antialiasing and its shader. A mask that
     // merely looked similar would leave the pop where it is, just smaller.
     readonly property real roundEnd: 0.25
-    readonly property bool morphRounded: root.morphT < root.roundEnd
+
+    function clamp01(v: real): real {
+        return Math.max(0, Math.min(1, v));
+    }
+
+    // The radius over a run from a snapshot of radius `from`: rounding only
+    // ever happens over the slot end's last roundEnd of the travel, exactly as
+    // on the plain path, so a picture that was square when it was snapshotted
+    // stays square until it is nearly home.
+    function radiusAlong(from: real, toSlot: bool, u: real): real {
+        if (toSlot)
+            return from + (Tokens.rounding.small - from) * root.clamp01((u - (1 - root.roundEnd)) / root.roundEnd);
+        return from * root.clamp01(1 - u / root.roundEnd);
+    }
+
+    readonly property bool morphRounded: root.adopted ? root.morphRadius > 0 : root.morphT < root.roundEnd
     // Clamped at both ends: morphT overshoots past 1, and the exit can drive it
     // to exactly 0 where the row's own radius takes over.
-    readonly property real morphRadius: Tokens.rounding.small * Math.max(0, Math.min(1, 1 - root.morphT / root.roundEnd))
+    readonly property real morphRadius: root.adopted ? root.radiusAlong(root.adoptR, !root.adoptToBody, root.adoptU) : Tokens.rounding.small * Math.max(0, Math.min(1, 1 - root.morphT / root.roundEnd))
+
+    // -- interrupted morphs: nothing that is in the air disappears --
+    //
+    // The overlay above has ONE channel -- morphT plus the latched morphIndex --
+    // and an exit needs that channel for the entry being read. So a morph
+    // still flying towards another entry when the exit starts used to lose it
+    // outright: open an image, step down onto text before the picture had
+    // landed, press <- and the half-grown picture vanished in one frame (filmed
+    // at 165fps, frame 435), because the exit re-latched the channel onto the
+    // text entry and the picture's own body was hidden in the same frame.
+    //
+    // The rule now, in latchMorph, for every re-latch:
+    //
+    //   - what is on screen leaves on its own. If the channel was drawing a
+    //     picture or swatch still in flight towards a different entry, that
+    //     exact rect -- position, size, radius, the top cut -- becomes an
+    //     ORPHAN: an independent object that animates from where it is to
+    //     where its entry lives now. With the list coming back that is its own
+    //     row's thumbnail slot, glued to the row as the list cascades and
+    //     scrolls; with the reader open, its own body on the rail.
+    //   - what arrives starts from where it is drawn. Latching onto an entry
+    //     that has an orphan in the air adopts the orphan's rect as the
+    //     channel's start, so it turns round from there instead of starting
+    //     again at the slot. Latching onto the entry being read mid-flight
+    //     (an exit) adopts the rect its body is painted in.
+    //
+    // Same curve and duration as everything else (Anim's default), so an
+    // orphan made by an exit lands on the header's beat.
+    property bool adopted: false
+    property real adoptT0: 0
+    property real adoptX: 0
+    property real adoptY: 0
+    property real adoptW: 0
+    property real adoptH: 0
+    property real adoptClip: 0
+    property real adoptR: 0
+    readonly property bool adoptToBody: root.morphGoal >= 0.5
+    // 0 at the snapshot, 1 at the goal, overshoot included -- the same curve
+    // value the plain path uses, renormalised to the stretch that is left.
+    readonly property real adoptU: {
+        const d = root.morphGoal - root.adoptT0;
+        return Math.abs(d) < 1e-6 ? 1 : (root.morphT - root.adoptT0) / d;
+    }
+
+    function adopt(r: var): void {
+        root.adoptX = r.x;
+        root.adoptY = r.y;
+        root.adoptW = r.w;
+        root.adoptH = r.h;
+        root.adoptClip = r.clip;
+        root.adoptR = r.r;
+        root.adoptT0 = root.morphT;
+        root.adopted = true;
+    }
+
+    // What the overlay is drawing this instant, in this item's coordinates.
+    function liveMorphRect(): var {
+        if (root.morphIsImage)
+            return {
+                x: morphImg.x,
+                y: morphImg.y + morphClip.y,
+                w: morphImg.width,
+                h: morphImg.height,
+                clip: morphClip.y,
+                r: root.morphRounded ? root.morphRadius : 0
+            };
+        if (root.morphIsColour)
+            return {
+                x: morphSwatch.x,
+                y: morphSwatch.y + morphClip.y,
+                w: morphSwatch.width,
+                h: morphSwatch.height,
+                clip: morphClip.y,
+                r: Tokens.rounding.small
+            };
+        return null;
+    }
+
+    // The rect the morph target's body paints, for a latch onto an entry whose
+    // body is on screen.
+    function bodyRestRect(): var {
+        if (root.morphIsImage)
+            return {
+                x: root.imgDstX,
+                y: root.morphBodyTop,
+                w: root.morphFitW,
+                h: root.morphFitH,
+                clip: rail.y - 1,
+                r: 0
+            };
+        if (root.morphIsColour)
+            return {
+                x: root.swatchDstX,
+                y: root.morphBodyTop,
+                w: root.bodyContentW,
+                h: root.bodySwatchHeight,
+                clip: rail.y - 1,
+                r: Tokens.rounding.small
+            };
+        return null;
+    }
+
+    // Everything an orphan needs to carry on drawing exactly what the overlay
+    // draws now. Taken separately from the latch because reopen() has to take
+    // it before the rail jump and the header teleport move its endpoints.
+    function snapMorph(): var {
+        return {
+            index: root.morphIndex,
+            entry: root.morphEntry,
+            inFlight: root.morphInFlight,
+            rect: root.morphInFlight ? root.liveMorphRect() : null,
+            isColour: !root.morphIsImage,
+            colour: root.morphColour,
+            thumbSrc: root.morphThumbSrc,
+            fullSrc: root.bodyImgSrc,
+            decodeW: root.bodyImgDecodeW,
+            fullOpacity: root.morphFullOpacity
+        };
+    }
+
+    // Re-aim the morph channel at entry `n`. `rewind` drops morphT to 0 past
+    // its Behavior (reopen: a new open); `fromBody` lets an in-flight latch
+    // start from the target's painted body (exitTo).
+    function latchMorph(n: int, rewind: bool, fromBody: bool, shown = null): void {
+        const s = shown ?? root.snapMorph();
+        const target = root.entries[n] ?? null;
+
+        // An orphan of the entry being latched comes back into the channel.
+        let back = null;
+        for (const o of root.orphans) {
+            if (o.entry === target) {
+                back = o.liveRect();
+                root.dropOrphan(o);
+                break;
+            }
+        }
+
+        if (n !== s.index && s.inFlight && s.rect && s.entry)
+            root.spawnOrphan(s);
+
+        if (rewind) {
+            root.adopted = false;
+            root.morphRewind = true;
+            root.morphGoal = 0;
+            root.morphT = 0;
+            root.morphRewind = false;
+        }
+
+        root.morphIndex = n;
+
+        if (back) {
+            root.adopt(back);
+            // And its full-size copy at the strength the orphan was drawing
+            // it, faded back up from there rather than popped.
+            root.fullOpacityJump = true;
+            root.morphFullOpacity = back.fade;
+            root.fullOpacityJump = false;
+            root.morphFullOpacity = Qt.binding(() => root.bodyImgReady ? 1 : 0);
+        } else if (n !== s.index) {
+            const r = fromBody && s.inFlight && root.bodyFade > 0 && root.morphBody ? root.bodyRestRect() : null;
+            if (r)
+                root.adopt(r);
+            else
+                root.adopted = false;
+        }
+    }
+
+    // -- orphans --
+    property var orphans: []
+    readonly property var orphanEntries: root.orphans.map(o => o.entry)
+
+    function spawnOrphan(s: var): void {
+        const o = orphanComp.createObject(orphanLayer, {
+            entry: s.entry,
+            isColour: s.isColour,
+            colour: s.colour,
+            thumbSrc: s.thumbSrc,
+            fullSrc: s.fullSrc,
+            decodeW: s.decodeW,
+            fullOpacity: s.fullOpacity,
+            sX: s.rect.x,
+            sY: s.rect.y,
+            sW: s.rect.w,
+            sH: s.rect.h,
+            sClip: s.rect.clip,
+            sR: s.rect.r,
+            toRow: root.exiting
+        });
+        if (!o)
+            return;
+        root.orphans = root.orphans.concat([o]);
+        o.launch();
+    }
+
+    // Hidden in the same turn, not just destroyed: destroy() is deferred, and
+    // one more frame of it under whatever took over would be the picture drawn
+    // twice.
+    function dropOrphan(o: var): void {
+        o.visible = false;
+        root.orphans = root.orphans.filter(x => x !== o);
+        o.destroy();
+    }
+
+    function landOrphan(o: var): void {
+        root.dropOrphan(o);
+        if (root.exiting && !slideAnim.running)
+            root.finishExit();
+    }
+
+    // The list coming back or going away again: every orphan turns for where
+    // its entry lives now, from where it is.
+    onExitingChanged: {
+        for (const o of root.orphans)
+            o.retarget();
+    }
+
+    // Where a row's leading slot is drawn, in this item's coordinates (the
+    // reader fills the same box the list does). The live delegate when there is
+    // one -- its visualY carries the close cascade and the gap hold, so the
+    // orphan lands on the thumbnail where it is DRAWN, pixel for pixel -- and
+    // index math for a row the view has not built, which is the header's own
+    // landing formula.
+    function rowSlotOf(e: var): var {
+        const l = root.listView;
+        if (!l || !e)
+            return null;
+        // Read for the dependency: a row built or recycled moves results or
+        // contentY with it, which is what re-asks itemAtIndex.
+        l.count;
+        const k = l.results.indexOf(e);
+        const it = k >= 0 ? l.itemAtIndex(k) : null;
+        if (it && it.modelData === e && it.leadY !== undefined)
+            return {
+                x: l.x + it.x + it.leadX,
+                y: l.y + it.visualY - l.contentY + it.leadY
+            };
+        const j = l.fullResults.indexOf(e);
+        if (j < 0)
+            return null;
+        return {
+            x: l.x + Tokens.padding.large + root.rowAlignX,
+            y: l.y + l.originY + j * (Tokens.sizes.launcher.itemHeight + l.spacing) - l.contentY + (Tokens.sizes.launcher.itemHeight - root.slotS) / 2
+        };
+    }
+
+    // One picture or swatch that has left the channel and is on its way home.
+    // Geometry is a lerp from the snapshot it was made from (s*) to a LIVE
+    // target (t*), driven by its own `o` on the shell's default curve. A
+    // retarget re-snapshots and starts again from 0, so it never jumps.
+    component Orphan: Item {
+        id: orphan
+
+        property var entry: null
+        property bool isColour: false
+        property color colour: "transparent"
+        property string thumbSrc: ""
+        property string fullSrc: ""
+        property int decodeW: 0
+        property real fullOpacity: 1
+
+        property real sX: 0
+        property real sY: 0
+        property real sW: 0
+        property real sH: 0
+        property real sClip: 0
+        property real sR: 0
+        // Latched per run: home is the row while the list is coming back,
+        // the body while the reader is open.
+        property bool toRow: true
+        property real o: 0
+
+        Behavior on fullOpacity {
+            Anim {
+                type: Anim.FastEffects
+            }
+        }
+
+        // -- targets --
+        readonly property var body: {
+            if (orphan.toRow)
+                return null;
+            rail.contentY;
+            root.index;
+            const i = root.entries.indexOf(orphan.entry);
+            return i >= 0 ? rail.itemAtIndex(i) : null;
+        }
+        readonly property var row: orphan.toRow ? root.rowSlotOf(orphan.entry) : null
+        // The rail's own top edge as drawn: it hangs off the header and is
+        // translated by the body slide and the exit scroll (see rail).
+        readonly property real railTop: rail.y + root.bodySlide + root.exitScroll
+        readonly property real bodyW: orphan.body ? (orphan.isColour ? orphan.body.contentW : (orphan.body.imgBoxW > 0 ? orphan.body.imgBoxW : orphan.body.contentW)) : orphan.sW
+        readonly property real bodyH: orphan.body ? (orphan.isColour ? orphan.body.swatchHeight : (orphan.body.imgBoxW > 0 ? orphan.body.imgFitH : orphan.body.contentW)) : orphan.sH
+
+        readonly property real tX: orphan.toRow ? (orphan.row ? orphan.row.x : orphan.sX) : (orphan.body ? Tokens.padding.large + orphan.body.contentX + (orphan.isColour ? 0 : (orphan.body.contentW - orphan.bodyW) / 2) : orphan.sX)
+        // No body to land on (the rail dropped it): up past the rail's top
+        // edge, under the header, where the cut below hides it -- the same
+        // place the plain morph's ride-out goes.
+        readonly property real tY: orphan.toRow ? (orphan.row ? orphan.row.y : orphan.sY) : (orphan.body ? orphan.railTop - (rail.contentY - orphan.body.y) - orphan.body.scrollY : orphan.railTop - orphan.sH - 2)
+        readonly property real tW: orphan.toRow ? (orphan.row ? root.slotS : orphan.sW) : orphan.bodyW
+        readonly property real tH: orphan.toRow ? (orphan.row ? root.slotS : orphan.sH) : orphan.bodyH
+
+        readonly property real cX: orphan.sX + (orphan.tX - orphan.sX) * orphan.o
+        readonly property real cY: orphan.sY + (orphan.tY - orphan.sY) * orphan.o
+        readonly property real cW: orphan.sW + (orphan.tW - orphan.sW) * orphan.o
+        readonly property real cH: orphan.sH + (orphan.tH - orphan.sH) * orphan.o
+        // The top cut, carried over from the overlay it was made from (which
+        // may have been passing under the header) and eased out to nothing by
+        // the landing on a row -- never ahead of the picture's own top, the
+        // overshoot included. Towards a body it eases onto the rail's top edge,
+        // the cut every rail picture has.
+        readonly property real tClip: orphan.toRow ? Math.min(orphan.tY, orphan.cY) - 1 : orphan.railTop - 1
+        readonly property real cClip: orphan.sClip + (orphan.tClip - orphan.sClip) * root.clamp01(orphan.o)
+        readonly property real cR: orphan.isColour ? Tokens.rounding.small : root.radiusAlong(orphan.sR, orphan.toRow, orphan.o)
+        // Landing on a row, the full-size copy gives way to the thumbnail over
+        // the same last stretch the corners round in, on the same curve value.
+        // The row draws only the 96px thumbnail -- the very pixmap mThumb
+        // holds -- and the full-size copy minified to 41px samples differently
+        // (filmed: the picture visibly re-sampled on the handoff frame). With
+        // this the last frame of the orphan is the row's own picture, so the
+        // handoff has nothing left to change.
+        //
+        // From sFade, the value it had when this run began, so a retarget
+        // turns it round instead of popping it: towards a row it only ever
+        // falls, towards a body it climbs back over the travel.
+        property real sFade: 1
+        readonly property real rowFade: orphan.toRow ? Math.min(orphan.sFade, root.clamp01((1 - orphan.o) / root.roundEnd)) : orphan.sFade + (1 - orphan.sFade) * root.clamp01(orphan.o)
+
+        function liveRect(): var {
+            return {
+                x: orphan.cX,
+                y: orphan.cY,
+                w: orphan.cW,
+                h: orphan.cH,
+                clip: orphan.cClip,
+                r: orphan.cR,
+                fade: orphan.fullOpacity * orphan.rowFade
+            };
+        }
+
+        function launch(): void {
+            oAnim.stop();
+            orphan.o = 0;
+            oAnim.start();
+        }
+
+        function retarget(): void {
+            const r = orphan.liveRect();
+            orphan.sFade = orphan.rowFade;
+            orphan.sX = r.x;
+            orphan.sY = r.y;
+            orphan.sW = r.w;
+            orphan.sH = r.h;
+            orphan.sClip = r.clip;
+            orphan.sR = r.r;
+            orphan.toRow = root.exiting;
+            orphan.launch();
+        }
+
+        Component.onCompleted: orphan.fullOpacity = Qt.binding(() => oPicRound.fullReady || oPicSquare.fullReady ? 1 : 0)
+
+        x: 0
+        y: 0
+        width: root.width
+        height: root.height
+
+        Anim {
+            id: oAnim
+
+            target: orphan
+            property: "o"
+            from: 0
+            to: 1
+            onFinished: root.landOrphan(orphan)
+        }
+
+        Item {
+            id: oClip
+
+            clip: true
+            width: root.width
+            y: orphan.cClip
+            height: Math.max(root.height - y, orphan.cY + orphan.cH - y)
+
+            Item {
+                x: orphan.cX
+                y: orphan.cY - oClip.y
+                width: orphan.cW
+                height: orphan.cH
+                visible: !orphan.isColour
+
+                StyledClippingRect {
+                    anchors.fill: parent
+                    visible: orphan.cR > 0
+                    radius: orphan.cR
+                    color: Colours.palette.m3surfaceContainerHigh
+
+                    MorphPicture {
+                        id: oPicRound
+
+                        anchors.fill: parent
+                        thumbSrc: orphan.thumbSrc
+                        fullSrc: orphan.fullSrc
+                        decodeW: orphan.decodeW
+                        fullOpacity: orphan.fullOpacity * orphan.rowFade
+                    }
+                }
+
+                Item {
+                    anchors.fill: parent
+                    visible: orphan.cR <= 0
+                    clip: true
+
+                    StyledRect {
+                        anchors.fill: parent
+                        color: Colours.palette.m3surfaceContainerHigh
+                    }
+
+                    MorphPicture {
+                        id: oPicSquare
+
+                        anchors.fill: parent
+                        thumbSrc: orphan.thumbSrc
+                        fullSrc: orphan.fullSrc
+                        decodeW: orphan.decodeW
+                        fullOpacity: orphan.fullOpacity * orphan.rowFade
+                    }
+                }
+            }
+
+            StyledRect {
+                visible: orphan.isColour
+                x: orphan.cX
+                y: orphan.cY - oClip.y
+                width: orphan.cW
+                height: orphan.cH
+                radius: Tokens.rounding.small
+                color: orphan.colour
+                border.width: 1
+                border.color: Colours.palette.m3outlineVariant
+            }
+        }
+    }
+
+    Component {
+        id: orphanComp
+
+        Orphan {}
+    }
 
     // The two copies of the picture the overlay draws, defined once and
-    // instantiated in both clip paths. Same url, same sourceSize, same fillMode,
-    // caching on at both ends, so the two instantiations resolve to ONE texture
-    // and cost no second decode -- the same sharing that makes the row's
-    // thumbnail a synchronous cache hit here in the first place.
+    // instantiated in both clip paths (and in every orphan). Same url, same
+    // sourceSize, same fillMode, caching on at both ends, so the instantiations
+    // resolve to ONE texture and cost no second decode -- the same sharing that
+    // makes the row's thumbnail a synchronous cache hit here in the first place.
     component MorphPicture: Item {
+        id: pic
+
+        property string thumbSrc: ""
+        property string fullSrc: ""
+        property int decodeW: 0
+        property real fullOpacity: 0
+        readonly property bool fullReady: mImg.status === Image.Ready
+
         // The picture the row was already showing, scaled up. Blurry at full
         // size, but it is the right image at the right aspect, and mImg fades
         // over it. Underneath sits the container's surface colour, which only
         // shows for entries whose row thumbnail has not decoded either.
+        //
+        // Same url and same sourceSize as ClipItem's `thumb` -- the pair that
+        // forms the pixmap cache key -- so this is drawn on the morph's first
+        // frame from the pixmap the row was drawing.
         Image {
             id: mThumb
 
             anchors.fill: parent
-            source: root.bodyImgSrc
+            source: pic.thumbSrc
             fillMode: Image.PreserveAspectCrop
             cache: !Clipboard.noCache
             asynchronous: true
-            sourceSize.width: root.slotS * 2
-            sourceSize.height: root.slotS * 2
+            sourceSize.width: Clipboard.thumbSize
+            sourceSize.height: Clipboard.thumbSize
         }
 
         Image {
             id: mImg
 
             anchors.fill: parent
-            source: root.bodyImgSrc
+            source: pic.fullSrc
             fillMode: Image.PreserveAspectCrop
             // Shares its decode with the body's own image -- see the note there.
             cache: !Clipboard.noCache
@@ -1066,17 +1657,10 @@ Item {
             // pre-averages it. The extra softness only exists while the box is
             // tiny, which is exactly when there is no detail to lose.
             mipmap: true
-            sourceSize.width: root.bodyImgDecodeW
-            // Cross-fade over the thumbnail rather than popping. Effects-fast,
-            // not spatial: the geometry is already animating underneath and a
-            // slow fade would just read as the picture arriving late.
-            opacity: root.bodyImgReady ? 1 : 0
-
-            Behavior on opacity {
-                Anim {
-                    type: Anim.FastEffects
-                }
-            }
+            sourceSize.width: pic.decodeW
+            // Cross-fades over the thumbnail rather than popping; the fade is
+            // the owner's (morphFullOpacity, or the orphan's own).
+            opacity: pic.fullOpacity
         }
     }
 
@@ -1104,9 +1688,12 @@ Item {
     Item {
         id: morphClip
 
+        // Over the header, as it always was by declaration order -- the
+        // header is raised for the orphans, so this has to say it outright.
+        z: 1
         clip: true
         width: root.width
-        y: Math.min(rail.y, root.slotY + (rail.y - root.slotY) * Math.min(1, root.morphT)) - 1
+        y: root.adopted ? root.adoptClip + ((root.adoptToBody ? rail.y - 1 : Math.min(rail.y, root.slotY) - 1) - root.adoptClip) * root.clamp01(root.adoptU) : Math.min(rail.y, root.slotY + (rail.y - root.slotY) * Math.min(1, root.morphT)) - 1
         height: Math.max(root.height - y, morphImg.y + morphImg.height, morphSwatch.y + morphSwatch.height)
 
         Item {
@@ -1115,14 +1702,6 @@ Item {
             // Geometry only -- the clipping lives in the two children, which is
             // what lets the morph be rounded at the row end and scissor-exact at
             // the body end. See root.roundEnd.
-
-            // The rect the body's image actually paints -- the same imgBoxW the body
-            // Image is sized to, so the handoff at t=1 is exact. Only horizontal
-            // centring can occur: the box is the image's own shape, so there is no
-            // letterbox.
-            readonly property real fitW: root.bodyImgBoxW > 0 ? root.bodyImgBoxW : root.bodyContentW
-            readonly property real fitH: root.bodyImgBoxW > 0 ? root.bodyImgFitH : root.bodyContentW
-            readonly property real dstX: Tokens.padding.large + root.bodyContentX + (root.bodyContentW - fitW) / 2
 
             // Size AND position both ride the raw curve, overshoot included. They
             // have to be the same t or the picture does not bounce -- it slides.
@@ -1149,15 +1728,18 @@ Item {
             // worth, and the fix then is a clamp again, not a bigger sourceSize
             // (that only moves the softness onto the RESTING image, which is
             // worse -- it is there all the time instead of for 200ms).
+            //
+            // Adopted (see latchMorph), the same lerp runs from the snapshot it
+            // was handed to the end it is heading for, on the same curve value.
             readonly property real sizeT: root.morphT
 
             visible: root.morphIsImage && root.morphInFlight
-            x: root.slotX + (dstX - root.slotX) * root.morphT
+            x: root.adopted ? root.adoptX + ((root.adoptToBody ? root.imgDstX : root.slotX) - root.adoptX) * root.adoptU : root.slotX + (root.imgDstX - root.slotX) * root.morphT
             // Relative to morphClip, which is what carries the cut. The absolute
             // expression is unchanged.
-            y: root.slotY + (root.morphBodyTop - root.slotY) * root.morphT - morphClip.y
-            width: root.slotS + (fitW - root.slotS) * sizeT
-            height: root.slotS + (fitH - root.slotS) * sizeT
+            y: (root.adopted ? root.adoptY + ((root.adoptToBody ? root.morphBodyTop : root.slotY) - root.adoptY) * root.adoptU : root.slotY + (root.morphBodyTop - root.slotY) * root.morphT) - morphClip.y
+            width: root.adopted ? root.adoptW + ((root.adoptToBody ? root.morphFitW : root.slotS) - root.adoptW) * root.adoptU : root.slotS + (root.morphFitW - root.slotS) * sizeT
+            height: root.adopted ? root.adoptH + ((root.adoptToBody ? root.morphFitH : root.slotS) - root.adoptH) * root.adoptU : root.slotS + (root.morphFitH - root.slotS) * sizeT
 
             // The rounded end of the morph -- the row's own component, at the
             // row's own radius, so the exit landing is a handoff between two
@@ -1172,14 +1754,18 @@ Item {
 
                 MorphPicture {
                     anchors.fill: parent
+                    thumbSrc: root.morphThumbSrc
+                    fullSrc: root.bodyImgSrc
+                    decodeW: root.bodyImgDecodeW
+                    fullOpacity: root.morphFullOpacity
                 }
             }
 
-            // The square end. A plain scissor clip: exact, no texture round trip,
-            // and therefore the path the t=1 landing on the body image is made
-            // through -- the landing hands off between two items drawn the same
-            // way, which is the property worth keeping whatever the round trip
-            // costs.
+            // The square end. A plain scissor clip: exact, no texture round
+            // trip, and therefore the path the t=1 landing on the body image is
+            // made through -- the landing hands off between two items drawn the
+            // same way, which is the property worth keeping whatever the round
+            // trip costs.
             Item {
                 anchors.fill: parent
                 visible: !root.morphRounded
@@ -1192,6 +1778,10 @@ Item {
 
                 MorphPicture {
                     anchors.fill: parent
+                    thumbSrc: root.morphThumbSrc
+                    fullSrc: root.bodyImgSrc
+                    decodeW: root.bodyImgDecodeW
+                    fullOpacity: root.morphFullOpacity
                 }
             }
         }
@@ -1205,16 +1795,36 @@ Item {
             id: morphSwatch
 
             visible: root.morphIsColour && root.morphInFlight
-            x: root.slotX + (Tokens.padding.large + root.bodyContentX - root.slotX) * root.morphT
+            x: root.adopted ? root.adoptX + ((root.adoptToBody ? root.swatchDstX : root.slotX) - root.adoptX) * root.adoptU : root.slotX + (Tokens.padding.large + root.bodyContentX - root.slotX) * root.morphT
             // Relative to morphClip, which is what carries the cut. The absolute
             // expression is unchanged.
-            y: root.slotY + (root.morphBodyTop - root.slotY) * root.morphT - morphClip.y
-            width: root.slotS + (root.bodyContentW - root.slotS) * root.morphT
-            height: root.slotS + (root.bodySwatchHeight - root.slotS) * root.morphT
+            y: (root.adopted ? root.adoptY + ((root.adoptToBody ? root.morphBodyTop : root.slotY) - root.adoptY) * root.adoptU : root.slotY + (root.morphBodyTop - root.slotY) * root.morphT) - morphClip.y
+            width: root.adopted ? root.adoptW + ((root.adoptToBody ? root.bodyContentW : root.slotS) - root.adoptW) * root.adoptU : root.slotS + (root.bodyContentW - root.slotS) * root.morphT
+            height: root.adopted ? root.adoptH + ((root.adoptToBody ? root.bodySwatchHeight : root.slotS) - root.adoptH) * root.adoptU : root.slotS + (root.bodySwatchHeight - root.slotS) * root.morphT
             radius: Tokens.rounding.small
             color: root.morphColour
             border.width: 1
             border.color: Colours.palette.m3outlineVariant
         }
+    }
+
+    // Orphans: over the rail, UNDER the header.
+    //
+    // An orphan made by an exit and the header it was interrupted by are
+    // flying to different rows, and usually they have to cross: the header
+    // comes down from the top to the row being read, the picture goes to its
+    // own row, which is the one next to it. Drawn over the header, the picture
+    // swept across the title for most of the slide -- filmed, the title was
+    // under it from the second frame after <- to the landing, which is the
+    // same thing morphClip's top cut exists to stop. Under it, the title stays
+    // legible and the picture passes behind it the way rail content does.
+    //
+    // Over the rail, because that is where the overlay it was made from was
+    // drawn: the exit from a text entry slides the body out at full strength,
+    // and the picture must not drop behind that text on the frame it orphans.
+    Item {
+        id: orphanLayer
+
+        anchors.fill: parent
     }
 }

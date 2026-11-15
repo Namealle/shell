@@ -73,6 +73,10 @@ StyledListView {
     // header lands, so the entry never exists in two places at once.
     property var liftedEntry: null
     property var maskedEntry: null
+    // The thumbnail-only counterpart, for rows whose picture is an orphaned
+    // reader morph still flying home (ClipReader.latchMorph). Set by
+    // ContentList; read by ClipItem.
+    property var thumbMaskedEntries: []
     property int pendingIndex: -1
 
     // Del in the clipboard picker. The deletion reaches the model a
