@@ -545,6 +545,11 @@ Item {
     // and back to 3 a few milliseconds later, the highlight returning to the
     // row that was left and a → then opening the reader on it.
     function listStep(step: int): void {
+        // The selection leaves the row the reader's pill is landing on. First,
+        // before anything moves currentIndex: the list's highlight is unmasked
+        // where it already stands and glides from there.
+        if (readerExiting)
+            clipReader.item?.releasePill();
         if (readerExiting && partTimer.running) {
             partTimer.stop();
             reinsert();
@@ -699,6 +704,13 @@ Item {
             // (ClipReader.latchMorph). Their thumbnail only is masked, the way
             // maskedEntry masks the whole row under the header.
             thumbMaskedEntries: clipReader.item?.orphanEntries ?? []
+            // The reader's pill IS the selection highlight while the reader
+            // is up and while it is landing (ClipReader's pill), so the list
+            // must not draw its own: no parked empty pill on the landing row,
+            // no double. Comes off in the exit handoff's own turn
+            // (readerExiting cleared), or as soon as an Up/Down during the
+            // exit takes the selection elsewhere (pillReleased).
+            highlightMasked: root.readerActive || (root.readerExiting && !(clipReader.item?.pillReleased ?? false))
         }
     }
 

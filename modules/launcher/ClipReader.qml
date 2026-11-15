@@ -341,6 +341,8 @@ Item {
         root.setMorphT(0);
         slideAnim.start();
         slideXAnim.start();
+        root.pillReleased = false;
+        root.runPill(1);
         // Where the rail ends up under the landed header, against where the
         // panel's bottom edge ends up.
         const edge = endHeight > 0 ? Math.max(0, endHeight - (root.topInset + slideAnim.to + header.implicitHeight + Tokens.spacing.small)) : -1;
@@ -365,6 +367,8 @@ Item {
         root.setMorphT(1);
         slideAnim.start();
         slideXAnim.start();
+        root.pillReleased = false;
+        root.runPill(0);
         root.beginBodySlide(slideAnim.to - slideAnim.from, true);
     }
 
@@ -404,6 +408,12 @@ Item {
         slideXAnim.to = 0;
         slideAnim.start();
         slideXAnim.start();
+        // A new open from the row the highlight is on: the pill IS that
+        // highlight again (it was drawn there a frame ago, at full tint) and
+        // fades out over this slide like any open.
+        root.pillReleased = false;
+        root.pillTint = 1;
+        root.runPill(0);
         // Rewinds morphT past its Behavior, then latches -- see latchMorph.
         root.latchMorph(root.index, true, false, shown);
         root.setMorphT(1);
@@ -502,6 +512,9 @@ Item {
         slideXAnim.to = 0;
         slideAnim.start();
         slideXAnim.start();
+        // Lifts off as the list's highlight and fades its tint over the slide.
+        pillTint = 1;
+        runPill(0);
         beginMorph();
         setMorphT(1);
         swapShown = entry;
@@ -795,6 +808,86 @@ Item {
                 font: Tokens.font.body.small
                 color: Colours.palette.m3outline
             }
+        }
+    }
+
+    // -- the pill: the row's selection highlight, travelling with it --
+    //
+    // His ask ("making the row move as a pill not just a text"). The lifted
+    // row used to be bare glyphs, so in flight its title was drawn straight
+    // over the text of every row it crossed, both legible at once, while the
+    // list's own highlight sat parked and empty on the landing row like a hole
+    // waiting to be filled (his screenshot of an exit mid-flight).
+    //
+    // So the highlight goes with the row. Geometry is exactly AppList's
+    // highlight for that row -- the list's own x and width, itemHeight, the
+    // same radius -- placed off the header's own slide (slidePos and slideX,
+    // less the row-content offsets the header is aligned with), which is the
+    // row's top-left at both ends and follows exitScroll like the header. At
+    // the row end it is the list highlight, pixel for pixel.
+    //
+    // Fill is OPAQUE: the panel's surface with the highlight's tint
+    // (onSurface at 0.08, which is all the list highlight is) composited on
+    // top, so nothing it crosses shows through. The translucent highlight
+    // itself would have kept the text-through-text.
+    //
+    // The tint rides pillTint, which runs on the slide's own curve and
+    // duration and is restarted from wherever it is with every slide: it fades
+    // out over an open (on the top row too, where the header barely travels)
+    // and in over an exit, and turns round on a reenter. At rest in the reader
+    // the pill is not drawn at all.
+    //
+    // ContentList hides the list's own highlight while the pill stands for
+    // it (highlightMasked), and the handoff back is the exit's own: the reader
+    // is torn down when the slide stops (`running`, never the eased value),
+    // in the same turn the mask comes off.
+    property real pillTint: 0
+    // An Up/Down during the exit moves the selection off this row: the list's
+    // highlight comes back and glides to the new row, and the pill keeps its
+    // opaque backing but gives its tint up. See ContentList.listStep.
+    property bool pillReleased: false
+
+    function runPill(to: real): void {
+        pillAnim.stop();
+        pillAnim.from = root.pillTint;
+        pillAnim.to = to;
+        pillAnim.start();
+    }
+
+    function releasePill(): void {
+        if (root.pillReleased)
+            return;
+        root.pillReleased = true;
+        root.runPill(0);
+    }
+
+    // Default spatial, like slideAnim: the same curve and duration, started in
+    // the same statements.
+    Anim {
+        id: pillAnim
+
+        target: root
+        property: "pillTint"
+    }
+
+    // Declared before the header and the rail, so it is under both, under the
+    // morph overlays and the orphans, and over the list rows (the reader's
+    // Loader is above the list's).
+    //
+    // A plain Rectangle, not a StyledRect: that one eases every colour change
+    // (CAnim), and the tint here is already being driven frame by frame.
+    Rectangle {
+        id: pill
+
+        x: (root.listView?.x ?? 0) + root.slideX - root.rowAlignX
+        y: (root.listView?.y ?? 0) + root.slidePos - root.rowAlignY
+        width: root.listView?.width ?? root.width
+        height: Tokens.sizes.launcher.itemHeight
+        radius: Tokens.rounding.large
+        visible: root.exiting || pillAnim.running || root.pillTint > 0
+        color: {
+            const s = Colours.tPalette.m3surface;
+            return Qt.tint(Qt.rgba(s.r, s.g, s.b, 1), Qt.alpha(Colours.palette.m3onSurface, 0.08 * root.clamp01(root.pillTint)));
         }
     }
 

@@ -77,6 +77,9 @@ StyledListView {
     // reader morph still flying home (ClipReader.latchMorph). Set by
     // ContentList; read by ClipItem.
     property var thumbMaskedEntries: []
+    // The clipboard reader's pill is standing in for the highlight (see
+    // ClipReader's pill). Set by ContentList.
+    property bool highlightMasked: false
     property int pendingIndex: -1
 
     // Del in the clipboard picker. The deletion reaches the model a
@@ -361,6 +364,14 @@ StyledListView {
         y: root.originY + root.currentIndex * (Tokens.sizes.launcher.itemHeight + root.spacing)
         implicitWidth: root.width
         implicitHeight: root.currentItem?.implicitHeight ?? 0
+
+        // Hidden while the reader's pill stands for it. Only hidden: its
+        // geometry and its glide are untouched, because the view's highlight
+        // range tracks this item -- snapping it while masked (tried) scrolled
+        // the list a row further under the reader and changed where every
+        // row lands. The lift keeps currentIndex on the row being read, so
+        // the highlight is already on the landing row when the mask comes off.
+        visible: !root.highlightMasked
 
         Behavior on y {
             Anim {}
