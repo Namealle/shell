@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Effects
 import Caelestia.Config
 import qs.components
 import qs.services
@@ -319,6 +320,9 @@ Item {
         // computed for the fitted one. Back to fit before the slide starts.
         root.resetZoom();
         root.exitCb = cb;
+        // A browse's leaving header face is not carried home on the row: it
+        // finishes within about a frame-pair, from where it is.
+        root.hurrySwap();
         // Before the latch: any orphan already in flight turns for its row
         // here (see onExitingChanged), and one made by the latch starts out
         // aimed at its row.
@@ -351,6 +355,7 @@ Item {
         root.exitCb = null;
         slideAnim.stop();
         slideXAnim.stop();
+        root.suppressSwap();
         root.exiting = false;
         root.beginMorph();
         slideAnim.from = root.slideY;
@@ -384,6 +389,8 @@ Item {
         root.exitCb = null;
         slideAnim.stop();
         slideXAnim.stop();
+        root.suppressSwap();
+        root.resetSwap();
         root.exiting = false;
         root.resetZoom();
         // The rail goes to the new entry AT ONCE -- this is an open, and an
@@ -497,6 +504,7 @@ Item {
         slideXAnim.start();
         beginMorph();
         setMorphT(1);
+        swapShown = entry;
         // to: 0, so the header's travel is the negation of where it starts.
         beginBodySlide(-(startY + rowAlignY), true, true);
     }
@@ -514,6 +522,282 @@ Item {
     // scar the old body fade left, and the reason it was eventually deleted.
     // The rail already carries the motion; the header's job is to be the one
     // thing that does not move.
+    //
+    // What it does instead, on a browse only, is a blur-replace in place -- his
+    // ask, after the iOS 26 toolbar pill (ScreenRecording 11-14 20-03-42): the
+    // header stays put, the old glyphs blur and fade out fast, the new ones
+    // arrive already blurred and sharpen. No direction; the rail carries that.
+    //
+    // The real content still rebinds on the keypress frame exactly as before --
+    // nothing that measures the header (implicitHeight, slotS, the title's x)
+    // changes or lags. What leaves is a GHOST: a copy of the header's own items
+    // holding what was on screen the frame before, at the blur and opacity it
+    // was drawn with, so a step mid-transition starts from whatever is
+    // displayed. Ghosts are children of the header and ride its slide.
+    //
+    // A held arrow is the case the old note above is about, and it is handled
+    // by capping rather than by skipping: a step arriving while the last one is
+    // still resolving brings the new content in at swapHeldBlur and
+    // swapHeldOpacity -- light, legible -- and the full resolve only runs once
+    // the steps stop. Never on open, exit, reenter() or reopen(): there the
+    // header is the lifted row and its content does not change.
+    //
+    // The knobs, all here. Durations are the shell's effects tokens, picked
+    // against the reference frame by frame (curve values computed off the
+    // token beziers): the old glyphs are heavily blurred within ~33ms and gone
+    // by ~70-80ms there, which is Fast (150ms; 0.61 at 33ms) on the blur and
+    // Default (200ms; 0.74 at 67ms) on the fade -- blur leading the fade, so
+    // the old title never just dims while still sharp. The new glyphs read
+    // within ~50ms but are only crisp at ~200-250ms: Default on their fade and
+    // Slow (300ms; 0.95 at 167ms) on the blur. Default for the incoming blur
+    // looked sharp by 100ms, visibly faster than the reference.
+    readonly property real swapBlurMax: 20
+    // Blur of the incoming content on a single step, and of a leaving ghost at
+    // the end of its fade, as fractions of swapBlurMax.
+    readonly property real swapInBlur: 1
+    readonly property real swapOutBlur: 1
+    readonly property real swapInOpacity: 0.3
+    // While steps keep arriving: a light blur that still reads (~2px), and a
+    // leaving face that is gone within about one key repeat (~33ms), so at
+    // most one ghost is ever under the title. That fade is the one number here
+    // that is not a token -- nothing in the shell is short enough, and at
+    // 200ms a held arrow stacked four or five half-opaque titles on top of
+    // each other (filmed). A third of expressiveFastEffects.
+    readonly property real swapHeldBlur: 0.1
+    readonly property real swapHeldOpacity: 0.85
+    readonly property int swapHeldFadeDuration: Math.round(Tokens.anim.durations.expressiveFastEffects / 3)
+    readonly property int swapOutBlurDuration: Tokens.anim.durations.expressiveFastEffects
+    readonly property int swapOutFadeDuration: Tokens.anim.durations.expressiveDefaultEffects
+    readonly property int swapInBlurDuration: Tokens.anim.durations.expressiveSlowEffects
+    readonly property int swapInFadeDuration: Tokens.anim.durations.expressiveDefaultEffects
+
+    // The live content's state; at rest 0 and 1, where it renders with no
+    // layer at all.
+    property real swapBlur: 0
+    property real swapOpacity: 1
+    // The entry the header last drew, so a change that is not a change (the
+    // rail's entries array replaced around the same entry) does nothing.
+    property var swapShown: null
+    property bool swapSuppressed: false
+
+    function metaFor(e: var, b: var): string {
+        // Counts come from the body, which owns the decode. Falls back to the
+        // row's own descriptor until it has one -- which is also what a cold
+        // entry beyond the prefetch window shows.
+        const c = b?.charCount ?? 0;
+        if (c > 0) {
+            const l = b?.lineCount ?? 1;
+            return `${c} ${c === 1 ? "character" : "characters"} · ${l} ${l === 1 ? "line" : "lines"}`;
+        }
+        return e?.desc ?? "";
+    }
+
+    onEntryChanged: {
+        const prev = root.swapShown;
+        const e = root.entry;
+        if (e === prev)
+            return;
+        root.swapShown = e;
+        if (!prev || !e || root.exiting || root.swapSuppressed)
+            return;
+        root.swapHeader(prev);
+    }
+
+    function swapHeader(prev: var): void {
+        const burst = swapIn.running;
+        // What was on screen: prev's content at the live state. Its body is a
+        // neighbour on the rail now, which is where its counts come from.
+        const pb = rail.itemAtIndex(root.entries.indexOf(prev));
+        let g = null;
+        for (let i = 0; i < ghosts.count; i++) {
+            const c = ghosts.itemAt(i);
+            if (c && !c.busy) {
+                g = c;
+                break;
+            }
+            if (c && (!g || c.opacity < g.opacity))
+                g = c;
+        }
+        // A burst hurries every face already leaving, from where it is.
+        if (burst)
+            for (let i = 0; i < ghosts.count; i++) {
+                const c = ghosts.itemAt(i);
+                if (c && c.busy && c !== g)
+                    c.hurry(root.swapHeldFadeDuration);
+            }
+        if (g)
+            g.launch(Clipboard.iconOf(prev), prev?.name ?? "", root.metaFor(prev, pb), root.swapBlur, root.swapOpacity, burst ? root.swapHeldBlur : root.swapOutBlur, burst ? root.swapHeldFadeDuration : root.swapOutFadeDuration, burst ? root.swapHeldFadeDuration : root.swapOutBlurDuration);
+        swapIn.stop();
+        root.swapBlur = burst ? Math.min(root.swapHeldBlur, root.swapInBlur) : root.swapInBlur;
+        root.swapOpacity = burst ? root.swapHeldOpacity : root.swapInOpacity;
+        swapIn.start();
+    }
+
+    // reopen(): a new open, so the header is a lifted row again and whatever a
+    // browse left in flight has no business on it.
+    function resetSwap(): void {
+        swapIn.stop();
+        root.swapBlur = 0;
+        root.swapOpacity = 1;
+        for (let i = 0; i < ghosts.count; i++)
+            ghosts.itemAt(i)?.clear();
+    }
+
+    function hurrySwap(): void {
+        for (let i = 0; i < ghosts.count; i++) {
+            const c = ghosts.itemAt(i);
+            if (c?.busy)
+                c.hurry(root.swapHeldFadeDuration);
+        }
+    }
+
+    // reenter()/reopen() may move the index in the same turn (ContentList's
+    // re-entry browses to the highlighted row right after); that is part of
+    // the re-entry, not a browse.
+    function suppressSwap(): void {
+        root.swapSuppressed = true;
+        swapUnsuppress.restart();
+    }
+
+    Timer {
+        id: swapUnsuppress
+
+        interval: 0
+        onTriggered: root.swapSuppressed = false
+    }
+
+    ParallelAnimation {
+        id: swapIn
+
+        Anim {
+            target: root
+            property: "swapBlur"
+            to: 0
+            type: Anim.SlowEffects
+            duration: root.swapInBlurDuration
+        }
+        Anim {
+            target: root
+            property: "swapOpacity"
+            to: 1
+            type: Anim.DefaultEffects
+            duration: root.swapInFadeDuration
+        }
+    }
+
+    // A copy of the header's face holding what was on screen, leaving.
+    component HeaderGhost: Item {
+        id: ghost
+
+        property string icon: ""
+        property string title: ""
+        property string meta: ""
+        property real blur: 0
+        readonly property bool busy: gOut.running
+
+        function launch(icon: string, title: string, meta: string, blur: real, op: real, blurTo: real, fadeDur: int, blurDur: int): void {
+            gOut.stop();
+            ghost.icon = icon;
+            ghost.title = title;
+            ghost.meta = meta;
+            ghost.blur = blur;
+            ghost.opacity = op;
+            gBlur.to = blurTo;
+            gFade.duration = fadeDur;
+            gBlur.duration = blurDur;
+            gOut.start();
+        }
+
+        // Finish sooner, from wherever the fade has got to (no `from` on the
+        // animations, so a restart starts at the current values).
+        function hurry(dur: int): void {
+            if (gFade.duration <= dur)
+                return;
+            gOut.stop();
+            gFade.duration = dur;
+            gBlur.duration = dur;
+            gOut.start();
+        }
+
+        function clear(): void {
+            gOut.stop();
+            ghost.opacity = 0;
+            ghost.blur = 0;
+        }
+
+        anchors.fill: parent
+        opacity: 0
+        visible: ghost.opacity > 0
+        // Always on, so the effect is built before a ghost is first needed:
+        // switched on in the frame the fade starts, that first frame came out
+        // dimmed but still sharp. Costs nothing while idle -- an invisible
+        // item's layer is never rendered.
+        layer.enabled: true
+        layer.effect: MultiEffect {
+            blurEnabled: true
+            blur: ghost.blur
+            blurMax: root.swapBlurMax
+        }
+
+        ParallelAnimation {
+            id: gOut
+
+            // Durations set per launch -- see launch() and hurry().
+            Anim {
+                id: gFade
+
+                target: ghost
+                property: "opacity"
+                to: 0
+                type: Anim.DefaultEffects
+            }
+            Anim {
+                id: gBlur
+
+                target: ghost
+                property: "blur"
+                type: Anim.FastEffects
+            }
+        }
+
+        MaterialIcon {
+            id: gIcon
+
+            anchors.verticalCenter: parent.verticalCenter
+            text: ghost.icon
+            color: Colours.palette.m3onSurfaceVariant
+            fontStyle: Tokens.font.icon.builders.large.scale(1.3).build()
+        }
+
+        Item {
+            anchors.left: gIcon.right
+            anchors.leftMargin: Tokens.spacing.medium
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            implicitHeight: gTitle.implicitHeight + gMeta.implicitHeight
+
+            StyledText {
+                id: gTitle
+
+                anchors.left: parent.left
+                anchors.right: parent.right
+                text: ghost.title
+                font: Tokens.font.body.medium
+                elide: Text.ElideRight
+            }
+
+            StyledText {
+                id: gMeta
+
+                anchors.left: parent.left
+                anchors.top: gTitle.bottom
+                text: ghost.meta
+                font: Tokens.font.body.small
+                color: Colours.palette.m3outline
+            }
+        }
+    }
+
     Item {
         id: header
 
@@ -535,58 +819,76 @@ Item {
 
         implicitHeight: Math.max(headerIcon.implicitHeight, headerText.implicitHeight)
 
-        MaterialIcon {
-            id: headerIcon
+        // The live face. Fills the header exactly, so every anchor below lays
+        // out as it did when these were the header's own children. The layer
+        // exists only while a blur is in flight: at rest the text renders
+        // straight, with no FBO in the way of its crispness.
+        Item {
+            id: headerLive
 
-            anchors.verticalCenter: parent.verticalCenter
-            // Natural width, matching ClipItem's leading slot exactly: the row
-            // reserves one 1em square for every entry type, so the header does
-            // too, and the title sits at the same x in both. Any mismatch here
-            // rides visibly through the whole slide and teleports across when
-            // the handoff unmasks the row.
-            text: Clipboard.iconOf(root.entry)
-            color: Colours.palette.m3onSurfaceVariant
-            fontStyle: Tokens.font.icon.builders.large.scale(1.3).build()
+            anchors.fill: parent
+            opacity: root.swapOpacity
+            layer.enabled: root.swapBlur > 0
+            layer.effect: MultiEffect {
+                blurEnabled: true
+                blur: root.swapBlur
+                blurMax: root.swapBlurMax
+            }
+
+            MaterialIcon {
+                id: headerIcon
+
+                anchors.verticalCenter: parent.verticalCenter
+                // Natural width, matching ClipItem's leading slot exactly: the row
+                // reserves one 1em square for every entry type, so the header does
+                // too, and the title sits at the same x in both. Any mismatch here
+                // rides visibly through the whole slide and teleports across when
+                // the handoff unmasks the row.
+                text: Clipboard.iconOf(root.entry)
+                color: Colours.palette.m3onSurfaceVariant
+                fontStyle: Tokens.font.icon.builders.large.scale(1.3).build()
+            }
+
+            Item {
+                id: headerText
+
+                anchors.left: headerIcon.right
+                anchors.leftMargin: Tokens.spacing.medium
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                implicitHeight: title.implicitHeight + meta.implicitHeight
+
+                StyledText {
+                    id: title
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    text: root.entry?.name ?? ""
+                    font: Tokens.font.body.medium
+                    elide: Text.ElideRight
+                }
+
+                StyledText {
+                    id: meta
+
+                    anchors.left: parent.left
+                    anchors.top: title.bottom
+                    text: root.metaFor(root.entry, root.body)
+                    font: Tokens.font.body.small
+                    color: Colours.palette.m3outline
+                }
+            }
         }
 
-        Item {
-            id: headerText
+        // Leaving faces, newest last. Four is enough for a held arrow: each
+        // one is gone within swapOutFadeDuration, and a fifth step inside that
+        // window reuses the faintest.
+        Repeater {
+            id: ghosts
 
-            anchors.left: headerIcon.right
-            anchors.leftMargin: Tokens.spacing.medium
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            implicitHeight: title.implicitHeight + meta.implicitHeight
+            model: 4
 
-            StyledText {
-                id: title
-
-                anchors.left: parent.left
-                anchors.right: parent.right
-                text: root.entry?.name ?? ""
-                font: Tokens.font.body.medium
-                elide: Text.ElideRight
-            }
-
-            StyledText {
-                id: meta
-
-                anchors.left: parent.left
-                anchors.top: title.bottom
-                // Counts come from the body, which owns the decode. Falls back
-                // to the row's own descriptor until it has one -- which is also
-                // what a cold entry beyond the prefetch window shows.
-                text: {
-                    const c = root.body?.charCount ?? 0;
-                    if (c > 0) {
-                        const l = root.body?.lineCount ?? 1;
-                        return `${c} ${c === 1 ? "character" : "characters"} · ${l} ${l === 1 ? "line" : "lines"}`;
-                    }
-                    return root.entry?.desc ?? "";
-                }
-                font: Tokens.font.body.small
-                color: Colours.palette.m3outline
-            }
+            HeaderGhost {}
         }
     }
 
