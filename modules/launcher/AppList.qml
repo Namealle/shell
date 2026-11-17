@@ -321,8 +321,21 @@ StyledListView {
                 root.currentIndex = root.pendingIndex;
             else if (root.deleteIndex >= 0 && root.deleteQuery === root.displayText)
                 root.currentIndex = Math.min(root.deleteIndex, root.results.length - 1);
-            else
+            else {
                 root.currentIndex = 0;
+                // A new query starts at the top, so put the view there now
+                // rather than leave it to the highlight range. Left to the
+                // range, a query that shrank the list from deep in the
+                // history (past where the new content ends) left the view
+                // with no rows built at all: only the current row, the rest
+                // of the panel black until some later change -- filmed by
+                // him on ";df" typed 55 rows down, and measured the same
+                // without the reader: count 4, itemAtIndex null for every
+                // row, forceLayout no help; NoHighlightRange, or this, and
+                // the rows are there. Same place the range would have put it,
+                // in the same frame.
+                root.positionViewAtBeginning();
+            }
             root.pendingIndex = -1;
             root.deleteIndex = -1;
         }
