@@ -314,6 +314,7 @@ Item {
         // slide fires onStopped, which must not consume (and instantly fire)
         // the exit callback.
         slideAnim.stop();
+        root.stopFollow();
         slideXAnim.stop();
         // The morph folds the body back into the row off LIVE endpoints, so a
         // zoomed image would hand a magnified, off-centre picture to a landing
@@ -351,26 +352,39 @@ Item {
 
     // The row the exit is landing on moved: the query changed under the slide
     // (ContentList.requeryExit). The header carries on from where it is to
-    // the new place -- same curve, same handoff at the end. The callback is
-    // held aside across the stop, which would otherwise run it (onStopped).
+    // where that row is NOW, every frame: `target` is a function of the live
+    // list (the row's drawn position once the view has it, index math until
+    // then). A fixed target measured at the keypress was wrong as soon as the
+    // view settled the new list a turn later -- the re-insert moves the origin
+    // and the scroll -- and the header was seen sliding the wrong way and out
+    // of the panel before coming back. Same curve and duration as the slide,
+    // and the same handoff when it lands; the callback is held aside across
+    // the stop, which would otherwise run it (onStopped).
     //
-    // The body is re-aimed with it. It hangs off the header, so a header now
+    // The body is re-aimed with it: it hangs off the header, so a header now
     // landing higher would park the leaving text that much inside the panel,
     // over the new rows, instead of on its bottom edge (`endHeight`, the
     // panel the new list is going to have; see exitTo).
-    function retargetExit(targetY: real, endHeight: real): void {
+    property var followTarget: null
+    property real followFrom: 0
+    property real followT: 0
+
+    function followExit(target: var, endHeight: real): void {
         if (!root.exiting)
             return;
         const cb = root.exitCb;
         root.exitCb = null;
         slideAnim.stop();
+        root.stopFollow();
         root.exitCb = cb;
-        slideAnim.from = root.slideY;
-        slideAnim.to = targetY + root.rowAlignY;
-        slideAnim.start();
+        root.followFrom = root.slideY;
+        root.followTarget = target;
+        root.followT = 0;
+        root.slideY = Qt.binding(() => root.followFrom + (root.followTarget() + root.rowAlignY - root.followFrom) * root.followT);
+        followAnim.start();
         if (!root.entryIsText || root.bodyFade <= 0)
             return;
-        const edge = Math.max(0, endHeight - (root.topInset + slideAnim.to + header.implicitHeight + Tokens.spacing.small));
+        const edge = Math.max(0, endHeight - (root.topInset + target() + root.rowAlignY + header.implicitHeight + Tokens.spacing.small));
         if (edge <= root.bodySlide && !bodySlideAnim.running)
             return;
         bodySlideAnim.stop();
@@ -380,6 +394,28 @@ Item {
         bodySlideAnim.start();
     }
 
+    // Back to an ordinary slideY, frozen where it is drawn.
+    function stopFollow(): void {
+        if (!root.followTarget)
+            return;
+        followAnim.stop();
+        root.slideY = root.slideY;
+        root.followTarget = null;
+    }
+
+    Anim {
+        id: followAnim
+
+        target: root
+        property: "followT"
+        from: 0
+        to: 1
+        onFinished: {
+            root.stopFollow();
+            root.finishExit();
+        }
+    }
+
     // Mid-exit reversal: stop the outbound slide wherever it is and return the
     // header to the top. The pending exit callback is discarded FIRST --
     // stopping fires onStopped, which must not consume (and run) the handoff
@@ -387,6 +423,7 @@ Item {
     function reenter(): void {
         root.exitCb = null;
         slideAnim.stop();
+        root.stopFollow();
         slideXAnim.stop();
         root.suppressSwap();
         root.exiting = false;
@@ -423,6 +460,7 @@ Item {
         // First, for the reason exitTo gives: stopping the slide runs it.
         root.exitCb = null;
         slideAnim.stop();
+        root.stopFollow();
         slideXAnim.stop();
         root.suppressSwap();
         root.resetSwap();
@@ -1930,7 +1968,7 @@ Item {
 
     function landOrphan(o: var): void {
         root.dropOrphan(o);
-        if (root.exiting && !slideAnim.running)
+        if (root.exiting && !slideAnim.running && !followAnim.running)
             root.finishExit();
     }
 

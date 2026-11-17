@@ -603,15 +603,14 @@ Item {
         const r = clipReader.item;
         if (!l || !r || !readerExiting || readerFading)
             return;
+        // From here the header no longer follows the list's scroll (see
+        // exitScroll below): the new query puts the list at its top in the
+        // same turn (AppList's onValuesChanged), and from deep in the history
+        // that is a jump of thousands of px -- the header was gone for the
+        // length of the slide (filmed on a 135-row-deep close). It aims at
+        // the row itself instead (requeryRowY), which already carries the
+        // scroll.
         exitRequeried = true;
-        // The new query puts the list at its top in the same turn (AppList's
-        // onValuesChanged), and the header tracks the list's scroll from
-        // exitContentY -- so from deep in the history that is a jump of
-        // thousands of px, and the header was gone for the length of the
-        // slide (filmed on a 135-row-deep close). Re-anchored on the scroll
-        // it had before the change, the header and body stay exactly where
-        // they are drawn, and later scrolling is still followed.
-        exitContentY = l.contentY - requeryScroll;
         partTimer.stop();
         l.readerGapIndex = -1;
         if (l.wantLift || l.liftedEntry)
@@ -636,17 +635,29 @@ Item {
             }
             return;
         }
-        // In the coordinates exitTo measured its target in: the header's
-        // exitScroll keeps tracking the list's scroll from there, so the row's
-        // layout position against that same contentY is where it is drawn.
         const stride = root.Tokens.sizes.launcher.itemHeight + l.spacing;
-        const rowTop = l.originY + j * stride;
-        // A row far down the new list is not flown to: the header leaves
-        // across the panel's bottom edge (or its top) on the way.
         const shown = Math.min(root.maxHeight, stride * Math.min(root.Config.launcher.maxShown, l.fullResults.length) - l.spacing);
-        const top = l.contentY - stride;
-        const bottom = l.contentY + shown;
-        r.retargetExit(Math.max(top, Math.min(bottom, rowTop)) - exitContentY, shown);
+        // slideY is drawn minus the (now frozen) exitScroll.
+        r.followExit(() => root.requeryRowY() + root.requeryScroll, shown);
+    }
+
+    // Where the closing entry's row is drawn right now, in the list's
+    // viewport: its own delegate once the view has built it (masked, but
+    // placed, transitions included), index math until then. A row far down
+    // the new list is not flown to: the header leaves across the panel's
+    // bottom edge (or its top) on the way.
+    function requeryRowY(): real {
+        const l = appList.item;
+        const e = readerEntry;
+        if (!l || !e)
+            return 0;
+        const stride = root.Tokens.sizes.launcher.itemHeight + l.spacing;
+        const shown = Math.min(root.maxHeight, stride * Math.min(root.Config.launcher.maxShown, l.fullResults.length) - l.spacing);
+        l.count;
+        const k = l.results.indexOf(e);
+        const it = k >= 0 ? l.itemAtIndex(k) : null;
+        const y = it && it.modelData === e ? it.visualY - l.contentY : l.originY + l.fullResults.indexOf(e) * stride - l.contentY;
+        return Math.max(-stride, Math.min(shown, y));
     }
 
     Connections {
@@ -948,7 +959,9 @@ Item {
             // Read once, as the reader is built: the panel has not begun to
             // resize yet, so this is where its bottom edge is.
             startHeight: root.height
-            exitScroll: root.readerExiting ? (appList.item?.contentY ?? 0) - root.exitContentY : 0
+            // Frozen once a query changes under the exit: the header aims at
+            // the row's drawn position from then on (requeryExit).
+            exitScroll: !root.readerExiting ? 0 : root.exitRequeried ? root.requeryScroll : (appList.item?.contentY ?? 0) - root.exitContentY
             listView: appList.item
             // Search text minus the `;` prefix: seeded with the list filter on
             // entry, live as the user keeps typing (the list itself is frozen).
