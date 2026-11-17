@@ -76,6 +76,9 @@ Item {
         readerActive = false;
         readerExiting = false;
         railEntries = null;
+        exitRequeried = false;
+        exitFade.stop();
+        clipReader.opacity = 1;
     }
 
     // The row hands itself off to the reader: mask+lift it out of the model
@@ -108,6 +111,24 @@ Item {
             const r = clipReader.item;
             if (!r || !readerEntry || !l)
                 return;
+            // The query changed under this exit (requeryExit): the lift is
+            // already off, and the list the reader was opened from is gone.
+            // Whatever row the highlight is on now, this is a new open from
+            // it -- never a reversal of the old header into a list that no
+            // longer has its row, or has it somewhere else.
+            if (exitRequeried) {
+                l.flushLift();
+                const at = l.currentIndex;
+                if (!l.wantLift && !l.liftedEntry && l.currentEntry && l.currentEntry === l.fullResults[at]) {
+                    partTimer.stop();
+                    l.maskedEntry = null;
+                    root.openReader();
+                    readerExiting = false;
+                    railEntries = null;
+                    r.reopen();
+                }
+                return;
+            }
             // Before anything below touches the lift or partTimer.
             const want = exitHighlightIndex();
             // Onto ANOTHER row, with the list already whole again: that is not
@@ -201,6 +222,11 @@ Item {
         if (!l?.currentEntry)
             return;
         readerStartY = currentRowY();
+        // An exit the query changed under may have been fading the reader
+        // out (requeryExit); this open is the reader's own again.
+        exitFade.stop();
+        clipReader.opacity = 1;
+        exitRequeried = false;
         // An open is not a browse: clear the direction left over from the last
         // one, or the body would slide while the header is still morphing.
         readerStep = 0;
@@ -266,6 +292,8 @@ Item {
         // false between the writes (see enterReader)
         readerFading = true;
         listHeld = true;
+        exitFade.stop();
+        exitRequeried = false;
         l?.resetLift();
         readerActive = false;
         readerExiting = false;
@@ -382,6 +410,7 @@ Item {
                         l.currentIndex = at;
                 }
             }
+            exitRequeried = false;
             readerExiting = true;
             const i = Math.max(0, l.fullResults.indexOf(readerEntry));
             // The landing spot comes from the LAYOUT, not the animated item: on
@@ -451,6 +480,11 @@ Item {
                 l.maskedEntry = null;
                 root.readerEntry = null;
                 root.readerExiting = false;
+                root.exitRequeried = false;
+                // After the flags: the reader is gone by now, so this cannot
+                // bring a faded one back (requeryExit).
+                exitFade.stop();
+                clipReader.opacity = 1;
                 if (root.copiedInReader) {
                     root.copiedInReader = false;
                     Clipboard.reload();
@@ -530,6 +564,102 @@ Item {
         // length-2 on the last row, so the two only coincide in the common case.
         const want = partTimer.index + l.currentIndex - partTimer.fromIndex;
         l.clearLift(Math.max(0, Math.min(want, l.fullResults.length - 1)));
+    }
+
+    // -- typing while the exit slides home --
+    //
+    // The exit is choreographed against the list as it was when ← was
+    // pressed: the header lands on the entry's row by index, the rows below
+    // it are held a stride low for a re-insert staged at that index (gapHold),
+    // and the rail under the header is the list's own results. The list is
+    // not frozen during the exit, though, so a key typed there re-filters it
+    // underneath all three, and each went wrong on its own:
+    //
+    //   - the rail followed the list, so the header and body showed whatever
+    //     entry now sat at the old index (the first one, once the entry being
+    //     read was filtered out) and slid it onto a row that already showed
+    //     it: the doubled row;
+    //   - the header landed on the OLD index, which in the new list is some
+    //     other row or none;
+    //   - the held rows were moved by the filter, not by the re-insert, so
+    //     the hold was never spent and they stayed drawn a stride below their
+    //     slots for good: his empty slot with two rows printed over each other
+    //     further down.
+    //
+    // A new query is a new list, so the exit stops owing anything to the old
+    // one. The rail keeps the old results (the reader is still showing an
+    // entry of them); the lift comes off now, as part of the new list, with
+    // the selection at its top like any query; the held rows ease back. Then
+    // the header carries on to where the entry is now, or, if the query
+    // dropped it, fades out on its way like a reader whose list is leaving
+    // (dropReader). Every key typed in the slide re-aims it from where it is.
+    property bool exitRequeried: false
+
+    function holdRailForRequery(): void {
+        if (!readerExiting || readerFading || railEntries)
+            return;
+        railEntries = appList.item?.fullResults ?? [];
+    }
+
+    function requeryExit(): void {
+        const l = appList.item;
+        const r = clipReader.item;
+        if (!l || !r || !readerExiting || readerFading)
+            return;
+        exitRequeried = true;
+        partTimer.stop();
+        l.readerGapIndex = -1;
+        if (l.wantLift || l.liftedEntry)
+            l.clearLift(0);
+        // The highlight is the list's again, on the new top row.
+        r.releasePill();
+        const j = l.fullResults.indexOf(readerEntry);
+        if (j < 0) {
+            l.maskedEntry = null;
+            fadeReaderTo(0);
+            return;
+        }
+        l.maskedEntry = readerEntry;
+        fadeReaderTo(1);
+        // In the coordinates exitTo measured its target in: the header's
+        // exitScroll keeps tracking the list's scroll from there, so the row's
+        // layout position against that same contentY is where it is drawn.
+        const stride = root.Tokens.sizes.launcher.itemHeight + l.spacing;
+        const rowTop = l.originY + j * stride;
+        // A row far down the new list is not flown to: the header leaves
+        // across the panel's bottom edge (or its top) on the way.
+        const shown = Math.min(root.maxHeight, stride * Math.min(root.Config.launcher.maxShown, l.fullResults.length) - l.spacing);
+        const top = l.contentY - stride;
+        const bottom = l.contentY + shown;
+        r.retargetExit(Math.max(top, Math.min(bottom, rowTop)) - exitContentY, shown);
+    }
+
+    function fadeReaderTo(to: real): void {
+        if (clipReader.opacity === to && !exitFade.running)
+            return;
+        exitFade.stop();
+        exitFade.to = to;
+        exitFade.start();
+    }
+
+    Anim {
+        id: exitFade
+
+        target: clipReader
+        property: "opacity"
+        type: Anim.FastEffects
+    }
+
+    Connections {
+        function onExitQueryChanging(): void {
+            root.holdRailForRequery();
+        }
+
+        function onExitQueryChanged(): void {
+            root.requeryExit();
+        }
+
+        target: appList.item
     }
 
     // ↑/↓ outside the reader. Ordinary navigation, except inside the exit window.

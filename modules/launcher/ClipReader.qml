@@ -349,6 +349,37 @@ Item {
         root.beginBodySlide(slideAnim.to - slideAnim.from, false, false, edge);
     }
 
+    // The row the exit is landing on moved: the query changed under the slide
+    // (ContentList.requeryExit). The header carries on from where it is to
+    // the new place -- same curve, same handoff at the end. The callback is
+    // held aside across the stop, which would otherwise run it (onStopped).
+    //
+    // The body is re-aimed with it. It hangs off the header, so a header now
+    // landing higher would park the leaving text that much inside the panel,
+    // over the new rows, instead of on its bottom edge (`endHeight`, the
+    // panel the new list is going to have; see exitTo).
+    function retargetExit(targetY: real, endHeight: real): void {
+        if (!root.exiting)
+            return;
+        const cb = root.exitCb;
+        root.exitCb = null;
+        slideAnim.stop();
+        root.exitCb = cb;
+        slideAnim.from = root.slideY;
+        slideAnim.to = targetY + root.rowAlignY;
+        slideAnim.start();
+        if (!root.entryIsText || root.bodyFade <= 0)
+            return;
+        const edge = Math.max(0, endHeight - (root.topInset + slideAnim.to + header.implicitHeight + Tokens.spacing.small));
+        if (edge <= root.bodySlide && !bodySlideAnim.running)
+            return;
+        bodySlideAnim.stop();
+        bodySlideAnim.from = root.bodySlide;
+        bodySlideAnim.to = Math.max(root.bodySlide, edge);
+        bodySlideAnim.duration = Tokens.anim.durations.expressiveDefaultSpatial;
+        bodySlideAnim.start();
+    }
+
     // Mid-exit reversal: stop the outbound slide wherever it is and return the
     // header to the top. The pending exit callback is discarded FIRST --
     // stopping fires onStopped, which must not consume (and run) the handoff

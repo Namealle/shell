@@ -25,11 +25,25 @@ StyledListView {
     readonly property string requestedState: stateForText(search.text)
     readonly property string displayState: stateForText(displayText)
 
+    // Typing while the clipboard reader's exit is still sliding home: the
+    // query changes under an entry that is lifted out of this list, held for
+    // a staged re-insert, and being landed on a row. Said either side of the
+    // change, because ContentList has to hold the reader's rail BEFORE the
+    // results move under it, and re-aim the exit after.
+    signal exitQueryChanging
+    signal exitQueryChanged
+
     function syncDisplayText(): void {
         if (frozen)
             return;
-        if (screenState.launcher && requestedState === displayState)
+        if (screenState.launcher && requestedState === displayState) {
+            const requery = root.exiting && displayText !== search.text;
+            if (requery)
+                root.exitQueryChanging();
             displayText = search.text;
+            if (requery)
+                root.exitQueryChanged();
+        }
     }
 
     function stateForText(text: string): string {
@@ -192,19 +206,30 @@ StyledListView {
     // placement. See ClipItem's onYChanged.
     property double repairAt: 0
 
+    function applyLift(): void {
+        // Before the model change, so a transition started inside it stamps
+        // later than this and the row knows it was animated after all.
+        root.repairAt = Date.now();
+        if (root.wantLift === root.liftedEntry)
+            return;
+        root.pendingIndex = root.wantIndex;
+        root.liftedEntry = root.wantLift;
+    }
+
+    // A lift or unlift still inside the coalescing window, applied now -- for
+    // a keypress that has to read the model as it is about to be.
+    function flushLift(): void {
+        if (!coalesce.running)
+            return;
+        coalesce.stop();
+        root.applyLift();
+    }
+
     Timer {
         id: coalesce
 
         interval: 1
-        onTriggered: {
-            // Before the model change, so a transition started inside it stamps
-            // later than this and the row knows it was animated after all.
-            root.repairAt = Date.now();
-            if (root.wantLift === root.liftedEntry)
-                return;
-            root.pendingIndex = root.wantIndex;
-            root.liftedEntry = root.wantLift;
-        }
+        onTriggered: root.applyLift()
     }
 
     readonly property var fullResults: root.resultsForText(root.displayText)
