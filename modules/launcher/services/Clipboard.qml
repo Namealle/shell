@@ -4,6 +4,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Caelestia.Config
+import qs.utils
 
 // Clipboard-history picker backing the `;` launcher mode.
 //
@@ -14,6 +15,18 @@ import Caelestia.Config
 // the Del key removes an entry via cliphist delete.
 Singleton {
     id: root
+
+    // Debug flag for ClipInvariants: on while the file
+    // `$XDG_CONFIG_HOME/caelestia/clip-invariants` exists, read once at
+    // startup. Off, the checker is never built.
+    property bool checkInvariants: false
+
+    FileView {
+        path: `${Paths.config}/clip-invariants`
+        printErrors: false
+        onLoaded: root.checkInvariants = true
+        onLoadFailed: root.checkInvariants = false
+    }
 
     // -- reader image box geometry --
     //

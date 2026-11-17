@@ -973,6 +973,19 @@ Item {
         }
     }
 
+    // Debug only, off unless the flag file exists (Clipboard.checkInvariants).
+    Loader {
+        active: Clipboard.checkInvariants && !!appList.item
+
+        sourceComponent: ClipInvariants {
+            content: root
+            list: appList.item
+            readerLoader: clipReader
+            search: root.search
+            launcherOpen: root.screenState.launcher
+        }
+    }
+
     Loader {
         id: wallpaperList
 

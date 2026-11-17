@@ -93,6 +93,11 @@ Item {
     // genuinely a smaller version of a strong one rather than a shorter one.
     property real entranceStrength: 1
 
+    // For ClipInvariants (debug): the row's two offsets and its content fade.
+    property alias holdY: gapHold.y
+    property alias entranceY: entrance.y
+    property alias contentOpacity: content.opacity
+
     // Where the row is drawn, as opposed to where the view has laid it out: the
     // reader's header has to lift off the former.
     readonly property real visualY: root.y + entrance.y + gapHold.y
