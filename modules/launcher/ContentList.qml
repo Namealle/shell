@@ -77,8 +77,6 @@ Item {
         readerExiting = false;
         railEntries = null;
         exitRequeried = false;
-        exitFade.stop();
-        clipReader.opacity = 1;
     }
 
     // The row hands itself off to the reader: mask+lift it out of the model
@@ -222,10 +220,6 @@ Item {
         if (!l?.currentEntry)
             return;
         readerStartY = currentRowY();
-        // An exit the query changed under may have been fading the reader
-        // out (requeryExit); this open is the reader's own again.
-        exitFade.stop();
-        clipReader.opacity = 1;
         exitRequeried = false;
         // An open is not a browse: clear the direction left over from the last
         // one, or the body would slide while the header is still morphing.
@@ -292,7 +286,6 @@ Item {
         // false between the writes (see enterReader)
         readerFading = true;
         listHeld = true;
-        exitFade.stop();
         exitRequeried = false;
         l?.resetLift();
         readerActive = false;
@@ -481,10 +474,6 @@ Item {
                 root.readerEntry = null;
                 root.readerExiting = false;
                 root.exitRequeried = false;
-                // After the flags: the reader is gone by now, so this cannot
-                // bring a faded one back (requeryExit).
-                exitFade.stop();
-                clipReader.opacity = 1;
                 if (root.copiedInReader) {
                     root.copiedInReader = false;
                     Clipboard.reload();
@@ -590,15 +579,23 @@ Item {
     // one. The rail keeps the old results (the reader is still showing an
     // entry of them); the lift comes off now, as part of the new list, with
     // the selection at its top like any query; the held rows ease back. Then
-    // the header carries on to where the entry is now, or, if the query
-    // dropped it, fades out on its way like a reader whose list is leaving
-    // (dropReader). Every key typed in the slide re-aims it from where it is.
+    // the header carries on to where the entry is now -- every key typed in
+    // the slide re-aims it from where it is -- or, if the query dropped the
+    // entry, the reader is gone at once, the way any row a filter drops is.
+    // It used to fade out on its way, which drew it over the rows the new
+    // query brings in: the double-text ghost this list rejected for removed
+    // rows (AppList's add/remove), filmed again by him on a typed "d".
     property bool exitRequeried: false
 
+    // How far the list had scrolled under the exit when the query changed.
+    property real requeryScroll: 0
+
     function holdRailForRequery(): void {
-        if (!readerExiting || readerFading || railEntries)
+        if (!readerExiting || readerFading)
             return;
-        railEntries = appList.item?.fullResults ?? [];
+        requeryScroll = clipReader.item?.exitScroll ?? 0;
+        if (!railEntries)
+            railEntries = appList.item?.fullResults ?? [];
     }
 
     function requeryExit(): void {
@@ -607,6 +604,14 @@ Item {
         if (!l || !r || !readerExiting || readerFading)
             return;
         exitRequeried = true;
+        // The new query puts the list at its top in the same turn (AppList's
+        // onValuesChanged), and the header tracks the list's scroll from
+        // exitContentY -- so from deep in the history that is a jump of
+        // thousands of px, and the header was gone for the length of the
+        // slide (filmed on a 135-row-deep close). Re-anchored on the scroll
+        // it had before the change, the header and body stay exactly where
+        // they are drawn, and later scrolling is still followed.
+        exitContentY = l.contentY - requeryScroll;
         partTimer.stop();
         l.readerGapIndex = -1;
         if (l.wantLift || l.liftedEntry)
@@ -615,12 +620,22 @@ Item {
         r.releasePill();
         const j = l.fullResults.indexOf(readerEntry);
         if (j < 0) {
+            // Everything the exit's handoff does, without the re-insert (the
+            // lift is already coming off above). The callback goes first:
+            // tearing the reader down stops its slide, and a stopped slide
+            // runs it.
+            r.exitCb = null;
             l.maskedEntry = null;
-            fadeReaderTo(0);
+            readerEntry = null;
+            railEntries = null;
+            exitRequeried = false;
+            readerExiting = false;
+            if (copiedInReader) {
+                copiedInReader = false;
+                Clipboard.reload();
+            }
             return;
         }
-        l.maskedEntry = readerEntry;
-        fadeReaderTo(1);
         // In the coordinates exitTo measured its target in: the header's
         // exitScroll keeps tracking the list's scroll from there, so the row's
         // layout position against that same contentY is where it is drawn.
@@ -632,22 +647,6 @@ Item {
         const top = l.contentY - stride;
         const bottom = l.contentY + shown;
         r.retargetExit(Math.max(top, Math.min(bottom, rowTop)) - exitContentY, shown);
-    }
-
-    function fadeReaderTo(to: real): void {
-        if (clipReader.opacity === to && !exitFade.running)
-            return;
-        exitFade.stop();
-        exitFade.to = to;
-        exitFade.start();
-    }
-
-    Anim {
-        id: exitFade
-
-        target: clipReader
-        property: "opacity"
-        type: Anim.FastEffects
     }
 
     Connections {
@@ -834,7 +833,9 @@ Item {
             search: root.search
             screenState: root.screenState
             frozen: root.readerActive
-            exiting: root.readerExiting
+            // Not once the query has changed under the exit: that list is a
+            // new one, positioned at once like any query (requeryExit).
+            exiting: root.readerExiting && !root.exitRequeried
             // Rows whose picture is still in the reader's air -- an
             // interrupted morph folding back into its own thumbnail slot
             // (ClipReader.latchMorph). Their thumbnail only is masked, the way
