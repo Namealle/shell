@@ -121,10 +121,8 @@ Item {
         const prev = root.lastY;
         root.lastY = root.y;
         // A row built into its slot has no previous position to be moved from.
-        if (!root.laidOut) {
-            root.laidOut = true;
+        if (!root.laidOut)
             return;
-        }
         let d = root.y - prev;
         // The re-insert this row was held for -- see gapHold. Spent against the
         // view's own travel as it happens, so the two cancel to the pixel on
@@ -178,7 +176,23 @@ Item {
         entranceAnim.start();
     }
 
+    // Laid out once the turn that built the row is over, NOT on its first y
+    // change. Whether the view's placement of a new row reaches onYChanged at
+    // all depends on how the row was built (a row built on y 0 is never moved;
+    // others can be positioned before this handler is live), so "the first
+    // change is the placement" could swallow the row's first real MOVE
+    // instead. Filmed by him: a reader opened on the top row of a list a query
+    // had just rebuilt, then closed. The rows under it were held a stride low
+    // for the re-insert (gapHold), the re-insert's move was taken for a
+    // placement, the hold was never spent, and the row stayed drawn on top of
+    // the next one.
+    function markLaidOut(): void {
+        root.lastY = root.y;
+        root.laidOut = true;
+    }
+
     Component.onCompleted: {
+        Qt.callLater(root.markLaidOut);
         // Only rows built as part of a filter change, not rows built by
         // scrolling. The list stamps the time whenever its results change for a
         // reason worth animating (its own mode switch and the reader's lift are
