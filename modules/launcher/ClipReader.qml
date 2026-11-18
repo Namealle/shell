@@ -443,7 +443,6 @@ Item {
         root.exitCb = null;
         slideAnim.stop();
         root.stopFollow();
-        root.stopExitSprings();
         slideXAnim.stop();
         root.suppressSwap();
         root.exiting = false;
@@ -452,9 +451,15 @@ Item {
         slideAnim.to = 0;
         slideXAnim.from = root.slideX;
         slideXAnim.to = 0;
-        root.setMorphT(1);
-        slideAnim.start();
-        slideXAnim.start();
+        if (root.morphIsImage || root.morphIsColour) {
+            // Turned round with the speed it had.
+            root.startMorphSprings(0, 0, 1, true);
+        } else {
+            root.stopExitSprings();
+            root.setMorphT(1);
+            slideAnim.start();
+            slideXAnim.start();
+        }
         root.pillReleased = false;
         root.runPill(0);
         root.beginBodySlide(slideAnim.to - slideAnim.from, true);
@@ -496,8 +501,6 @@ Item {
         slideAnim.to = 0;
         slideXAnim.from = root.slideX;
         slideXAnim.to = 0;
-        slideAnim.start();
-        slideXAnim.start();
         // A new open from the row the highlight is on: the pill IS that
         // highlight again (it was drawn there a frame ago, at full tint) and
         // fades out over this slide like any open.
@@ -506,7 +509,13 @@ Item {
         root.runPill(0);
         // Rewinds morphT past its Behavior, then latches -- see latchMorph.
         root.latchMorph(root.index, true, false, shown);
-        root.setMorphT(1);
+        if (root.morphIsImage || root.morphIsColour) {
+            root.startMorphSprings(0, 0, 1, false);
+        } else {
+            slideAnim.start();
+            slideXAnim.start();
+            root.setMorphT(1);
+        }
         root.bodyFade = 1;
         root.beginBodySlide(-(root.startY + root.rowAlignY), true, true);
     }
@@ -538,36 +547,52 @@ Item {
     readonly property bool exitSpringsRunning: slideSpring.running || slideXSpring.running || morphSpring.running
 
     function startExitSprings(slideTo: real): void {
+        root.startMorphSprings(slideTo, root.rowAlignX, 0, false);
+    }
+
+    // The open of a picture runs on the same springs, for the same reason:
+    // the curve starts at full speed from rest -- 3.9% of the whole size
+    // change in the first 6ms frame (41 -> 77px wide, the crop going from the
+    // row's square to nearly the picture's own aspect at once), which is the
+    // picture "changing instantly" on the keypress. A spring from rest
+    // accelerates into it, and hands over to the body at rest.
+    //
+    // `keep`: a reversal (reenter) turns the running springs round with
+    // their speed instead of starting them from rest.
+    function startMorphSprings(slideTo: real, slideXTo: real, morphTo: real, keep: bool): void {
         // In px: settled below a fiftieth of a pixel, moving under 2px/s.
         slideSpring.epsilon = 0.02;
         slideSpring.velocityEpsilon = 2;
         slideXSpring.epsilon = 0.02;
         slideXSpring.velocityEpsilon = 2;
+        const vY = keep && slideSpring.running ? slideSpring.velocity : 0;
+        const vX = keep && slideXSpring.running ? slideXSpring.velocity : 0;
+        const vM = keep && morphSpring.running ? morphSpring.velocity : 0;
         slideSpring.target = null;
         slideSpring.to = slideTo;
-        slideXSpring.to = root.rowAlignX;
-        slideSpring.zeta = slideSpring.zetaForOvershoot(Math.abs(slideTo - root.slideY), root.exitOvershootPx);
-        slideXSpring.zeta = slideXSpring.zetaForOvershoot(Math.abs(root.rowAlignX - root.slideX), root.exitOvershootPx);
-        slideSpring.start(root.slideY, 0);
-        slideXSpring.start(root.slideX, 0);
+        slideXSpring.to = slideXTo;
+        slideSpring.zeta = slideSpring.zetaForOvershoot(Math.abs(slideTo - root.slideY) + Math.abs(vY) / slideSpring.omega, root.exitOvershootPx);
+        slideXSpring.zeta = slideXSpring.zetaForOvershoot(Math.abs(slideXTo - root.slideX) + Math.abs(vX) / slideXSpring.omega, root.exitOvershootPx);
+        slideSpring.start(root.slideY, vY);
+        slideXSpring.start(root.slideX, vX);
         // morphT is a fraction of the picture's whole size travel, so its
         // thresholds are that same fiftieth of a pixel, scaled.
         const span = Math.max(1, root.morphIsImage ? Math.max(root.morphFitW, root.morphFitH) - root.slotS : root.bodyContentW - root.slotS);
         morphSpring.epsilon = 0.02 / span;
         morphSpring.velocityEpsilon = 2 / span;
-        morphSpring.to = 0;
-        morphSpring.zeta = morphSpring.zetaForOvershoot(span * Math.abs(root.morphT), root.exitOvershootPx);
+        morphSpring.to = morphTo;
+        morphSpring.zeta = morphSpring.zetaForOvershoot(span * (Math.abs(morphTo - root.morphT) + Math.abs(vM) / morphSpring.omega), root.exitOvershootPx);
         // An open still in flight hands over from where it is. Its curve is
         // the Behavior's (which refuses a stop() -- not a root animation), so
         // it is ended the way a disabled Behavior ends: by a write while the
         // spring has it switched off. That drops an adopted path, so the
         // path is re-snapshotted first, exactly as setMorphT does for a curve.
-        const r = root.adopted && root.morphing && root.morphGoal !== 0 ? root.liveMorphRect() : null;
-        morphSpring.start(root.morphT, 0);
+        const r = root.adopted && root.morphing && root.morphGoal !== morphTo ? root.liveMorphRect() : null;
+        morphSpring.start(root.morphT, vM);
         root.morphT = root.morphT;
         if (r)
             root.adopt(r);
-        root.morphGoal = 0;
+        root.morphGoal = morphTo;
     }
 
     function stopExitSprings(): void {
@@ -712,13 +737,17 @@ Item {
         slideAnim.to = 0;
         slideXAnim.from = slideX;
         slideXAnim.to = 0;
-        slideAnim.start();
-        slideXAnim.start();
         // Lifts off as the list's highlight and fades its tint over the slide.
         pillTint = 1;
         runPill(0);
         beginMorph();
-        setMorphT(1);
+        if (morphIsImage || morphIsColour) {
+            startMorphSprings(0, 0, 1, false);
+        } else {
+            slideAnim.start();
+            slideXAnim.start();
+            setMorphT(1);
+        }
         swapShown = entry;
         // to: 0, so the header's travel is the negation of where it starts.
         beginBodySlide(-(startY + rowAlignY), true, true);
@@ -2556,12 +2585,27 @@ Item {
                     readonly property real radius: root.morphRounded ? root.morphRadius : 0
                     readonly property real thumbOpacity: shThumb.status === Image.Ready ? 1 : 0
                     // Near the row the full decode gives way to the row's own
-                    // thumbnail, over the stretch the corners round in -- the
-                    // same rule as an orphan's rowFade. Mipmapped down to 41px
-                    // the full decode is visibly softer than the thumbnail the
-                    // row draws (filmed: the texture changed on the handoff
-                    // frame); this way the last frames are the row's pixels.
-                    readonly property real fullOpacity: shFull.status === Image.Ready ? root.morphFullOpacity * (root.adopted ? 1 : root.clamp01(root.morphT / root.roundEnd)) : 0
+                    // thumbnail, so the frames at the row are the row's pixels
+                    // (the handoff to it changes nothing).
+                    //
+                    // Over the sizes where the two LOOK THE SAME: from the
+                    // slot up to the size at which the thumbnail is drawn 1:1
+                    // (its own resolution, ~96px). Up to there both are
+                    // downscales of the same picture; past it the thumbnail is
+                    // a blurry upscale. The fade used to run to a quarter of
+                    // the morph instead -- ~270px on a 1600x900 picture --
+                    // fading a sharp image in over a thumbnail blown up 3x,
+                    // which is the change he saw "instantly when I click
+                    // open" (measured: the content jumping 8-15 levels a frame
+                    // over the first 30ms of the open). A thumbnail at or
+                    // under the slot's size (a tiny image) keeps the old rule.
+                    readonly property real thumbPx: morphImg.height / Math.max(1, shThumb.implicitHeight * thumbCrop.height)
+                    readonly property real thumbPxAtSlot: root.slotS / Math.max(1, shThumb.implicitHeight * thumbCrop.height)
+                    readonly property real fullFade: root.adopted ? 1 : thumbPxAtSlot < 0.95 ? root.clamp01((thumbPx - thumbPxAtSlot) / (1 - thumbPxAtSlot)) : root.clamp01(root.morphT / root.roundEnd)
+                    readonly property real fullOpacity: shFull.status === Image.Ready ? root.morphFullOpacity * fullFade : 0
+                    // The row's single tap at the slot, area-averaged by 1.5x
+                    // the slot's size -- see shaders/morphpic.frag.
+                    readonly property real thumbArea: root.clamp01((Math.max(morphImg.width, morphImg.height) / root.slotS - 1) / 0.5)
                     readonly property color bg: Colours.palette.m3surfaceContainerHigh
                     readonly property size thumbCrop: crop(shThumb.implicitWidth, shThumb.implicitHeight)
                     readonly property size fullCrop: crop(shFull.implicitWidth, shFull.implicitHeight)
@@ -2571,6 +2615,9 @@ Item {
                     width: morphImg.width + 4
                     height: morphImg.height + 4
                     fragmentShader: Qt.resolvedUrl("shaders/morphpic.frag.qsb")
+                    // Only so the pipeline has GLSL ES 3.0 in common with the
+                    // fragment stage -- see shaders/morphpic.vert.
+                    vertexShader: Qt.resolvedUrl("shaders/morphpic.vert.qsb")
                 }
             }
         }
