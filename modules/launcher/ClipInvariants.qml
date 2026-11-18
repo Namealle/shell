@@ -248,42 +248,90 @@ Item {
     // A violation goes to the log like any other, and into `dump`.
     property string closeVerdict: ""
     property var closeBoxes: []
+    property var closeRows: []
     property real closeSlot: 0
     property bool closeWatching: false
     property var closeEntry: null
 
-    function closeRowBox(): var {
+    // `masked`: the row's box even while the reader masks it (it is laid out
+    // all the same), for following where the picture is landing.
+    function closeRowBox(masked = false): var {
         const l = root.list;
         if (!l || !root.closeEntry)
             return null;
         const k = l.results.indexOf(root.closeEntry);
         const it = k >= 0 ? l.itemAtIndex(k) : null;
-        if (!it || it.leadX === undefined || !it.visible)
+        if (!it || it.leadX === undefined || (!it.visible && !masked))
             return null;
         const o = l.mapToItem(root.content, 0, 0);
         return [o.x + it.x + it.leadX, o.y + it.visualY - l.contentY + it.leadY];
     }
 
+    // How far past its landing the picture may go: the reader bounces it
+    // ~2px (ClipReader.exitOvershootPx), this allows 3. The old curve's dip
+    // was 8.4px.
+    readonly property real closeOvershootPx: 3
+
     function judgeClose(rowBox: var): string {
         const b = root.closeBoxes;
+        const rows = root.closeRows;
         const s = root.closeSlot;
+        const n = root.closeOvershootPx;
         const bad = [];
-        // Per axis, between where it started and the slot: an extreme
-        // aspect grows on one axis while it shrinks on the other.
+        // Size, per axis, between where it started and the slot, give or take
+        // the bounce: an extreme aspect grows on one axis while it shrinks on
+        // the other.
         for (const [k, axis] of [[2, "width"], [3, "height"]]) {
-            const lo = Math.min(b[0][k], s) - 0.25;
-            const hi = Math.max(b[0][k], s) + 0.25;
+            const lo = Math.min(b[0][k], s) - n;
+            const hi = Math.max(b[0][k], s) + n;
             const vals = b.map(x => x[k]);
             const mn = Math.min(...vals), mx = Math.max(...vals);
             if (mn < lo || mx > hi)
-                bad.push(`${axis} went to ${(mn < lo ? mn : mx).toFixed(1)}px, outside ${b[0][k].toFixed(1)}..${s.toFixed(1)}`);
+                bad.push(`${axis} went to ${(mn < lo ? mn : mx).toFixed(1)}px, more than ${n}px past ${b[0][k].toFixed(1)}..${s.toFixed(1)}`);
         }
-        if (b.length >= 3) {
-            const step = (p, q) => Math.max(Math.abs(p[0] - q[0]), Math.abs(p[1] - q[1]), Math.abs(p[2] - q[2]), Math.abs(p[3] - q[3]));
-            const last = step(b[b.length - 1], b[b.length - 2]);
-            const before = step(b[b.length - 2], b[b.length - 3]);
-            if (last > Math.max(0.5, 1.5 * before))
-                bad.push(`last step ${last.toFixed(2)}px after ${before.toFixed(2)}px`);
+        // Position: how far it goes past its row once that row has stopped
+        // moving -- before that (a query typed into the close moves the row)
+        // the picture is chasing a moving target, not overshooting. Past =
+        // on the far side of the row from where it was when the row stopped.
+        let past = 0;
+        const fin = rows.length ? rows[rows.length - 1] : null;
+        if (fin) {
+            let k = -1;
+            for (let i = 0; i < rows.length; i++)
+                if (!rows[i] || Math.abs(rows[i][1] - fin[1]) > 0.5)
+                    k = i;
+            const side = k + 1 < b.length ? Math.sign(b[k + 1][1] - fin[1]) : 0;
+            for (let i = k + 1; i < b.length && side; i++)
+                past = Math.max(past, (fin[1] - b[i][1]) * side);
+        }
+        if (past > n)
+            bad.push(`went ${past.toFixed(1)}px past its row`);
+        // The return: from the frame furthest past the slot (or, with no
+        // bounce, from the fastest frame) to the end, no step out of keeping
+        // with the one before -- the motion's own speed carries it home and
+        // nothing jumps (floor 0.25px, for the turn).
+        const step = (p, q) => Math.max(Math.abs(p[0] - q[0]), Math.abs(p[1] - q[1]), Math.abs(p[2] - q[2]), Math.abs(p[3] - q[3]));
+        const pastSlot = x => Math.max((x[2] - s) * Math.sign(s - b[0][2]), (x[3] - s) * Math.sign(s - b[0][3]));
+        let peak = 0;
+        for (let i = 1; i < b.length; i++)
+            if (pastSlot(b[i]) > pastSlot(b[peak]))
+                peak = i;
+        if (pastSlot(b[peak]) <= 0) {
+            peak = 1;
+            for (let i = 2; i < b.length; i++)
+                if (step(b[i], b[i - 1]) > step(b[peak], b[peak - 1]))
+                    peak = i;
+        }
+        // Against the larger of the two steps before: this samples on its
+        // own frame callback, which can land before or after the animation's
+        // write, so a frame now and then reads as no step and the next as two.
+        for (let i = Math.max(3, peak + 1); i < b.length; i++) {
+            const a = step(b[i], b[i - 1]);
+            const before = Math.max(step(b[i - 1], b[i - 2]), step(b[i - 2], b[i - 3]));
+            if (a > Math.max(0.25, 1.6 * before)) {
+                bad.push(`step of ${a.toFixed(2)}px after ${before.toFixed(2)}px on the way home`);
+                break;
+            }
         }
         // Only where the row can be seen: a row the query put below the
         // panel's edge is left across that edge (ContentList.requeryRowY)
@@ -311,8 +359,10 @@ Item {
                 if (r.morphEntry !== root.closeEntry || !r.morphInFlight)
                     return;
                 const m = r.liveMorphRect();
-                if (m)
+                if (m) {
                     root.closeBoxes.push([m.x, m.y, m.w, m.h]);
+                    root.closeRows.push(root.closeRowBox(true));
+                }
                 return;
             }
             // The exit is over. Judge it on the first frame the row draws.
@@ -331,6 +381,7 @@ Item {
                 return;
             root.closeVerdict = "";
             root.closeBoxes = [];
+            root.closeRows = [];
             root.closeSlot = r.slotS;
             root.closeEntry = r.morphEntry;
             root.closeWatching = true;
