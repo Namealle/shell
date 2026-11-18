@@ -1,17 +1,17 @@
 import QtQuick
 
-// A critically damped spring driving one number, integrated per rendered frame.
+// A damped spring driving one number, integrated per rendered frame.
 //
 // Physics instead of a timed curve where a motion has to END smoothly: a
-// curve ends at a fixed instant, and the expressive ones get there by
-// overshooting -- on a picture shrinking 600px into a 41px slot, the
-// standard curve's 1.39% overshoot was an 8px-too-small picture that then
-// crept back a pixel at a time. Critically damped, the value approaches its
-// target from one side with its velocity decaying continuously to zero.
+// curve ends at a fixed instant and decelerates into it on a schedule, where
+// a spring's velocity decays continuously to zero and carries through a
+// retarget. `zeta` is the damping ratio: 1 is critical (the fastest approach
+// with no overshoot), below 1 it overshoots once by
+// exp(-pi*zeta/sqrt(1-zeta^2)) of the distance and comes back -- see
+// zetaForOvershoot for choosing it in pixels rather than as a fraction.
 //
-// Same integrator as ClipBody's scrollAnim (semi-implicit Euler, substepped,
-// dt clamped), once per frame at the display's own rate -- Qt's
-// SpringAnimation is capped at 62fps.
+// Advanced once per frame at the display's own rate (Qt's SpringAnimation is
+// capped at 62fps), by the exact solution over the frame -- see step().
 //
 // The time step is the ANIMATION DRIVER's, the clock every Behavior and
 // curve in the shell runs on, read off a linear NumberAnimation. Not
@@ -33,15 +33,34 @@ Item {
     // (a target that moves while the spring runs); otherwise `to`.
     property real to: 0
     property var target: null
-    // Natural frequency, rad/s. Critically damped: the fastest approach with
-    // no overshoot. 90% of the way at 3.9/omega, 99% at 6.6/omega.
+    // Natural frequency, rad/s. Critically damped: 90% of the way at
+    // 3.9/omega, 99% at 6.6/omega.
     property real omega: 20
+    property real zeta: 1
     // At rest once both the distance and the speed are this small, in the
     // value's own units -- set them from what a unit is on screen.
     property real epsilon: 0.001
     property real velocityEpsilon: 0.01
 
     signal settled
+
+    // The damping ratio that overshoots a move of `distance` by `px`.
+    //
+    // The overshoot of a spring is a FRACTION of the distance, so one ratio
+    // for every move gives a 600px move thirty times the bounce of a 20px one
+    // -- the same trap as the old curve, whose 1.39% of a 600px size change
+    // was an 8px dip on a 41px picture. Solved per move instead: the bounce
+    // is the same few pixels whatever the distance. Moves shorter than that
+    // are critically damped; there is nothing to bounce past.
+    function zetaForOvershoot(distance: real, px: real): real {
+        if (distance <= px * 1.5)
+            return 1;
+        const l = Math.log(distance / px);
+        // Floored at 0.6 -- his Hyprland windows, one overshoot of ~9% and a
+        // faint return -- so a move only a few px long gets a proportionate
+        // flick, not a wobble that fills the move.
+        return Math.max(0.6, Math.min(1, l / Math.sqrt(Math.PI * Math.PI + l * l)));
+    }
 
     function goal(): real {
         return root.target ? root.target() : root.to;
@@ -87,17 +106,32 @@ Item {
     function step(frame: real): void {
         // A stalled frame must not integrate one huge step.
         const dt = Math.min(frame, 1 / 30);
-        const steps = Math.max(1, Math.ceil(dt * 480));
-        const h = dt / steps;
         const g = root.goal();
         const w = root.omega;
-        let x = root.value;
-        let v = root.velocity;
-        for (let i = 0; i < steps; i++) {
-            v += (-w * w * (x - g) - 2 * w * v) * h;
-            x += v * h;
+        const z = Math.min(1, root.zeta);
+        // Solved exactly over the frame, not integrated: the target is held
+        // for the frame and the damped oscillator's own solution advances the
+        // state. An Euler step (even substepped at 480Hz) adds damping of its
+        // own, and the overshoot is exponentially sensitive to damping --
+        // measured, it halved a 2px bounce. Exact, the bounce is what
+        // zetaForOvershoot asked for at any frame rate.
+        const x0 = root.value - g;
+        const v0 = root.velocity;
+        let x, v;
+        if (z >= 0.9999) {
+            const e = Math.exp(-w * dt);
+            const c = v0 + w * x0;
+            x = e * (x0 + c * dt);
+            v = e * (v0 - w * c * dt);
+        } else {
+            const wd = w * Math.sqrt(1 - z * z);
+            const e = Math.exp(-z * w * dt);
+            const cs = Math.cos(wd * dt);
+            const sn = Math.sin(wd * dt);
+            x = e * (x0 * (cs + z * w / wd * sn) + v0 / wd * sn);
+            v = e * (v0 * (cs - z * w / wd * sn) - x0 * (w * w / wd) * sn);
         }
-        if (Math.abs(x - g) < root.epsilon && Math.abs(v) < root.velocityEpsilon) {
+        if (Math.abs(x) < root.epsilon && Math.abs(v) < root.velocityEpsilon) {
             root.velocity = 0;
             root.value = g;
             root.running = false;
@@ -105,6 +139,6 @@ Item {
             return;
         }
         root.velocity = v;
-        root.value = x;
+        root.value = g + x;
     }
 }

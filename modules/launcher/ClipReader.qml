@@ -382,8 +382,13 @@ Item {
             return;
         if (slideSpring.running) {
             // A spring is retargeted, not restarted: it turns for the row's
-            // live position from where it is, at the speed it had.
+            // live position from where it is, at the speed it had. Its bounce
+            // is re-solved for what is left of the move -- the speed it
+            // carries counted as distance it would cover (v/omega) -- so a
+            // retarget does not inherit a bounce sized for the old distance.
             slideSpring.target = () => target() + root.rowAlignY;
+            const left = Math.abs(slideSpring.goal() - slideSpring.value) + Math.abs(slideSpring.velocity) / slideSpring.omega;
+            slideSpring.zeta = slideSpring.zetaForOvershoot(left, root.exitOvershootPx);
         } else {
             const cb = root.exitCb;
             root.exitCb = null;
@@ -517,11 +522,19 @@ Item {
     // the hard landing he felt, not the handoff -- which was already within
     // 0.002px of the row's thumbnail.
     //
-    // Header, slot and picture all ride critically damped springs instead:
-    // they arrive from one side with the speed decaying to nothing, the
-    // picture drawn at sub-pixel positions the whole way (the overlay's
-    // shader, shaders/morphpic.frag), and the handoff waits for rest. Text
-    // exits keep the curve; they have no picture to fold.
+    // Header, slot and picture all ride springs instead, the picture drawn at
+    // sub-pixel positions the whole way (the overlay's shader,
+    // shaders/morphpic.frag), and the handoff waits for rest. Text exits keep
+    // the curve; they have no picture to fold.
+    //
+    // A small bounce, his order -- and small in PIXELS at the landing. A
+    // spring overshoots by a fraction of the distance, so a fixed damping
+    // ratio would bounce a 600px size change 30x as far as a 20px one: the
+    // old dip again. Each channel's ratio is solved from its own distance
+    // instead (Spring.zetaForOvershoot) for exitOvershootPx: the picture
+    // comes down to ~2px under its 41px slot and the header ~2px past its
+    // row whatever the image, and a move shorter than that does not bounce.
+    readonly property real exitOvershootPx: 2
     readonly property bool exitSpringsRunning: slideSpring.running || slideXSpring.running || morphSpring.running
 
     function startExitSprings(slideTo: real): void {
@@ -533,6 +546,8 @@ Item {
         slideSpring.target = null;
         slideSpring.to = slideTo;
         slideXSpring.to = root.rowAlignX;
+        slideSpring.zeta = slideSpring.zetaForOvershoot(Math.abs(slideTo - root.slideY), root.exitOvershootPx);
+        slideXSpring.zeta = slideXSpring.zetaForOvershoot(Math.abs(root.rowAlignX - root.slideX), root.exitOvershootPx);
         slideSpring.start(root.slideY, 0);
         slideXSpring.start(root.slideX, 0);
         // morphT is a fraction of the picture's whole size travel, so its
@@ -541,6 +556,7 @@ Item {
         morphSpring.epsilon = 0.02 / span;
         morphSpring.velocityEpsilon = 2 / span;
         morphSpring.to = 0;
+        morphSpring.zeta = morphSpring.zetaForOvershoot(span * Math.abs(root.morphT), root.exitOvershootPx);
         // An open still in flight hands over from where it is. Its curve is
         // the Behavior's (which refuses a stop() -- not a root animation), so
         // it is ended the way a disabled Behavior ends: by a write while the
@@ -568,9 +584,12 @@ Item {
         root.finishExit();
     }
 
-    // Critically damped at 24 rad/s for all three: the picture is at 95% of
-    // its travel by ~200ms, within a pixel by ~370ms, and at rest by ~550ms,
-    // against the curve's 512ms that ended in the overshoot.
+    // 24 rad/s for all three. On a 600px size change the solved ratio is
+    // ~0.88. Measured at 165Hz over 2x2..4000x40 pictures: the picture
+    // passes the slot's size at ~225ms, bottoms out 2.0px under it at
+    // 265-280ms (the header 1.8-1.9px past its row), and hands off at rest
+    // at 470-510ms -- the curve took 504ms, the critically damped spring
+    // ~580ms.
     Spring {
         id: slideSpring
 
