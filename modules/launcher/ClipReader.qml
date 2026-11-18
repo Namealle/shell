@@ -315,6 +315,7 @@ Item {
         // the exit callback.
         slideAnim.stop();
         root.stopFollow();
+        root.stopExitSprings();
         slideXAnim.stop();
         // The morph folds the body back into the row off LIVE endpoints, so a
         // zoomed image would hand a magnified, off-centre picture to a landing
@@ -339,9 +340,16 @@ Item {
         slideAnim.to = targetY + root.rowAlignY;
         slideXAnim.from = root.slideX;
         slideXAnim.to = root.rowAlignX;
-        root.setMorphT(0);
-        slideAnim.start();
-        slideXAnim.start();
+        if (root.morphIsImage || root.morphIsColour) {
+            // A picture (or swatch) folding home: on the spring, header
+            // included -- the picture rides the header's slot, so a header
+            // overshooting by 5px carried the picture past its row too.
+            root.startExitSprings(slideAnim.to);
+        } else {
+            root.setMorphT(0);
+            slideAnim.start();
+            slideXAnim.start();
+        }
         root.pillReleased = false;
         root.runPill(1);
         // Where the rail ends up under the landed header, against where the
@@ -372,16 +380,22 @@ Item {
     function followExit(target: var, endHeight: real): void {
         if (!root.exiting)
             return;
-        const cb = root.exitCb;
-        root.exitCb = null;
-        slideAnim.stop();
-        root.stopFollow();
-        root.exitCb = cb;
-        root.followFrom = root.slideY;
-        root.followTarget = target;
-        root.followT = 0;
-        root.slideY = Qt.binding(() => root.followFrom + (root.followTarget() + root.rowAlignY - root.followFrom) * root.followT);
-        followAnim.start();
+        if (slideSpring.running) {
+            // A spring is retargeted, not restarted: it turns for the row's
+            // live position from where it is, at the speed it had.
+            slideSpring.target = () => target() + root.rowAlignY;
+        } else {
+            const cb = root.exitCb;
+            root.exitCb = null;
+            slideAnim.stop();
+            root.stopFollow();
+            root.exitCb = cb;
+            root.followFrom = root.slideY;
+            root.followTarget = target;
+            root.followT = 0;
+            root.slideY = Qt.binding(() => root.followFrom + (root.followTarget() + root.rowAlignY - root.followFrom) * root.followT);
+            followAnim.start();
+        }
         if (!root.entryIsText || root.bodyFade <= 0)
             return;
         const edge = Math.max(0, endHeight - (root.topInset + target() + root.rowAlignY + header.implicitHeight + Tokens.spacing.small));
@@ -424,6 +438,7 @@ Item {
         root.exitCb = null;
         slideAnim.stop();
         root.stopFollow();
+        root.stopExitSprings();
         slideXAnim.stop();
         root.suppressSwap();
         root.exiting = false;
@@ -461,6 +476,7 @@ Item {
         root.exitCb = null;
         slideAnim.stop();
         root.stopFollow();
+        root.stopExitSprings();
         slideXAnim.stop();
         root.suppressSwap();
         root.resetSwap();
@@ -490,6 +506,104 @@ Item {
         root.beginBodySlide(-(root.startY + root.rowAlignY), true, true);
     }
 
+    // -- the close of a picture, on a spring --
+    //
+    // Measured at 165Hz on a 640x360 picture folding into its 41px slot, on
+    // the expressive curve the rest of the reader uses: the picture reached
+    // the slot's size 227ms in, still shrinking at ~500px/s, carried on to
+    // 32.6x36.6 (the curve's 1.39% overshoot, times a 599px size travel) and
+    // 4.3px past the row, then crept back over the last ~220ms in single
+    // whole-pixel steps (the edges were drawn on pixel boundaries). That is
+    // the hard landing he felt, not the handoff -- which was already within
+    // 0.002px of the row's thumbnail.
+    //
+    // Header, slot and picture all ride critically damped springs instead:
+    // they arrive from one side with the speed decaying to nothing, the
+    // picture drawn at sub-pixel positions the whole way (the overlay's
+    // shader, shaders/morphpic.frag), and the handoff waits for rest. Text
+    // exits keep the curve; they have no picture to fold.
+    readonly property bool exitSpringsRunning: slideSpring.running || slideXSpring.running || morphSpring.running
+
+    function startExitSprings(slideTo: real): void {
+        // In px: settled below a fiftieth of a pixel, moving under 2px/s.
+        slideSpring.epsilon = 0.02;
+        slideSpring.velocityEpsilon = 2;
+        slideXSpring.epsilon = 0.02;
+        slideXSpring.velocityEpsilon = 2;
+        slideSpring.target = null;
+        slideSpring.to = slideTo;
+        slideXSpring.to = root.rowAlignX;
+        slideSpring.start(root.slideY, 0);
+        slideXSpring.start(root.slideX, 0);
+        // morphT is a fraction of the picture's whole size travel, so its
+        // thresholds are that same fiftieth of a pixel, scaled.
+        const span = Math.max(1, root.morphIsImage ? Math.max(root.morphFitW, root.morphFitH) - root.slotS : root.bodyContentW - root.slotS);
+        morphSpring.epsilon = 0.02 / span;
+        morphSpring.velocityEpsilon = 2 / span;
+        morphSpring.to = 0;
+        // An open still in flight hands over from where it is. Its curve is
+        // the Behavior's (which refuses a stop() -- not a root animation), so
+        // it is ended the way a disabled Behavior ends: by a write while the
+        // spring has it switched off. That drops an adopted path, so the
+        // path is re-snapshotted first, exactly as setMorphT does for a curve.
+        const r = root.adopted && root.morphing && root.morphGoal !== 0 ? root.liveMorphRect() : null;
+        morphSpring.start(root.morphT, 0);
+        root.morphT = root.morphT;
+        if (r)
+            root.adopt(r);
+        root.morphGoal = 0;
+    }
+
+    function stopExitSprings(): void {
+        slideSpring.stop();
+        slideSpring.target = null;
+        slideXSpring.stop();
+        morphSpring.stop();
+    }
+
+    function exitSpringSettled(): void {
+        if (root.exitSpringsRunning)
+            return;
+        root.adopted = false;
+        root.finishExit();
+    }
+
+    // Critically damped at 24 rad/s for all three: the picture is at 95% of
+    // its travel by ~200ms, within a pixel by ~370ms, and at rest by ~550ms,
+    // against the curve's 512ms that ended in the overshoot.
+    Spring {
+        id: slideSpring
+
+        omega: 24
+        onValueChanged: if (running) root.slideY = value
+        onSettled: {
+            root.slideY = value;
+            root.exitSpringSettled();
+        }
+    }
+
+    Spring {
+        id: slideXSpring
+
+        omega: 24
+        onValueChanged: if (running) root.slideX = value
+        onSettled: {
+            root.slideX = value;
+            root.exitSpringSettled();
+        }
+    }
+
+    Spring {
+        id: morphSpring
+
+        omega: 24
+        onValueChanged: if (running) root.morphT = value
+        onSettled: {
+            root.morphT = value;
+            root.exitSpringSettled();
+        }
+    }
+
     Anim {
         id: slideAnim
 
@@ -505,7 +619,7 @@ Item {
     // is, and the orphans land on the same beat anyway (same curve, same
     // duration, started by the same keypress). See latchMorph.
     function finishExit(): void {
-        if (root.orphans.length > 0)
+        if (root.orphans.length > 0 || root.exitSpringsRunning)
             return;
         const cb = root.exitCb;
         root.exitCb = null;
@@ -1513,7 +1627,8 @@ Item {
     property bool morphRewind: false
 
     Behavior on morphT {
-        enabled: !root.morphRewind
+        // Off while the exit spring drives it (startExitSprings).
+        enabled: !root.morphRewind && !morphSpring.running
 
         Anim {
             id: morphAnim
@@ -1602,7 +1717,7 @@ Item {
     // `running` goes true synchronously with the assignment and stays true
     // across a mid-flight retarget, so this neither flashes at the start nor
     // breaks reenter().
-    readonly property bool morphing: morphAnim.running
+    readonly property bool morphing: morphAnim.running || morphSpring.running
 
     // The source slot, shared by both morphs: the square the ROW draws, which is
     // the icon's 1em advance (see headerIcon and ClipItem). implicitWidth, not
@@ -1968,7 +2083,7 @@ Item {
 
     function landOrphan(o: var): void {
         root.dropOrphan(o);
-        if (root.exiting && !slideAnim.running && !followAnim.running)
+        if (root.exiting && !slideAnim.running && !followAnim.running && !root.exitSpringsRunning)
             root.finishExit();
     }
 
@@ -2318,9 +2433,9 @@ Item {
         Item {
             id: morphImg
 
-            // Geometry only -- the clipping lives in the two children, which is
-            // what lets the morph be rounded at the row end and scissor-exact at
-            // the body end. See root.roundEnd.
+            // Geometry only -- the drawing is the shader below. (It used to
+            // be two children, rounded at the row end and scissor-exact at the
+            // body end; see root.roundEnd.)
 
             // Size AND position both ride the raw curve, overshoot included. They
             // have to be the same t or the picture does not bounce -- it slides.
@@ -2360,47 +2475,83 @@ Item {
             width: root.adopted ? root.adoptW + ((root.adoptToBody ? root.morphFitW : root.slotS) - root.adoptW) * root.adoptU : root.slotS + (root.morphFitW - root.slotS) * sizeT
             height: root.adopted ? root.adoptH + ((root.adoptToBody ? root.morphFitH : root.slotS) - root.adoptH) * root.adoptU : root.slotS + (root.morphFitH - root.slotS) * sizeT
 
-            // The rounded end of the morph -- the row's own component, at the
-            // row's own radius, so the exit landing is a handoff between two
-            // identical things rather than a resemblance. Carries the surface
-            // colour itself; no backing rect needed, since a ClippingRectangle
-            // paints one under its content.
-            StyledClippingRect {
-                anchors.fill: parent
-                visible: root.morphRounded
-                radius: root.morphRadius
-                color: Colours.palette.m3surfaceContainerHigh
-
-                MorphPicture {
-                    anchors.fill: parent
-                    thumbSrc: root.morphThumbSrc
-                    fullSrc: root.bodyImgSrc
-                    decodeW: root.bodyImgDecodeW
-                    fullOpacity: root.morphFullOpacity
-                }
-            }
-
-            // The square end. A plain scissor clip: exact, no texture round
-            // trip, and therefore the path the t=1 landing on the body image is
-            // made through -- the landing hands off between two items drawn the
-            // same way, which is the property worth keeping whatever the round
-            // trip costs.
+            // Drawn by one shader at the box's exact fractional geometry,
+            // rounded end and square end alike: the corner radius goes to 0
+            // exactly where the old square path took over, and the edges are
+            // antialiased instead of landing on pixel boundaries. Both of the
+            // old paths (a ClippingRectangle, a scissor clip) drew the box
+            // edges on whole pixels -- measured: an edge 0.56px into a column
+            // filled all of it -- so the last pixels of a landing moved in
+            // whole-pixel steps. At rest on the row (whole-pixel box, radius
+            // rounding.small) it draws the thumbnail's own pixels.
             Item {
                 anchors.fill: parent
-                visible: !root.morphRounded
-                clip: true
 
-                StyledRect {
-                    anchors.fill: parent
-                    color: Colours.palette.m3surfaceContainerHigh
+                // Texture providers only; the shader draws them.
+                Image {
+                    id: shThumb
+
+                    visible: false
+                    source: root.morphThumbSrc
+                    // As MorphPicture and ClipItem have it: with sourceSize
+                    // it decides the decode (cropped fills 96px on the short
+                    // side; stretched would fit 96 on the long one -- a
+                    // smaller, softer texture than the row's), and the decode
+                    // is the pixmap-cache key the first frame has to hit.
+                    fillMode: Image.PreserveAspectCrop
+                    cache: !Clipboard.noCache
+                    asynchronous: true
+                    sourceSize.width: Clipboard.thumbSize
+                    sourceSize.height: Clipboard.thumbSize
                 }
 
-                MorphPicture {
-                    anchors.fill: parent
-                    thumbSrc: root.morphThumbSrc
-                    fullSrc: root.bodyImgSrc
-                    decodeW: root.bodyImgDecodeW
-                    fullOpacity: root.morphFullOpacity
+                Image {
+                    id: shFull
+
+                    visible: false
+                    source: root.bodyImgSrc
+                    fillMode: Image.PreserveAspectCrop
+                    cache: !Clipboard.noCache
+                    asynchronous: true
+                    // See MorphPicture: the reduction to ~41px needs the mips.
+                    mipmap: true
+                    sourceSize.width: root.bodyImgDecodeW
+                }
+
+                ShaderEffect {
+                    // Image.PreserveAspectCrop: the box shows all of one axis
+                    // of the texture and a centred fraction of the other.
+                    function crop(tw: real, th: real): size {
+                        const bw = Math.max(1, morphImg.width);
+                        const bh = Math.max(1, morphImg.height);
+                        if (tw <= 0 || th <= 0)
+                            return Qt.size(1, 1);
+                        const s = Math.max(bw / tw, bh / th);
+                        return Qt.size(bw / (tw * s), bh / (th * s));
+                    }
+
+                    readonly property var thumb: shThumb
+                    readonly property var full: shFull
+                    readonly property size itemSize: Qt.size(width, height)
+                    readonly property rect box: Qt.rect(2, 2, morphImg.width, morphImg.height)
+                    readonly property real radius: root.morphRounded ? root.morphRadius : 0
+                    readonly property real thumbOpacity: shThumb.status === Image.Ready ? 1 : 0
+                    // Near the row the full decode gives way to the row's own
+                    // thumbnail, over the stretch the corners round in -- the
+                    // same rule as an orphan's rowFade. Mipmapped down to 41px
+                    // the full decode is visibly softer than the thumbnail the
+                    // row draws (filmed: the texture changed on the handoff
+                    // frame); this way the last frames are the row's pixels.
+                    readonly property real fullOpacity: shFull.status === Image.Ready ? root.morphFullOpacity * (root.adopted ? 1 : root.clamp01(root.morphT / root.roundEnd)) : 0
+                    readonly property color bg: Colours.palette.m3surfaceContainerHigh
+                    readonly property size thumbCrop: crop(shThumb.implicitWidth, shThumb.implicitHeight)
+                    readonly property size fullCrop: crop(shFull.implicitWidth, shFull.implicitHeight)
+
+                    x: -2
+                    y: -2
+                    width: morphImg.width + 4
+                    height: morphImg.height + 4
+                    fragmentShader: Qt.resolvedUrl("shaders/morphpic.frag.qsb")
                 }
             }
         }
