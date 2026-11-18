@@ -17,14 +17,20 @@
 // he saw on open and close (measured against an area-averaged downscale of
 // the source: error jumping 6 -> 15 -> 6 frame to frame). So the full decode
 // is AREA-averaged: an n x n grid of taps across each pixel's footprint
-// (n up to 4, the scale's own ceiling), each tap through textureGrad with the
-// footprint divided by n, so beyond 4x the mip chain takes the remainder.
-// At 1:1 -- resting in the body -- it is one tap, exactly a plain sample.
+// (n = the footprint in texels, up to 16), each tap through textureGrad with
+// the footprint divided by n. Up to 16x it needs no mip levels -- which
+// matters: the live decode is shared with the body's unmipmapped Image, and
+// Qt logs "Mipmap settings changed without having image data available ...
+// Falling back" for it; with n capped at 4, every tap of a picture shrunk
+// past 4x skipped texels again, and the small end of a close shimmered.
+// Total taps stay about the texture's own size whatever the scale (a small
+// box takes many taps per pixel, a large one few). At 1:1 -- resting in the
+// body -- it is one tap, exactly a plain sample.
 //
-// The thumbnail is the row's own picture, drawn by the row with ONE bilinear
-// tap, and the handoff to the row must not change a pixel. So it is sampled
-// the row's way at the row's size and area-averaged only as the box grows
-// away from it (thumbArea, 0 at the slot -> 1 at 1.5x the slot).
+// The thumbnail is area-averaged the same way, at every size, and the row
+// draws it with this same shader (ClipItem), so at the slot the morph and the
+// row are the same drawing and the handoff changes nothing. (thumbArea: 1 is
+// that; 0 is one plain tap, kept for callers that want it.)
 // Rebuild from repo root: /usr/lib/qt6/bin/qsb --glsl "300 es,150" --hlsl 50 --msl 12 -o modules/launcher/shaders/morphpic.frag.qsb modules/launcher/shaders/morphpic.frag
 
 layout(location = 0) in vec2 qt_TexCoord0;
@@ -51,8 +57,8 @@ vec4 area(sampler2D tex, vec2 uv, vec2 gx, vec2 gy) {
     vec2 size = vec2(textureSize(tex, 0));
     float fpx = max(abs(gx.x * size.x), abs(gy.x * size.x));
     float fpy = max(abs(gx.y * size.y), abs(gy.y * size.y));
-    int nx = int(clamp(ceil(fpx - 1e-3), 1.0, 4.0));
-    int ny = int(clamp(ceil(fpy - 1e-3), 1.0, 4.0));
+    int nx = int(clamp(ceil(fpx - 1e-3), 1.0, 16.0));
+    int ny = int(clamp(ceil(fpy - 1e-3), 1.0, 16.0));
     vec2 sx = gx / float(nx);
     vec2 sy = gy / float(ny);
     vec4 sum = vec4(0.0);

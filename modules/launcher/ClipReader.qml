@@ -2603,9 +2603,9 @@ Item {
                     readonly property real thumbPxAtSlot: root.slotS / Math.max(1, shThumb.implicitHeight * thumbCrop.height)
                     readonly property real fullFade: root.adopted ? 1 : thumbPxAtSlot < 0.95 ? root.clamp01((thumbPx - thumbPxAtSlot) / (1 - thumbPxAtSlot)) : root.clamp01(root.morphT / root.roundEnd)
                     readonly property real fullOpacity: shFull.status === Image.Ready ? root.morphFullOpacity * fullFade : 0
-                    // The row's single tap at the slot, area-averaged by 1.5x
-                    // the slot's size -- see shaders/morphpic.frag.
-                    readonly property real thumbArea: root.clamp01((Math.max(morphImg.width, morphImg.height) / root.slotS - 1) / 0.5)
+                    // Area-averaged at every size, as the row draws it
+                    // (ClipItem uses this shader) -- see shaders/morphpic.frag.
+                    readonly property real thumbArea: 1
                     readonly property color bg: Colours.palette.m3surfaceContainerHigh
                     readonly property size thumbCrop: crop(shThumb.implicitWidth, shThumb.implicitHeight)
                     readonly property size fullCrop: crop(shFull.implicitWidth, shFull.implicitHeight)

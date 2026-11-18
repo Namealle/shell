@@ -380,7 +380,18 @@ Item {
             border.color: Colours.palette.m3outlineVariant
         }
 
-        StyledClippingRect {
+        // The thumbnail is drawn by the reader's own morph shader, the same
+        // drawing the reader's flying picture uses: area-averaged from the
+        // decode, the corners cut analytically. So when a picture folds home
+        // its last frame and this row's are the same pixels -- the handoff
+        // can change nothing. It used to be a ClippingRectangle (the Image
+        // rendered into a layer, then masked): a single bilinear tap of a
+        // 96px decode at ~half scale (aliased), resampled again by the layer
+        // at the row's fractional physical position (blurred). Measured at
+        // his 1.25 scale on a text screenshot: 8 levels of difference between
+        // the morph's last frame and this row, the "hard point" he saw when
+        // the motion stopped.
+        Item {
             id: thumbWrapper
 
             visible: root.isImage && !root.thumbMasked
@@ -388,13 +399,13 @@ Item {
             // Same square as the swatch -- see there.
             implicitWidth: icon.implicitWidth
             implicitHeight: icon.implicitWidth
-            radius: Tokens.rounding.small
-            color: Colours.palette.m3surfaceContainerHigh
 
             Image {
                 id: thumb
 
                 anchors.fill: parent
+                // A texture for the shader below, not drawn itself.
+                visible: false
                 fillMode: Image.PreserveAspectCrop
                 // Cached, unlike every other Image in the clipboard UI. The
                 // reader's opening morph loads this exact url at this exact
@@ -413,6 +424,36 @@ Item {
                     if (status === Image.Error && root.decodeKey && !decoder.running)
                         decoder.running = true;
                 }
+            }
+
+            ShaderEffect {
+                function crop(tw: real, th: real): size {
+                    const bw = Math.max(1, thumbWrapper.width);
+                    const bh = Math.max(1, thumbWrapper.height);
+                    if (tw <= 0 || th <= 0)
+                        return Qt.size(1, 1);
+                    const s = Math.max(bw / tw, bh / th);
+                    return Qt.size(bw / (tw * s), bh / (th * s));
+                }
+
+                readonly property var thumb: thumb
+                readonly property var full: thumb
+                readonly property size itemSize: Qt.size(width, height)
+                readonly property rect box: Qt.rect(2, 2, thumbWrapper.width, thumbWrapper.height)
+                readonly property real radius: Tokens.rounding.small
+                readonly property real thumbOpacity: thumb.status === Image.Ready ? 1 : 0
+                readonly property real fullOpacity: 0
+                readonly property color bg: Colours.palette.m3surfaceContainerHigh
+                readonly property size thumbCrop: crop(thumb.implicitWidth, thumb.implicitHeight)
+                readonly property size fullCrop: thumbCrop
+                readonly property real thumbArea: 1
+
+                x: -2
+                y: -2
+                width: thumbWrapper.width + 4
+                height: thumbWrapper.height + 4
+                fragmentShader: Qt.resolvedUrl("../shaders/morphpic.frag.qsb")
+                vertexShader: Qt.resolvedUrl("../shaders/morphpic.vert.qsb")
             }
         }
 
