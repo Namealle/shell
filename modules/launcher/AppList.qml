@@ -620,8 +620,12 @@ StyledListView {
     function settleTo(item: Item, index: int, destY: real): void {
         if (!item)
             return;
-        // The row's proof that the view is animating it -- see repairAt.
-        item.transitionedAt = Date.now();
+        // The row's proof that the view is animating it -- see repairAt. Only
+        // ClipItem keeps it; the other modes' rows go through here too, and
+        // writing a property they do not have threw out of this function
+        // before the repair below ran.
+        if (item.transitionedAt !== undefined)
+            item.transitionedAt = Date.now();
         const want = root.rowY(index);
         if (Math.abs(destY - want) > 0.5) {
             const stride = Tokens.sizes.launcher.itemHeight + root.spacing;
