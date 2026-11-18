@@ -87,7 +87,9 @@ Item {
             return "BAD no list";
         const tail = `text="${root.search.text}" count=${l.count} cur=${l.currentIndex} contentY=${l.contentY.toFixed(1)}`;
         if (c.readerActive && !c.readerExiting) {
-            const rb = root.readerAtRest();
+            let rb = root.readerAtRest();
+            if (root.openVerdict)
+                rb = rb ? rb + "; " + root.openVerdict : root.openVerdict;
             return `${rb ? "BAD " + rb : "OK"} [reader] | ${tail} entry=${(c.readerEntry?.name ?? "?").slice(0, 30)}`;
         }
         const stride = Tokens.sizes.launcher.itemHeight + l.spacing;
@@ -142,6 +144,8 @@ Item {
             bad.push(`currentIndex ${l.currentIndex} of ${l.count}`);
         if (root.closeVerdict)
             bad.push(root.closeVerdict);
+        if (root.openVerdict)
+            bad.push(root.openVerdict);
         return [`${bad.length ? "BAD " + bad.join("; ") : "OK"} | ${tail}`].concat(out).join("\n");
     }
 
@@ -380,6 +384,77 @@ Item {
             root.closeVerdict = root.judgeClose(root.closeRowBox());
             root.poke();
         }
+    }
+
+    // -- the open of a picture: it starts from rest --
+    //
+    // The picture lifting off its row must accelerate into the motion, not
+    // jump into it: on the expressive curve the first 6ms frame took a 41px
+    // thumbnail to 77x60 at once (3.9% of the whole size change, the crop
+    // going from the row's square to nearly the picture's own aspect), which
+    // he saw as the image changing "instantly when I click open". Judged on
+    // the frames of the open: the first step must be at most half the
+    // largest step of the run.
+    property string openVerdict: ""
+    property var openBoxes: []
+    property bool openWatching: false
+    property var openEntry: null
+
+    function judgeOpen(): string {
+        const b = root.openBoxes;
+        const step = (p, q) => Math.max(Math.abs(p[0] - q[0]), Math.abs(p[1] - q[1]), Math.abs(p[2] - q[2]), Math.abs(p[3] - q[3]));
+        let first = -1, big = 0;
+        for (let i = 1; i < b.length; i++) {
+            const d = step(b[i], b[i - 1]);
+            if (first < 0 && d > 0.01)
+                first = d;
+            big = Math.max(big, d);
+        }
+        if (first < 0 || big < 4)
+            return "";
+        if (first > 0.5 * big)
+            return `image open: first step ${first.toFixed(1)}px of a largest ${big.toFixed(1)}px (does not start from rest)`;
+        return "";
+    }
+
+    FrameAnimation {
+        running: root.openWatching
+        onTriggered: {
+            const c = root.content;
+            const r = root.readerLoader.item;
+            if (!c.readerActive || c.readerExiting || !r) {
+                root.openWatching = false;
+                return;
+            }
+            if (!root.openEntry) {
+                if (!(r.morphIsImage || r.morphIsColour))
+                    return;
+                root.openEntry = r.morphEntry;
+            }
+            if (r.morphEntry !== root.openEntry)
+                return;
+            const m = r.liveMorphRect();
+            if (m)
+                root.openBoxes.push([m.x, m.y, m.w, m.h]);
+            if (!r.morphInFlight && root.openBoxes.length > 2) {
+                root.openWatching = false;
+                root.openVerdict = root.judgeOpen();
+                root.poke();
+            }
+        }
+    }
+
+    Connections {
+        function onReaderActiveChanged(): void {
+            if (!root.content.readerActive || root.content.readerExiting)
+                return;
+            root.openVerdict = "";
+            root.openBoxes = [];
+            root.openEntry = null;
+            root.openWatching = true;
+        }
+
+        target: root.content
     }
 
     Connections {
