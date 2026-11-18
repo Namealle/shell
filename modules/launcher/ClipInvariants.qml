@@ -295,8 +295,9 @@ Item {
         // on the far side of the row from where it was when the row stopped.
         let past = 0;
         const fin = rows.length ? rows[rows.length - 1] : null;
+        // The last frame the row was still moving (or not yet built).
+        let k = -1;
         if (fin) {
-            let k = -1;
             for (let i = 0; i < rows.length; i++)
                 if (!rows[i] || Math.abs(rows[i][1] - fin[1]) > 0.5)
                     k = i;
@@ -325,7 +326,14 @@ Item {
         // Against the larger of the two steps before: this samples on its
         // own frame callback, which can land before or after the animation's
         // write, so a frame now and then reads as no step and the next as two.
-        for (let i = Math.max(3, peak + 1); i < b.length; i++) {
+        //
+        // And only once the row has stopped moving, like the position check.
+        // A query typed into the close moves the row (measured: 788 -> 73px
+        // through its own displacement transition), the header chases it,
+        // and its steps rise and fall with that chase -- 5.8, 7.8, 14.1, 21,
+        // 26, 32, 35, 33... -- a motion, not a jump, which read as one when
+        // the check started at the size's deepest point.
+        for (let i = Math.max(3, peak + 1, k + 2); i < b.length; i++) {
             const a = step(b[i], b[i - 1]);
             const before = Math.max(step(b[i - 1], b[i - 2]), step(b[i - 2], b[i - 3]));
             if (a > Math.max(0.25, 1.6 * before)) {
