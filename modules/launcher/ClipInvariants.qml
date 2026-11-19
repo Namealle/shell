@@ -422,8 +422,16 @@ Item {
     property bool openWatching: false
     property var openEntry: null
 
+    property real openSlot: 0
+
     function judgeOpen(): string {
         const b = root.openBoxes;
+        // Only an open that lifts off the row: a reversal of a close
+        // (reenter) carries its speed on purpose, and a morph latched onto
+        // the picture mid-flight (a browse during a text open) starts
+        // wherever it is. Both start away from the slot.
+        if (!b.length || Math.abs(b[0][2] - root.openSlot) > 1 || Math.abs(b[0][3] - root.openSlot) > 1)
+            return "";
         const step = (p, q) => Math.max(Math.abs(p[0] - q[0]), Math.abs(p[1] - q[1]), Math.abs(p[2] - q[2]), Math.abs(p[3] - q[3]));
         let first = -1, big = 0;
         for (let i = 1; i < b.length; i++) {
@@ -452,6 +460,7 @@ Item {
                 if (!(r.morphIsImage || r.morphIsColour))
                     return;
                 root.openEntry = r.morphEntry;
+                root.openSlot = r.slotS;
             }
             if (r.morphEntry !== root.openEntry)
                 return;
