@@ -73,6 +73,7 @@ protected:
 
 private:
     void checkAtRest(float speed);
+    [[nodiscard]] bool deformImperceptible() const;
 
     // Physics state
     QPointF m_prevScenePos;

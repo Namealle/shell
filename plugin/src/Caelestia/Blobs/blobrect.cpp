@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <qquickwindow.h>
 
 #include "blobgroup.hpp"
 
@@ -20,10 +21,7 @@ void BlobRect::updatePolish() {
 
     if (m_physicsActive) {
         // Check if deformation is visually imperceptible
-        const float totalDelta = std::abs(m_dm00 - 1.0f) + std::abs(m_dm01) + std::abs(m_dm11 - 1.0f);
-        const float totalVel = std::abs(m_dmVel00) + std::abs(m_dmVel01) + std::abs(m_dmVel11);
-
-        if (totalDelta < 0.004f && totalVel < 0.05f) {
+        if (deformImperceptible()) {
             // Snap to rest, no visible deformation
             m_dm00 = 1.0f;
             m_dm01 = 0.0f;
@@ -332,11 +330,29 @@ void BlobRect::excludeCornersRemoveLast(QQmlListProperty<BlobRect>* prop) {
     emit self->excludeCornersChanged();
 }
 
+// The deformation is snapped to identity once it can no longer be seen -- in
+// PIXELS of this shape, not as a fraction. The old fixed thresholds (0.002
+// per component, 0.004 summed) were a fraction of the shape's size: on a
+// launcher ~1000 physical px wide that is up to a 1-2 px jump of the
+// outline and of everything the panel's contents share the matrix with, on
+// the frame the spring stops -- measured at his 1.25 scale, every row's text
+// moved 0.35 px sideways and changed by a mean 31 levels on that frame. He
+// felt it as every item stopping and changing on the last frame. The spring
+// now runs on until the remaining deformation is under a twentieth of a
+// pixel at the shape's far edge and moving under 2 px/s, where the snap is
+// below anything a pixel can show.
+bool BlobRect::deformImperceptible() const {
+    const qreal dpr = window() ? window()->effectiveDevicePixelRatio() : 1.0;
+    const auto extent = static_cast<float>(std::max(width(), height()) * dpr / 2.0);
+    if (extent <= 0.0f)
+        return true;
+    const float maxDelta = std::max({ std::abs(m_dm00 - 1.0f), std::abs(m_dm01), std::abs(m_dm11 - 1.0f) });
+    const float maxVel = std::max({ std::abs(m_dmVel00), std::abs(m_dmVel01), std::abs(m_dmVel11) });
+    return maxDelta * extent < 0.05f && maxVel * extent < 2.0f;
+}
+
 void BlobRect::checkAtRest(float speed) {
-    constexpr float k_epsilon = 0.002f;
-    const bool atRest = std::abs(m_dm00 - 1.0f) < k_epsilon && std::abs(m_dm01) < k_epsilon &&
-                        std::abs(m_dm11 - 1.0f) < k_epsilon && std::abs(m_dmVel00) < k_epsilon &&
-                        std::abs(m_dmVel01) < k_epsilon && std::abs(m_dmVel11) < k_epsilon && speed < 5.0f;
+    const bool atRest = deformImperceptible() && speed < 5.0f;
 
     if (atRest) {
         m_dm00 = 1.0f;
