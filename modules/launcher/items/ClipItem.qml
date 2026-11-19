@@ -345,6 +345,7 @@ Item {
         MaterialIcon {
             id: icon
 
+            renderType: Text.QtRendering
             visible: !root.isImage && !root.isColour
             anchors.verticalCenter: parent.verticalCenter
             // Natural width, and that width IS the row's leading slot -- the
@@ -476,6 +477,7 @@ Item {
             StyledText {
                 id: name
 
+                renderType: Text.QtRendering
                 anchors.left: parent.left
                 anchors.right: parent.right
                 text: root.modelData?.name ?? ""
@@ -486,6 +488,7 @@ Item {
             StyledText {
                 id: desc
 
+                renderType: Text.QtRendering
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: name.bottom

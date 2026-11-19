@@ -9,6 +9,12 @@ TextFieldBase {
     readonly property alias bg: bg
     readonly property alias searchIcon: searchIcon
     readonly property alias clearIcon: clearIcon
+    // Distance-field text throughout, for a bar that moves with its panel
+    // (the launcher -- see launcher/Wrapper.qml). Native text changes its
+    // look when a transform comes and goes.
+    property bool motionText: false
+
+    renderType: motionText ? TextInput.QtRendering : TextInput.NativeRendering
 
     leftPadding: searchIcon.width + searchIcon.anchors.leftMargin + Tokens.spacing.medium
     rightPadding: clearIcon.width + clearIcon.anchors.rightMargin + Tokens.spacing.medium
@@ -40,6 +46,7 @@ TextFieldBase {
     StyledText {
         id: placeholder
 
+        renderType: root.motionText ? Text.QtRendering : Text.NativeRendering
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
         anchors.leftMargin: root.leftPadding
@@ -60,6 +67,7 @@ TextFieldBase {
     MaterialIcon {
         id: searchIcon
 
+        renderType: root.motionText ? Text.QtRendering : Text.NativeRendering
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
         anchors.leftMargin: Tokens.padding.large
@@ -77,6 +85,7 @@ TextFieldBase {
         anchors.rightMargin: Tokens.padding.medium
 
         icon: "clear"
+        label.renderType: root.motionText ? Text.QtRendering : Text.NativeRendering
         type: IconButton.Text
         radius: Tokens.rounding.full
         radiusMorph: false

@@ -142,11 +142,33 @@ Item {
             bad.push("lift/mask left set");
         if (l.count > 0 && (l.currentIndex < 0 || l.currentIndex >= l.count))
             bad.push(`currentIndex ${l.currentIndex} of ${l.count}`);
+        const nt = root.nativeText();
+        if (nt)
+            bad.push(nt);
         if (root.closeVerdict)
             bad.push(root.closeVerdict);
         if (root.openVerdict)
             bad.push(root.openVerdict);
         return [`${bad.length ? "BAD " + bad.join("; ") : "OK"} | ${tail}`].concat(out).join("\n");
+    }
+
+    // Text in the rows or the search bar drawn natively: it changes its look
+    // whenever the launcher's transform comes and goes (see launcher/
+    // Wrapper.qml), so every one of them is distance-field. A row type added
+    // later without it is caught here.
+    function nativeText(): string {
+        const found = [];
+        const walk = it => {
+            if (!it || found.length > 2)
+                return;
+            if (it.renderType !== undefined && it.renderType === Text.NativeRendering && it.visible && (it.text ?? "") !== "")
+                found.push(String(it.text).slice(0, 24));
+            for (const c of it.children ?? [])
+                walk(c);
+        };
+        walk(root.list?.contentItem);
+        walk(root.search);
+        return found.length ? `native text in the launcher: "${found.join('", "')}"` : "";
     }
 
     // What must hold even mid-flight, for the rig's mid-burst checks.

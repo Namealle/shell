@@ -28,6 +28,7 @@ Item {
         MaterialIcon {
             id: icon
 
+            renderType: Text.QtRendering
             anchors.verticalCenter: parent.verticalCenter
             text: root.modelData?.icon ?? ""
             color: Colours.palette.m3onSurfaceVariant
@@ -45,6 +46,7 @@ Item {
             StyledText {
                 id: name
 
+                renderType: Text.QtRendering
                 text: root.modelData?.name ?? ""
                 font: Tokens.font.body.medium
             }
@@ -52,6 +54,7 @@ Item {
             StyledText {
                 id: desc
 
+                renderType: Text.QtRendering
                 text: root.modelData?.desc ?? ""
                 font: Tokens.font.body.small
                 color: Colours.palette.m3outline

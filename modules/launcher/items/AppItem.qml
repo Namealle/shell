@@ -53,6 +53,7 @@ Item {
             StyledText {
                 id: name
 
+                renderType: Text.QtRendering
                 text: root.modelData?.name ?? ""
                 font: Tokens.font.body.medium
             }
@@ -60,6 +61,7 @@ Item {
             StyledText {
                 id: comment
 
+                renderType: Text.QtRendering
                 text: (root.modelData?.comment || root.modelData?.genericName || root.modelData?.name) ?? ""
                 font: Tokens.font.body.small
                 color: Colours.palette.m3outline
@@ -80,6 +82,7 @@ Item {
             active: root.modelData && Strings.testRegexList(GlobalConfig.launcher.favouriteApps, root.modelData.id)
 
             sourceComponent: MaterialIcon {
+                renderType: Text.QtRendering
                 text: "favorite"
                 fill: 1
                 color: Colours.palette.m3primary

@@ -63,6 +63,24 @@ Item {
 
     Component.onCompleted: Qt.callLater(() => Apps) // Load apps on init
 
+    // -- text that moves --
+    //
+    // The launcher's rows, its search field and the reader's header are
+    // drawn as distance-field text (Text.QtRendering), not the shell's usual
+    // native rendering. The launcher moves: it slides on offsetScale and its
+    // contents share the panel's deform matrix (a scale of a few tenths of a
+    // percent that springs back to identity ~600ms in). Native text is
+    // rasterised for the pixel grid at identity -- vertices snapped to whole
+    // pixels, glyphs from a cache made at the unscaled size -- so under any
+    // other transform it is a resampled texture, and the moment the matrix
+    // reaches identity it switches back to the snapped, hinted raster.
+    // Measured at his 1.25 scale: a 0.005% scale (invisible as geometry)
+    // changes native text by up to 199 levels; 0.1px steps of translation
+    // move it 0, 1.6, 0.6, 2.3, 0, 0, 0 levels -- whole-pixel jumps against
+    // rows that glide. That is the shimmer while it moves and the "hard
+    // stop" on the last frame. Distance-field text has one look at every
+    // transform: 0.1px steps change it by an even 0.8 levels, the tiny scale
+    // by 0.1, and at rest it is as sharp as native (gradient 14.5 vs 14.3).
     Behavior on offsetScale {
         Anim {}
     }

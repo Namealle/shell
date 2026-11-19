@@ -29,6 +29,7 @@ Item {
         MaterialIcon {
             id: icon
 
+            renderType: Text.QtRendering
             text: root.modelData?.icon ?? ""
             fontStyle: Tokens.font.icon.extraLarge
 
@@ -44,11 +45,13 @@ Item {
             spacing: 0
 
             StyledText {
+                renderType: Text.QtRendering
                 text: root.modelData?.name ?? ""
                 font: Tokens.font.body.medium
             }
 
             StyledText {
+                renderType: Text.QtRendering
                 text: root.modelData?.description ?? ""
                 font: Tokens.font.body.small
                 color: Colours.palette.m3outline
@@ -69,6 +72,7 @@ Item {
             active: root.modelData?.variant === Schemes.currentVariant
 
             sourceComponent: MaterialIcon {
+                renderType: Text.QtRendering
                 text: "check"
                 color: Colours.palette.m3onSurfaceVariant
                 fontStyle: Tokens.font.icon.large

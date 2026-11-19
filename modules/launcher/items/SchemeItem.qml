@@ -68,11 +68,13 @@ Item {
             spacing: 0
 
             StyledText {
+                renderType: Text.QtRendering
                 text: root.modelData?.flavour ?? ""
                 font: Tokens.font.body.medium
             }
 
             StyledText {
+                renderType: Text.QtRendering
                 text: root.modelData?.name ?? ""
                 font: Tokens.font.body.small
                 color: Colours.palette.m3outline
@@ -93,6 +95,7 @@ Item {
             active: `${root.modelData?.name} ${root.modelData?.flavour}` === Schemes.currentScheme
 
             sourceComponent: MaterialIcon {
+                renderType: Text.QtRendering
                 text: "check"
                 color: Colours.palette.m3onSurfaceVariant
                 fontStyle: Tokens.font.icon.large

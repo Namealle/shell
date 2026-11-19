@@ -1019,6 +1019,7 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
 
         MaterialIcon {
+            renderType: Text.QtRendering
             text: root.state === "wallpapers" ? "wallpaper_slideshow" : "manage_search"
             color: Colours.palette.m3onSurfaceVariant
             fontStyle: Tokens.font.icon.extraLarge
@@ -1030,12 +1031,14 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
 
             StyledText {
+                renderType: Text.QtRendering
                 text: root.state === "wallpapers" ? Tr.tr("No wallpapers found") : Tr.tr("No results")
                 color: Colours.palette.m3onSurfaceVariant
                 font: Tokens.font.body.builders.large.weight(Font.Medium).build()
             }
 
             StyledText {
+                renderType: Text.QtRendering
                 text: root.state === "wallpapers" && Wallpapers.list.length === 0 ? Tr.tr("Try putting some wallpapers in %1").arg(Paths.shortenHome(Paths.wallsdir)) : Tr.tr("Try searching for something else")
                 color: Colours.palette.m3onSurfaceVariant
                 font: Tokens.font.body.medium

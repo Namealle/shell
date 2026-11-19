@@ -60,6 +60,7 @@ Item {
         implicitHeight: implicitWidth / 16 * 9
 
         MaterialIcon {
+            renderType: Text.QtRendering
             anchors.centerIn: parent
             text: "image"
             color: Colours.tPalette.m3outline

@@ -50,6 +50,9 @@ Item {
 
         objectName: "launcherSearch"
 
+        // Distance-field text, like the rows -- see Wrapper.qml.
+        motionText: true
+
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom

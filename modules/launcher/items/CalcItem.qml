@@ -42,6 +42,7 @@ Item {
         spacing: Tokens.spacing.medium
 
         MaterialIcon {
+            renderType: Text.QtRendering
             text: "function"
             fontStyle: Tokens.font.icon.extraLarge
             Layout.alignment: Qt.AlignVCenter
@@ -50,6 +51,7 @@ Item {
         StyledText {
             id: result
 
+            renderType: Text.QtRendering
             color: {
                 if (text.includes("error: ") || text.includes("warning: "))
                     return Colours.palette.m3error;
@@ -89,6 +91,7 @@ Item {
             StyledText {
                 id: label
 
+                renderType: Text.QtRendering
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.right: icon.left
                 anchors.rightMargin: Tokens.spacing.small
@@ -109,6 +112,7 @@ Item {
             MaterialIcon {
                 id: icon
 
+                renderType: Text.QtRendering
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.right: parent.right
                 anchors.rightMargin: Tokens.padding.medium

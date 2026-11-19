@@ -1086,6 +1086,7 @@ Item {
         MaterialIcon {
             id: gIcon
 
+            renderType: Text.QtRendering
             anchors.verticalCenter: parent.verticalCenter
             text: ghost.icon
             color: Colours.palette.m3onSurfaceVariant
@@ -1102,6 +1103,7 @@ Item {
             StyledText {
                 id: gTitle
 
+                renderType: Text.QtRendering
                 anchors.left: parent.left
                 anchors.right: parent.right
                 text: ghost.title
@@ -1112,6 +1114,7 @@ Item {
             StyledText {
                 id: gMeta
 
+                renderType: Text.QtRendering
                 anchors.left: parent.left
                 anchors.top: gTitle.bottom
                 text: ghost.meta
@@ -1274,6 +1277,7 @@ Item {
                 MaterialIcon {
                     id: headerIcon
 
+                    renderType: Text.QtRendering
                     anchors.verticalCenter: parent.verticalCenter
                     // Natural width, matching ClipItem's leading slot exactly: the row
                     // reserves one 1em square for every entry type, so the header does
@@ -1297,6 +1301,7 @@ Item {
                     StyledText {
                         id: title
 
+                        renderType: Text.QtRendering
                         anchors.left: parent.left
                         anchors.right: parent.right
                         text: root.entry?.name ?? ""
@@ -1307,6 +1312,7 @@ Item {
                     StyledText {
                         id: meta
 
+                        renderType: Text.QtRendering
                         anchors.left: parent.left
                         anchors.top: title.bottom
                         text: root.metaFor(root.entry, root.body)
