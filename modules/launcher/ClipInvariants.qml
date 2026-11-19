@@ -525,12 +525,22 @@ Item {
             s.slideY = Math.round(r.slideY * 1000) / 1000;
             if (m)
                 s.box = [m.x, m.y, m.w, m.h, m.r].map(v => Math.round(v * 1000) / 1000);
+            // The same box in the scene, through every transform on the way
+            // -- the panel's deform matrix included, which the box above
+            // does not see.
+            if (m) {
+                const a = r.mapToItem(null, m.x, m.y);
+                const b = r.mapToItem(null, m.x + m.w, m.y + m.h);
+                s.sbox = [a.x, a.y, b.x - a.x, b.y - a.y].map(v => Math.round(v * 1000) / 1000);
+            }
         }
         if (l && root.traceEntry) {
             const k = l.results.indexOf(root.traceEntry);
             const it = k >= 0 ? l.itemAtIndex(k) : null;
             if (it && it.leadX !== undefined) {
                 s.row = [l.x + it.x + it.leadX, l.y + it.visualY - l.contentY + it.leadY].map(v => Math.round(v * 1000) / 1000);
+                const sr = it.mapToItem(null, it.leadX, it.leadY);
+                s.srow = [sr.x, sr.y].map(v => Math.round(v * 1000) / 1000);
                 s.rowVis = it.visible ? 1 : 0;
                 s.rowThumbVis = it.thumbMasked ? 0 : 1;
             }
