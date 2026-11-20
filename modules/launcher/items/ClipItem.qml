@@ -307,6 +307,10 @@ Item {
     // pixel-exact by construction. The thumbnail and the swatch share this
     // geometry exactly (same anchors, same square).
     readonly property real leadX: content.x + thumbWrapper.x
+    // For ClipInvariants: an image row that is drawing its thumbnail (the
+    // shader shows the decode only once it is Ready; before that, an empty
+    // tile).
+    readonly property bool thumbDrawn: !root.isImage || (thumb.status === Image.Ready && !root.thumbMasked)
     readonly property real leadY: content.y + thumbWrapper.y
 
     anchors.left: parent?.left

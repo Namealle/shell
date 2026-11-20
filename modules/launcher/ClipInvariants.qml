@@ -23,6 +23,11 @@ import qs.utils
 // the reader animates for longer than ~600ms, so anything still wrong then
 // is stuck. A violation is appended as one line to
 // `$XDG_STATE_HOME/caelestia/clip-invariants.log`, once per distinct state.
+// What goes wrong IN FLIGHT (an open, a close, a row at rest without its
+// picture) is logged the moment it is seen, one line per occurrence, with
+// the time to the millisecond: his 2026-11-20 recording had 50 s of quick
+// opens and closes, failures in fifteen of them, and one aggregated line
+// for all of it -- which could not tell one failure from another.
 //
 // The same checks answer over IPC (`qs ipc call clipcheck dump` / `mid`) for
 // the nested test rig in ~/namealle/projects/clipboard-tests.
@@ -80,7 +85,10 @@ Item {
 
     // The full settled check. Returns "OK ..." or "BAD <reasons> ...", then one
     // line per built row.
-    function dump(): string {
+    // `withFlights`: the open/close verdicts and in-flight events too. The
+    // live log has those already, each as it happened (logLine), so the
+    // settled check leaves them out there; the rig's `dump` wants them all.
+    function dump(withFlights = true): string {
         const l = root.list;
         const c = root.content;
         if (!l)
@@ -88,7 +96,7 @@ Item {
         const tail = `text="${root.search.text}" count=${l.count} cur=${l.currentIndex} contentY=${l.contentY.toFixed(1)}`;
         if (c.readerActive && !c.readerExiting) {
             let rb = root.readerAtRest();
-            for (const v of [root.openVerdict, root.openFlight])
+            for (const v of withFlights ? [root.openVerdict, root.openFlight] : [])
                 if (v)
                     rb = rb ? rb + "; " + v : v;
             return `${rb ? "BAD " + rb : "OK"} [reader] | ${tail} entry=${(c.readerEntry?.name ?? "?").slice(0, 30)}`;
@@ -146,14 +154,11 @@ Item {
         const nt = root.nativeText();
         if (nt)
             bad.push(nt);
-        if (root.closeVerdict)
-            bad.push(root.closeVerdict);
-        if (root.openVerdict)
-            bad.push(root.openVerdict);
-        if (root.openFlight)
-            bad.push(root.openFlight);
-        if (root.closeFlight)
-            bad.push(root.closeFlight);
+        if (withFlights) {
+            for (const v of [root.closeVerdict, root.openVerdict, root.openFlight, root.closeFlight])
+                if (v)
+                    bad.push(v);
+        }
         return [`${bad.length ? "BAD " + bad.join("; ") : "OK"} | ${tail}`].concat(out).join("\n");
     }
 
@@ -195,7 +200,7 @@ Item {
     function check(): void {
         if (!root.launcherOpen || !root.list || root.list.state !== "clipboard")
             return;
-        const d = root.dump();
+        const d = root.dump(false);
         if (!d.startsWith("BAD")) {
             root.lastLogged = "";
             return;
@@ -204,7 +209,32 @@ Item {
         if (head === root.lastLogged)
             return;
         root.lastLogged = head;
-        logger.command = ["sh", "-c", 'mkdir -p "$(dirname "$1")" && printf "%s %s\\n" "$(date -Is)" "$2" >>"$1"', "log", root.logPath, d.replace(/\n/g, " //")];
+        root.logLine(d.replace(/\n/g, " //"));
+    }
+
+    // One line per event, stamped with the local time to the millisecond.
+    // Queued: two events a few ms apart (an open's and a close's) must not
+    // race one Process.
+    property var logQueue: []
+
+    function stamp(): string {
+        const d = new Date();
+        const off = -d.getTimezoneOffset();
+        const pad = n => String(Math.floor(Math.abs(n))).padStart(2, "0");
+        return `${Qt.formatDateTime(d, "yyyy-MM-ddThh:mm:ss.zzz")}${off < 0 ? "-" : "+"}${pad(off / 60)}:${pad(off % 60)}`;
+    }
+
+    function logLine(text: string): void {
+        root.logQueue = root.logQueue.concat([`${root.stamp()} ${text}`]);
+        root.flushLog();
+    }
+
+    function flushLog(): void {
+        if (logger.running || !root.logQueue.length)
+            return;
+        const lines = root.logQueue.join("\n");
+        root.logQueue = [];
+        logger.command = ["sh", "-c", 'mkdir -p "$(dirname "$1")" && printf "%s\\n" "$2" >>"$1"', "log", root.logPath, lines];
         logger.running = true;
     }
 
@@ -221,6 +251,8 @@ Item {
 
     Process {
         id: logger
+
+        onExited: root.flushLog()
     }
 
     Connections {
@@ -320,13 +352,56 @@ Item {
             root.overlapSeen = root.overlapSeen ? `${root.overlapSeen}; ${root.overlapVerdict}` : root.overlapVerdict;
             const rowsTxt = root.rows().map(r => `[${r.index}] y=${r.y.toFixed(1)} drawn=${r.visualY.toFixed(1)} hold=${r.holdY.toFixed(1)} ent=${r.entranceY.toFixed(1)}`).join(" // ");
             const line = `BAD ${root.overlapVerdict} | text="${root.search.text}" count=${l.count} cur=${l.currentIndex} contentY=${l.contentY.toFixed(1)} originY=${l.originY.toFixed(1)} gap=${l.readerGapIndex} reader=${c.readerActive ? "open" : c.readerExiting ? "exiting" : "closed"} // ${rowsTxt}`;
-            overlapLogger.command = ["sh", "-c", 'mkdir -p "$(dirname "$1")" && printf "%s %s\\n" "$(date -Is)" "$2" >>"$1"', "log", root.logPath, line];
-            overlapLogger.running = true;
+            root.logLine(line);
         }
     }
 
-    Process {
-        id: overlapLogger
+    // -- an image row at rest without its thumbnail --
+    //
+    // Sampled every 50 ms like the overlap check: an image row on screen, at
+    // rest on its slot and fully shown, whose leading slot draws no picture
+    // (the decode not ready, or masked with the reader closed) for longer
+    // than restThumbMs. Logged once per row until it draws again, with the
+    // reason; `dump` reports any seen since the last one. Before 2026-11-20
+    // a row at rest with an empty slot was not logged at all.
+    readonly property int restThumbMs: 250
+    property var restBlank: ({})
+    property string restSeen: ""
+
+    Timer {
+        interval: 50
+        repeat: true
+        running: root.launcherOpen && root.list?.state === "clipboard"
+        onRunningChanged: root.restBlank = {}
+        onTriggered: {
+            const l = root.list;
+            const c = root.content;
+            if (!l || c.readerActive || c.readerExiting) {
+                root.restBlank = {};
+                return;
+            }
+            const stride = Tokens.sizes.launcher.itemHeight + l.spacing;
+            const now = Date.now();
+            const next = {};
+            for (const r of root.rows()) {
+                if (r.thumbDrawn === undefined || r.thumbDrawn || !r.visible || r.opacity < 0.99 || r.contentOpacity < 0.99)
+                    continue;
+                if (Math.abs(r.visualY - (l.originY + r.index * stride)) > 0.5 || r.visualY + r.height <= l.contentY || r.visualY >= l.contentY + l.height)
+                    continue;
+                const key = r.modelData?.entryId ?? `i${r.index}`;
+                const was = root.restBlank[key];
+                next[key] = was ?? { since: now, logged: false };
+                const e = next[key];
+                if (!e.logged && now - e.since >= root.restThumbMs) {
+                    e.logged = true;
+                    const why = r.thumbMasked ? "masked with the reader closed" : "its decode not ready";
+                    const v = `row ${r.index} at rest without its thumbnail for ${now - e.since}ms (${why})`;
+                    root.restSeen = root.restSeen ? `${root.restSeen}; ${v}` : v;
+                    root.logLine(`BAD ${v} | text="${root.search.text}" count=${l.count} cur=${l.currentIndex} contentY=${l.contentY.toFixed(1)}`);
+                }
+            }
+            root.restBlank = next;
+        }
     }
 
     // -- a picture folding home: the close itself, frame by frame --
@@ -482,6 +557,7 @@ Item {
             if (root.closeVerdict) {
                 const l = root.list;
                 root.closeVerdict += ` (row ${root.closeStart.k}->${l.fullResults.indexOf(root.closeEntry)}, count ${root.closeStart.n}->${l.fullResults.length}, originY ${root.closeStart.oy.toFixed(1)}->${l.originY.toFixed(1)}, contentY ${root.closeStart.cy.toFixed(1)}->${l.contentY.toFixed(1)}, text "${root.closeStart.text}"->"${root.search.text}")`;
+                root.logLine(`BAD ${root.closeVerdict}, close began ${Math.round(Date.now() - root.closeStart.at)}ms ago`);
             }
             root.poke();
         }
@@ -549,6 +625,8 @@ Item {
             if (!r.morphInFlight && root.openBoxes.length > 2) {
                 root.openWatching = false;
                 root.openVerdict = root.judgeOpen();
+                if (root.openVerdict)
+                    root.logLine(`BAD ${root.openVerdict} | cur=${root.list.currentIndex}`);
                 root.poke();
             }
         }
@@ -579,6 +657,7 @@ Item {
             root.closeEntry = r.morphEntry;
             const l = root.list;
             root.closeStart = {
+                at: Date.now(),
                 k: l.fullResults.indexOf(r.morphEntry),
                 n: l.fullResults.length,
                 oy: l.originY,
@@ -627,6 +706,11 @@ Item {
     property real flightLastY: 0
     property string flightLastText: ""
     property double flightOpenAt: 0
+    property double flightCloseAt: 0
+    // The picture's box on the frame before, for the jump check.
+    property var flightPrevBox: null
+    property double flightPrevAt: 0
+    property var flightPrevEntry: null
     property double blankSince: 0
     property real blankAt: 0
     property real openViewH: 0
@@ -664,6 +748,8 @@ Item {
             root.openFlight = next;
         else
             root.closeFlight = next;
+        const since = open ? root.flightOpenAt : root.flightCloseAt;
+        root.logLine(`BAD ${msg} | ${open ? "open" : "close"} began ${since ? Math.round(Date.now() - since) : "?"}ms ago, text="${root.search.text}"`);
         root.poke();
     }
 
@@ -672,6 +758,12 @@ Item {
         if (r.bodyFade <= 0)
             return false;
         if (r.morphInFlight && r.morphEntry === r.entry && r.morphIsImage) {
+            // Drawn wholly outside the panel is not drawn (2026-11-20: a
+            // picture flung 5500px below its reader left it black).
+            const m = r.liveMorphRect();
+            const c = root.content;
+            if (m && (m.y > c.height || m.y + m.h < 0 || m.x > c.width || m.x + m.w < 0))
+                return false;
             if (r.morphDrawn !== undefined)
                 return r.morphDrawn;
             // The overlay draws the row's thumbnail or the full-size copy;
@@ -733,6 +825,47 @@ Item {
                 root.addFlight(open, `header past the panel's top edge: by ${(-hy).toFixed(1)}px (${open ? "open" : "close"}) | ${where()}`);
             else if (hy > c.height + stride)
                 root.addFlight(open, `header below the panel's bottom edge: at ${hy.toFixed(1)}, panel ${c.height.toFixed(0)} (${open ? "open" : "close"}) | ${where()}`);
+        }
+
+        // The picture in flight, frame to frame: it moves, it never jumps.
+        // His 2026-11-20 recording: on a close's first frame the picture
+        // left its body for a spot 5500px below the panel (the adopted path
+        // renormalised to a stale start, ClipReader.adoptU), then flew in
+        // from there. Within one entry's morph only -- a reopen on another
+        // row starts its own picture on its own slot. The fastest a picture
+        // moves on its own is ~10px/ms (59px in a 6ms frame at 165Hz, ~160px
+        // a frame at 60Hz); the flings were 1700-222000px. Timed by the
+        // frame, not the wall clock between two callbacks, which can be 3ms
+        // apart for a whole frame's step (20-images i1: 132px "in 3ms").
+        if ((r.morphIsImage || r.morphIsColour) && r.morphInFlight) {
+            const m = r.liveMorphRect();
+            const now = Date.now();
+            const p = root.flightPrevBox;
+            if (m && p && root.flightPrevEntry === r.morphEntry) {
+                const step = Math.max(Math.abs(m.x - p[0]), Math.abs(m.y - p[1]), Math.abs(m.w - p[2]), Math.abs(m.h - p[3]));
+                const dt = Math.max(1000 / 60, now - root.flightPrevAt);
+                if (step > 400 && step / dt > 30)
+                    root.addFlight(open, `picture jumped: ${step.toFixed(0)}px in ${dt}ms, from ${p.map(v => v.toFixed(0)).join(",")} to ${[m.x, m.y, m.w, m.h].map(v => v.toFixed(0)).join(",")} (x,y,w,h; ${open ? "open" : "close"}) | ${where()}`);
+            }
+            root.flightPrevBox = m ? [m.x, m.y, m.w, m.h] : null;
+            root.flightPrevAt = now;
+            root.flightPrevEntry = r.morphEntry;
+            // The header lands on the row with the picture: whatever is
+            // where the row's thumbnail goes once the header is there is what
+            // he sees as the row. 2026-11-20: the header came home with the
+            // picture still thousands of px away, and the row "showed the
+            // image icon" (the header's own glyph) for 100-200ms. Normal
+            // closes: the picture is within 53px of its slot by the time the
+            // header is within 6px of its row (nest, his rhythm).
+            const rb = c.readerExiting && root.closeWatching && r.morphEntry === root.closeEntry ? root.closeRowBox(true) : null;
+            if (m && rb && Math.abs(r.slotY - rb[1]) < 6 && Math.abs(r.slotX - rb[0]) < 6) {
+                const s = r.slotS;
+                const d = Math.max(Math.abs(m.x - rb[0]), Math.abs(m.y - rb[1]), Math.abs(m.w - s), Math.abs(m.h - s));
+                if (d > 3 * s)
+                    root.addFlight(false, `row's slot without its picture as the header lands: header at ${r.slotY.toFixed(1)}, row at ${rb[1].toFixed(1)}, picture at ${[m.x, m.y, m.w, m.h].map(v => v.toFixed(0)).join(",")} (x,y,w,h) | ${where()}`);
+            }
+        } else {
+            root.flightPrevBox = null;
         }
 
         // A picture being read with nothing drawn for it.
@@ -824,6 +957,7 @@ Item {
 
         function onReaderExitingChanged(): void {
             if (root.content.readerExiting) {
+                root.flightCloseAt = Date.now();
                 root.closeFlight = "";
                 root.afterClose = false;
                 root.flightEntry = root.content.readerEntry;
@@ -885,6 +1019,20 @@ Item {
             s.morphing = r.morphing ? 1 : 0;
             s.inFlight = r.morphInFlight ? 1 : 0;
             s.slideY = Math.round(r.slideY * 1000) / 1000;
+            s.goal = r.morphGoal;
+            s.ad = r.adopted ? 1 : 0;
+            if (r.adopted)
+                s.au = Math.round(r.adoptU * 1000) / 1000;
+            s.orph = r.orphans.length;
+            s.mi = r.morphIndex;
+            s.ix = r.index;
+            s.goal = r.morphGoal;
+            s.ad = r.adopted ? 1 : 0;
+            if (r.adopted)
+                s.au = Math.round(r.adoptU * 1000) / 1000;
+            s.orph = r.orphans.length;
+            s.mi = r.morphIndex;
+            s.ix = r.index;
             if (m)
                 s.box = [m.x, m.y, m.w, m.h, m.r].map(v => Math.round(v * 1000) / 1000);
             // The same box in the scene, through every transform on the way
@@ -937,8 +1085,9 @@ Item {
         // last call (the rig calls this once per scenario).
         function dump(): string {
             const d = root.dump();
-            const seen = root.overlapSeen;
+            const seen = [root.overlapSeen, root.restSeen].filter(x => x).join("; ");
             root.overlapSeen = "";
+            root.restSeen = "";
             if (!seen)
                 return d;
             const nl = d.indexOf("\n");
