@@ -172,6 +172,38 @@ StyledListView {
         coalesce.restart();
     }
 
+    // Whether a row inserted in front of `index` lands ABOVE the view instead
+    // of parting the rows below it a stride down.
+    //
+    // QQuickListView decides that per change (applyInsertionChange, and
+    // removeItem for a removal): a change whose slot lies before the first
+    // row in view is absorbed above it -- the content grows or shrinks at the
+    // top (originY moves a stride) and every row below keeps its y. Only a
+    // change at or after that row moves the rows below it. "In view" is the
+    // first row whose bottom edge is past contentY, so the insert lands above
+    // exactly when the row now at `index` ends at or above contentY.
+    //
+    // Key navigation keeps the highlighted row in view, so the entry the
+    // reader opens on is never above it that way. The wheel scrolls without
+    // moving the highlight: scroll down, read the highlighted row from above
+    // the view, close, and the re-insert lands above. The rows below were held
+    // a stride low for a parting that never came, and stayed there for good --
+    // two rows drawn in one slot, the slot above empty (his recording of
+    // 2026-11-19 17:35; ClipInvariants logged "row 7 drawn 65.0px off its
+    // slot; rows 7 and 8 drawn on one slot", hold=65 on row 7). Traced in the
+    // nest (wheel a notch, read row 0, close): the lift at index 0 with row 2
+    // first in view left every row's y alone and moved originY 0 -> 65; the
+    // re-insert moved originY back and again left every y alone, so rows 1-7
+    // kept hold=65 with nothing to spend it on.
+    function insertLandsAbove(index: int): bool {
+        if (index >= root.count)
+            return false;
+        const it = root.itemAtIndex(index);
+        const top = it ? it.y : root.originY + index * (Tokens.sizes.launcher.itemHeight + root.spacing);
+        const height = it ? it.height : Tokens.sizes.launcher.itemHeight;
+        return top + height <= root.contentY;
+    }
+
     // Teardown, where no animation is owed to anyone.
     function resetLift(): void {
         coalesce.stop();
@@ -212,6 +244,13 @@ StyledListView {
         root.repairAt = Date.now();
         if (root.wantLift === root.liftedEntry)
             return;
+        // The re-insert the rows below the gap are held for (gapHold) is about
+        // to land above the view, where it parts nothing: the hold would never
+        // be spent. Checked again here, not only when the exit staged it,
+        // because the view can scroll in between. Releasing the gap index
+        // slides the held rows back onto their slots (ClipItem).
+        if (!root.wantLift && root.readerGapIndex >= 0 && root.insertLandsAbove(root.readerGapIndex))
+            root.readerGapIndex = -1;
         root.pendingIndex = root.wantIndex;
         root.liftedEntry = root.wantLift;
     }

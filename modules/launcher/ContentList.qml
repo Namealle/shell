@@ -445,7 +445,9 @@ Item {
             // Staged or at once -- decided here rather than at the bottom
             // because the rows need it as the cascade is stamped.
             const settled = Date.now() - l.liftRequestedAt >= root.Tokens.anim.durations.expressiveDefaultSpatial;
-            l.readerGapIndex = settled && l.liftedEntry ? i : -1;
+            // And only when the re-insert will part the rows below it: one that
+            // lands above the view moves nothing (AppList.insertLandsAbove).
+            l.readerGapIndex = settled && l.liftedEntry && !l.insertLandsAbove(i) ? i : -1;
             l.readerCascade = Math.max(0, Math.min(1, (Date.now() - root.readerOpenedAt) / root.Tokens.anim.durations.expressiveFastSpatial));
             l.readerClosedAt = Date.now();
             readerActive = false;

@@ -259,6 +259,71 @@ Item {
         ignoreUnknownSignals: true
     }
 
+    // -- two rows in one slot, whenever it happens --
+    //
+    // The settled check above only looks 1.5 s after the last key, query or
+    // reader change; a wheel scroll is none of those, and a pair of rows can
+    // sit on one slot for a while before anything pokes it. This one samples
+    // the list every 50 ms while the clipboard list is up and logs the moment
+    // two drawn rows have stood in one slot (less than half a stride apart)
+    // for longer than any of the list's own animations lets two rows cross
+    // (overlapMs), with the state of every row at that moment -- the hold
+    // (gapHold) and entrance offsets are what told the 2026-11-19 bug apart:
+    // a row held a stride low for a re-insert Qt had absorbed above the view.
+    // Logged once per pair until the pair is apart again; also in `dump`.
+    readonly property int overlapMs: 300
+    property string overlapVerdict: ""
+    property string overlapPair: ""
+    property double overlapSince: 0
+    // Every overlap verdict since the rig last asked (IPC dump).
+    property string overlapSeen: ""
+
+    function overlap(): var {
+        const l = root.list;
+        const stride = Tokens.sizes.launcher.itemHeight + l.spacing;
+        const shown = root.rows().filter(r => r.visible && r.opacity > 0.05 && r.contentOpacity > 0.05 && r.visualY + r.height > l.contentY && r.visualY < l.contentY + l.height);
+        shown.sort((a, b) => a.visualY - b.visualY);
+        for (let k = 1; k < shown.length; k++)
+            if (shown[k].visualY - shown[k - 1].visualY < stride / 2)
+                return [shown[k - 1], shown[k]];
+        return null;
+    }
+
+    Timer {
+        interval: 50
+        repeat: true
+        running: root.launcherOpen && root.list?.state === "clipboard"
+        onRunningChanged: {
+            root.overlapPair = "";
+            root.overlapSince = 0;
+        }
+        onTriggered: {
+            const p = root.overlap();
+            const key = p ? `${p[0].index}/${p[1].index}` : "";
+            if (key !== root.overlapPair) {
+                root.overlapPair = key;
+                root.overlapSince = Date.now();
+                if (!key)
+                    root.overlapVerdict = "";
+                return;
+            }
+            if (!key || root.overlapVerdict || Date.now() - root.overlapSince < root.overlapMs)
+                return;
+            const l = root.list;
+            const c = root.content;
+            root.overlapVerdict = `rows ${p[0].index} and ${p[1].index} drawn in one slot for ${Date.now() - root.overlapSince}ms (at ${p[0].visualY.toFixed(1)} and ${p[1].visualY.toFixed(1)})`;
+            root.overlapSeen = root.overlapSeen ? `${root.overlapSeen}; ${root.overlapVerdict}` : root.overlapVerdict;
+            const rowsTxt = root.rows().map(r => `[${r.index}] y=${r.y.toFixed(1)} drawn=${r.visualY.toFixed(1)} hold=${r.holdY.toFixed(1)} ent=${r.entranceY.toFixed(1)}`).join(" // ");
+            const line = `BAD ${root.overlapVerdict} | text="${root.search.text}" count=${l.count} cur=${l.currentIndex} contentY=${l.contentY.toFixed(1)} originY=${l.originY.toFixed(1)} gap=${l.readerGapIndex} reader=${c.readerActive ? "open" : c.readerExiting ? "exiting" : "closed"} // ${rowsTxt}`;
+            overlapLogger.command = ["sh", "-c", 'mkdir -p "$(dirname "$1")" && printf "%s %s\\n" "$(date -Is)" "$2" >>"$1"', "log", root.logPath, line];
+            overlapLogger.running = true;
+        }
+    }
+
+    Process {
+        id: overlapLogger
+    }
+
     // -- a picture folding home: the close itself, frame by frame --
     //
     // Sampled on every rendered frame of an exit whose entry is an image or a
@@ -580,8 +645,19 @@ Item {
             return root.trace.map(s => JSON.stringify(s)).join("\n");
         }
 
+        // The settled check, plus any two-rows-in-one-slot seen since the
+        // last call (the rig calls this once per scenario).
         function dump(): string {
-            return root.dump();
+            const d = root.dump();
+            const seen = root.overlapSeen;
+            root.overlapSeen = "";
+            if (!seen)
+                return d;
+            const nl = d.indexOf("\n");
+            const head = nl < 0 ? d : d.slice(0, nl);
+            const rest = nl < 0 ? "" : d.slice(nl);
+            const reasons = head.startsWith("BAD ") ? head.slice(4) : head.replace(/^OK/, "");
+            return `BAD ${seen}${reasons.startsWith(" |") ? "" : "; "}${reasons}${rest}`;
         }
 
         function mid(): string {
