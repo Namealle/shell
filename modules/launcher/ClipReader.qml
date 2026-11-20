@@ -625,7 +625,7 @@ Item {
         // it is ended the way a disabled Behavior ends: by a write while the
         // spring has it switched off. That drops an adopted path, so the
         // path is re-snapshotted first, exactly as setMorphT does for a curve.
-        const r = root.adopted && root.morphing && root.morphGoal !== morphTo ? root.liveMorphRect() : null;
+        const r = root.adopted && root.morphGoal !== morphTo ? root.liveMorphRect() : null;
         morphSpring.start(root.morphT, vM);
         root.morphT = root.morphT;
         if (r)
@@ -1744,12 +1744,13 @@ Item {
         // morph needs nothing -- it is the same expression in both directions,
         // which is why reversing it mid-flight was always continuous.
         //
-        // Only while the run is actually going. Straight after reopen()'s
-        // rewind the snapshot was taken AT the current t with nothing run yet,
-        // so it already is the start; re-reading it there measured the
-        // degenerate goal == t0 state and handed the slot back as the "live"
-        // rect -- an orphan adopted by a reopen jumped onto the slot.
-        if (root.adopted && root.morphing && v !== root.morphGoal) {
+        // Whether or not anything is running: a run stopped part-way (the
+        // springs' stop() in exitTo/reopen) leaves the path adopted, and a
+        // new goal on the old snapshot is the 2026-11-20 fling -- see
+        // adoptU. Straight after reopen()'s rewind (snapshot taken AT the
+        // current t, nothing run yet) adoptU is 0, so re-reading it gives the
+        // snapshot back, not the slot.
+        if (root.adopted && v !== root.morphGoal) {
             const r = root.liveMorphRect();
             if (r)
                 root.adopt(r);
@@ -2006,9 +2007,22 @@ Item {
     readonly property bool adoptToBody: root.morphGoal >= 0.5
     // 0 at the snapshot, 1 at the goal, overshoot included -- the same curve
     // value the plain path uses, renormalised to the stretch that is left.
+    //
+    // Only ever renormalised to a stretch that starts where the picture IS:
+    // every change of goal re-snapshots (setMorphT, startMorphSprings),
+    // running or not. His recording of 2026-11-20 16:42: a browse in the
+    // reader adopted the path, the quick ->/<- that followed never let the
+    // springs settle (which is what drops it), and exitTo stops the springs
+    // before it aims them -- so the re-snapshot, gated on `morphing`, was
+    // skipped and the close ran on the open's snapshot (t0 0.035, goal 0):
+    // adoptU -27.8 on the first frame of the close, the picture flung 5500px
+    // below the panel, up to 1200x past it on later turns (219000px above),
+    // blank under its header and back as a letterboxed sliver just before
+    // it landed. Equal ends mean nothing has run from the snapshot yet: 0,
+    // the snapshot itself.
     readonly property real adoptU: {
         const d = root.morphGoal - root.adoptT0;
-        return Math.abs(d) < 1e-6 ? 1 : (root.morphT - root.adoptT0) / d;
+        return Math.abs(d) < 1e-6 ? 0 : (root.morphT - root.adoptT0) / d;
     }
 
     function adopt(r: var): void {
