@@ -219,6 +219,12 @@ Item {
         const l = appList.item;
         if (!l?.currentEntry)
             return;
+        // The list stops where it is: a wheel scroll still gliding when the
+        // key was pressed went on moving the list under the reader (filmed:
+        // 97px during an open 50ms after a notch), so the row the reader
+        // lifted off was somewhere else by the time it came back.
+        l.cancelFlick();
+        l.wheelScroller?.settle();
         // Never off a row the panel does not show. The list keeps the
         // selection in view as it scrolls (AppList.keepSelectionInView), so
         // this only settles a scroll that has not reached it yet -- it moves

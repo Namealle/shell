@@ -157,7 +157,23 @@ StyledListView {
     // moved yet, so there is nothing to undo.
     property double liftRequestedAt: 0
 
+    // -- the list does not move under a lift --
+    //
+    // Lifting the entry takes a row out of the content. With the view
+    // scrolled to the end of the list that leaves contentY past the new end,
+    // and Qt pulls it back in one frame: every row on screen dropped 58px in
+    // the open's first frame, while the list was still fading out (filmed in
+    // the nest after a wheel scroll to the end of `;png`, contentY 2405 ->
+    // 2347). A stride of bottom margin for as long as an entry is lifted (or
+    // about to be) keeps the end where it was, so nothing is clamped; it is
+    // taken back once the re-insert has landed (ScriptModel.onValuesChanged
+    // below), never before the content has grown back.
+    property real liftMargin: 0
+
+    bottomMargin: root.liftMargin
+
     function setLifted(entry: var, index: int): void {
+        root.liftMargin = Tokens.sizes.launcher.itemHeight + root.spacing;
         root.readerGapIndex = -1;
         root.maskedEntry = entry;
         root.wantLift = entry;
@@ -213,6 +229,7 @@ StyledListView {
         root.liftedEntry = null;
         root.maskedEntry = null;
         root.pendingIndex = -1;
+        root.liftMargin = 0;
     }
 
     // -- the rows a SECOND model change moves without animating them --
@@ -356,6 +373,10 @@ StyledListView {
         // index to keep via pendingIndex, a delete via deleteIndex; genuine
         // query changes still reset.
         onValuesChanged: {
+            // The re-insert has landed (or the lift is off): the content is
+            // whole again, so the margin that held its end can go.
+            if (!root.liftedEntry && !root.wantLift)
+                root.liftMargin = 0;
             if (root.pendingIndex >= 0)
                 root.currentIndex = root.pendingIndex;
             else if (root.deleteIndex >= 0 && root.deleteQuery === root.displayText)

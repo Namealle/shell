@@ -617,7 +617,8 @@ Item {
     //   - while the reader is open on a picture, something draws it: the
     //     morph, the body's full-size copy or its stand-in;
     //   - the list does not move more than a row in one frame during a close
-    //     or just after it, unless the query changed.
+    //     or just after it, unless the query changed, and does not move at
+    //     all while the reader is open.
     readonly property int afterCloseMs: 600
     property string openFlight: ""
     property string closeFlight: ""
@@ -754,12 +755,23 @@ Item {
                 root.flightEntry = c.readerEntry;
         }
 
+        // The list under an open: nothing scrolls it while the reader is up
+        // (the list is frozen and the wheel reaches the reader), so any move
+        // is the view correcting itself -- the end of the list pulled back
+        // when the lift shrank the content, 58px in one frame while the rows
+        // were still fading out.
+        if (open && !root.flightStart) {
+            const dy = l.contentY - root.flightLastY;
+            if (Math.abs(dy) > 1)
+                root.addFlight(true, `list jumped under the open: ${dy.toFixed(1)}px in one frame, ${root.flightLastY.toFixed(1)} -> ${l.contentY.toFixed(1)} | ${where()}`);
+        }
+
         // The list under a close.
         if (c.readerExiting || root.afterClose) {
             const dy = l.contentY - root.flightLastY;
             const text = root.search.text;
             if (Math.abs(dy) > stride && text === root.flightLastText && !c.exitRequeried)
-                root.addFlight(false, `list jumped ${dy.toFixed(1)}px in one frame ${c.readerExiting ? "during" : "after"} the close: ${root.flightLastY.toFixed(1)} -> ${l.contentY.toFixed(1)} | ${where()}`);
+                root.addFlight(false, `list jumped ${c.readerExiting ? "during" : "after"} the close: ${dy.toFixed(1)}px in one frame, ${root.flightLastY.toFixed(1)} -> ${l.contentY.toFixed(1)} | ${where()}`);
         }
         root.flightLastY = l.contentY;
         root.flightLastText = root.search.text;
