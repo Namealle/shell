@@ -88,8 +88,9 @@ Item {
         const tail = `text="${root.search.text}" count=${l.count} cur=${l.currentIndex} contentY=${l.contentY.toFixed(1)}`;
         if (c.readerActive && !c.readerExiting) {
             let rb = root.readerAtRest();
-            if (root.openVerdict)
-                rb = rb ? rb + "; " + root.openVerdict : root.openVerdict;
+            for (const v of [root.openVerdict, root.openFlight])
+                if (v)
+                    rb = rb ? rb + "; " + v : v;
             return `${rb ? "BAD " + rb : "OK"} [reader] | ${tail} entry=${(c.readerEntry?.name ?? "?").slice(0, 30)}`;
         }
         const stride = Tokens.sizes.launcher.itemHeight + l.spacing;
@@ -149,6 +150,10 @@ Item {
             bad.push(root.closeVerdict);
         if (root.openVerdict)
             bad.push(root.openVerdict);
+        if (root.openFlight)
+            bad.push(root.openFlight);
+        if (root.closeFlight)
+            bad.push(root.closeFlight);
         return [`${bad.length ? "BAD " + bad.join("; ") : "OK"} | ${tail}`].concat(out).join("\n");
     }
 
@@ -343,6 +348,7 @@ Item {
     property real closeSlot: 0
     property bool closeWatching: false
     property var closeEntry: null
+    property var closeStart: ({})
 
     // `masked`: the row's box even while the reader masks it (it is laid out
     // all the same), for following where the picture is landing.
@@ -469,6 +475,14 @@ Item {
             if (c.readerActive || root.closeBoxes.length < 3)
                 return;
             root.closeVerdict = root.judgeClose(root.closeRowBox());
+            // What moved under the close, for a verdict to be read from the
+            // log alone: his 2026-11-19 18:45 line (unscrolled, cur=0, the
+            // picture 65px off its row) came with no recording, and the row
+            // a stride away says something moved it, not what.
+            if (root.closeVerdict) {
+                const l = root.list;
+                root.closeVerdict += ` (row ${root.closeStart.k}->${l.fullResults.indexOf(root.closeEntry)}, count ${root.closeStart.n}->${l.fullResults.length}, originY ${root.closeStart.oy.toFixed(1)}->${l.originY.toFixed(1)}, contentY ${root.closeStart.cy.toFixed(1)}->${l.contentY.toFixed(1)}, text "${root.closeStart.text}"->"${root.search.text}")`;
+            }
             root.poke();
         }
     }
@@ -563,7 +577,249 @@ Item {
             root.closeRows = [];
             root.closeSlot = r.slotS;
             root.closeEntry = r.morphEntry;
+            const l = root.list;
+            root.closeStart = {
+                k: l.fullResults.indexOf(r.morphEntry),
+                n: l.fullResults.length,
+                oy: l.originY,
+                cy: l.contentY,
+                text: root.search.text
+            };
             root.closeWatching = true;
+        }
+
+        target: root.content
+    }
+
+    // -- the row it lifts off and lands on, frame by frame --
+    //
+    // His recording of 2026-11-19 20:09: the wheel had scrolled the list
+    // without the selection, so `->` opened the reader on a row above the
+    // panel and the picture came in through the panel's top edge; the
+    // full-size copy had not been decoded when the open landed, and for the
+    // rest of the read the reader drew an empty panel under its header; the
+    // close aimed at the row above the view, the re-insert there jumped the
+    // list in one frame, and the picture landed a row off, on top of the next
+    // row. Each of those is checked on every frame of an open and a close
+    // (and for afterCloseMs after one), and logged by name:
+    //   - an open starts on a row the panel shows whole, and a close lands
+    //     on one (a query typed into the close is exempt: a row it moved
+    //     away is left across the panel's edge on purpose);
+    //   - the picture, swatch or header never crosses the panel's top edge
+    //     (beyond the bounce its own curve or spring gives it there), and is
+    //     never more than a row wholly below its bottom edge (same
+    //     exemption). Not the bottom edge itself: the panel resizes on its
+    //     own curve, so a tall picture folding home is cut there for a moment
+    //     by the panel collapsing ahead of it, and one landing on a low row
+    //     from a short reader waits a few frames below the edge for the
+    //     panel to grow over it (i1/i2 in 20-images: 3.4px) -- whatever row
+    //     it lands on;
+    //   - while the reader is open on a picture, something draws it: the
+    //     morph, the body's full-size copy or its stand-in;
+    //   - the list does not move more than a row in one frame during a close
+    //     or just after it, unless the query changed.
+    readonly property int afterCloseMs: 600
+    property string openFlight: ""
+    property string closeFlight: ""
+    property bool flightStart: false
+    property bool afterClose: false
+    property real flightLastY: 0
+    property string flightLastText: ""
+    property double flightOpenAt: 0
+    property double blankSince: 0
+    property real blankAt: 0
+    property real openViewH: 0
+    property var flightEntry: null
+    property bool flightRequeried: false
+
+    // The close is over: the row it came down on, whole in the view?
+    function judgeLanding(): void {
+        const l = root.list;
+        const e = root.flightEntry;
+        root.flightEntry = null;
+        if (!l || !e || root.flightRequeried)
+            return;
+        const k = l.results.indexOf(e);
+        if (k < 0)
+            return;
+        const viewH = Math.min(l.height, l.implicitHeight);
+        const it = l.itemAtIndex(k);
+        const y = (it && it.modelData === e ? it.visualY : l.originY + k * (Tokens.sizes.launcher.itemHeight + l.spacing)) - l.contentY;
+        const slot = 41;
+        const top = y + (Tokens.sizes.launcher.itemHeight - slot) / 2;
+        if (top < -0.5 || top + slot > viewH + 0.5)
+            root.addFlight(false, `close landed on a row outside the view: row at ${y.toFixed(1)}, view 0..${viewH.toFixed(0)} | cur=${l.currentIndex} contentY=${l.contentY.toFixed(1)} originY=${l.originY.toFixed(1)}`);
+    }
+
+    function addFlight(open: bool, msg: string): void {
+        const cur = open ? root.openFlight : root.closeFlight;
+        // The first of each kind per open or close: that is the one with the
+        // state worth reading, and a jump repeated over frames is one event.
+        const kind = msg.split(":")[0];
+        if (cur && cur.split("; ").some(m => m.split(":")[0] === kind))
+            return;
+        const next = cur ? `${cur}; ${msg}` : msg;
+        if (open)
+            root.openFlight = next;
+        else
+            root.closeFlight = next;
+        root.poke();
+    }
+
+    // Is the reader drawing the picture it is open on, this frame?
+    function pictureDrawn(r: var): bool {
+        if (r.bodyFade <= 0)
+            return false;
+        if (r.morphInFlight && r.morphEntry === r.entry && r.morphIsImage) {
+            if (r.morphDrawn !== undefined)
+                return r.morphDrawn;
+            // The overlay draws the row's thumbnail or the full-size copy;
+            // the body's probe and image hold the same two pixmaps.
+            return !!r.body && (r.body.thumbReady || r.body.imgReady);
+        }
+        if (r.orphans.some(o => o.entry === r.entry))
+            return true;
+        const b = r.body;
+        if (!b || b.modelData !== r.entry)
+            return false;
+        if (b.pictureDrawn !== undefined)
+            return b.pictureDrawn;
+        return b.handedOff && b.imgReady;
+    }
+
+    function judgeFlight(): void {
+        const c = root.content;
+        const r = root.readerLoader.item;
+        const l = root.list;
+        if (!r || !l)
+            return;
+        const open = c.readerActive && !c.readerExiting;
+        const stride = Tokens.sizes.launcher.itemHeight + l.spacing;
+        const viewH = Math.min(l.height, l.implicitHeight);
+        const where = () => `cur=${l.currentIndex} contentY=${l.contentY.toFixed(1)} originY=${l.originY.toFixed(1)} panel=${c.height.toFixed(0)}`;
+
+        // The open's first frame: the row it lifts off.
+        if (root.flightStart && open) {
+            root.flightStart = false;
+            // Judged on the row's leading slot, the thing that lifts off: a
+            // row the view is still gliding onto after a keypress can be a
+            // few px short of whole, and nothing of it is cut.
+            const y = c.readerStartY;
+            const slot = r.slotS ?? 41;
+            const top = y + (Tokens.sizes.launcher.itemHeight - slot) / 2;
+            // The view as it was when the key was pressed: by this first
+            // frame the panel has begun resizing for the reader.
+            if (top < -0.5 || top + slot > root.openViewH + 0.5)
+                root.addFlight(true, `open on a row outside the view: row at ${y.toFixed(1)}, view 0..${root.openViewH.toFixed(0)} | ${where()}`);
+        }
+
+        // The shared element against the panel's edges.
+        if (!c.exitRequeried) {
+            if ((r.morphIsImage || r.morphIsColour) && r.morphInFlight) {
+                const m = r.liveMorphRect();
+                const what = r.morphIsImage ? "picture" : "swatch";
+                if (m && m.y < -0.5)
+                    root.addFlight(open, `${what} past the panel's top edge: by ${(-m.y).toFixed(1)}px (${open ? "open" : "close"}) | ${where()}`);
+                else if (m && m.y > c.height + stride)
+                    root.addFlight(open, `${what} below the panel's bottom edge: at ${m.y.toFixed(1)}, panel ${c.height.toFixed(0)} (${open ? "open" : "close"}) | ${where()}`);
+            }
+            // The header rests on the panel's top and bounces past it: its
+            // spring ~2px (ClipReader.exitOvershootPx), the curve a text open
+            // runs on 1.39% of the way it came (5.4px from row 6).
+            const hy = r.slidePos - r.rowAlignY;
+            const bounce = Math.max(3, 0.02 * Math.abs(c.readerStartY));
+            if (hy < -bounce)
+                root.addFlight(open, `header past the panel's top edge: by ${(-hy).toFixed(1)}px (${open ? "open" : "close"}) | ${where()}`);
+            else if (hy > c.height + stride)
+                root.addFlight(open, `header below the panel's bottom edge: at ${hy.toFixed(1)}, panel ${c.height.toFixed(0)} (${open ? "open" : "close"}) | ${where()}`);
+        }
+
+        // A picture being read with nothing drawn for it.
+        if (open && r.entry?.isImage) {
+            const now = Date.now();
+            if (!root.pictureDrawn(r)) {
+                if (!root.blankSince) {
+                    root.blankSince = now;
+                    root.blankAt = now - root.flightOpenAt;
+                }
+            } else if (root.blankSince) {
+                root.endBlank(now);
+            }
+        }
+
+        if (c.readerExiting) {
+            if (c.exitRequeried)
+                root.flightRequeried = true;
+            if (c.readerEntry)
+                root.flightEntry = c.readerEntry;
+        }
+
+        // The list under a close.
+        if (c.readerExiting || root.afterClose) {
+            const dy = l.contentY - root.flightLastY;
+            const text = root.search.text;
+            if (Math.abs(dy) > stride && text === root.flightLastText && !c.exitRequeried)
+                root.addFlight(false, `list jumped ${dy.toFixed(1)}px in one frame ${c.readerExiting ? "during" : "after"} the close: ${root.flightLastY.toFixed(1)} -> ${l.contentY.toFixed(1)} | ${where()}`);
+        }
+        root.flightLastY = l.contentY;
+        root.flightLastText = root.search.text;
+    }
+
+    // Two frames at least: a single frame between two draws is the handoff
+    // itself, not a gap anyone can see.
+    function endBlank(now: double): void {
+        const ms = now - root.blankSince;
+        root.blankSince = 0;
+        if (ms >= 10)
+            root.addFlight(true, `picture blank while the reader is open: ${Math.round(ms)}ms from ${Math.round(root.blankAt)}ms after the open`);
+    }
+
+    FrameAnimation {
+        running: root.launcherOpen && (root.content.readerActive || root.content.readerExiting || root.afterClose)
+        onRunningChanged: {
+            if (running)
+                root.flightLastY = root.list?.contentY ?? 0;
+        }
+        onTriggered: root.judgeFlight()
+    }
+
+    Timer {
+        id: afterCloseTimer
+
+        interval: root.afterCloseMs
+        onTriggered: root.afterClose = false
+    }
+
+    Connections {
+        function onReaderActiveChanged(): void {
+            const c = root.content;
+            if (!c.readerActive) {
+                if (root.blankSince)
+                    root.endBlank(Date.now());
+                return;
+            }
+            if (c.readerExiting)
+                return;
+            root.openFlight = "";
+            root.flightStart = true;
+            root.openViewH = Math.min(root.list.height, root.list.implicitHeight);
+            root.flightOpenAt = Date.now();
+            root.blankSince = 0;
+        }
+
+        function onReaderExitingChanged(): void {
+            if (root.content.readerExiting) {
+                root.closeFlight = "";
+                root.afterClose = false;
+                root.flightEntry = root.content.readerEntry;
+                root.flightRequeried = false;
+                afterCloseTimer.stop();
+            } else if (!root.content.readerActive) {
+                // The close is over (not turned into a new open).
+                root.afterClose = true;
+                afterCloseTimer.restart();
+                root.judgeLanding();
+            }
         }
 
         target: root.content
@@ -589,6 +845,23 @@ Item {
         };
         const o = root.content.mapToItem(null, 0, 0);
         s.o = [Math.round(o.x * 1000) / 1000, Math.round(o.y * 1000) / 1000];
+        // The list and the reader around the morph: what moved them.
+        const c = root.content;
+        s.cy = Math.round(l.contentY * 10) / 10;
+        s.oy = Math.round(l.originY * 10) / 10;
+        s.cur = l.currentIndex;
+        s.ra = c.readerActive ? 1 : 0;
+        s.rx = c.readerExiting ? 1 : 0;
+        s.ch = Math.round(c.height * 10) / 10;
+        s.hy = Math.round((l.highlightItem?.y ?? -1) * 10) / 10;
+        s.lift = l.liftedEntry ? 1 : 0;
+        if (r) {
+            s.sp = Math.round(r.slidePos * 10) / 10;
+            s.xs = Math.round(r.exitScroll * 10) / 10;
+            s.bImg = r.body?.imgReady ? 1 : 0;
+            s.bHand = r.body?.handedOff ? 1 : 0;
+            s.drawn = r.entry?.isImage ? (root.pictureDrawn(r) ? 1 : 0) : -1;
+        }
         if (r) {
             root.traceEntry = r.morphEntry ?? root.traceEntry;
             const m = r.liveMorphRect();
@@ -662,6 +935,17 @@ Item {
 
         function mid(): string {
             return root.mid();
+        }
+
+        // A long trace does not fit one IPC reply: stop, then read it in
+        // slices (lib/trace-chunks.sh).
+        function traceStop(): int {
+            traceAnim.running = false;
+            return root.trace.length;
+        }
+
+        function traceChunk(from: int, n: int): string {
+            return root.trace.slice(from, from + n).map(s => JSON.stringify(s)).join("\n");
         }
     }
 }
