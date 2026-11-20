@@ -755,12 +755,13 @@ Item {
                 root.flightEntry = c.readerEntry;
         }
 
-        // The list under an open: nothing scrolls it while the reader is up
-        // (the list is frozen and the wheel reaches the reader), so any move
-        // is the view correcting itself -- the end of the list pulled back
-        // when the lift shrank the content, 58px in one frame while the rows
-        // were still fading out.
-        if (open && !root.flightStart) {
+        // The list under an open, while it can still be seen fading out:
+        // nothing scrolls it then (the list is frozen and the wheel reaches
+        // the reader), so a move is the view correcting itself -- the end of
+        // the list pulled back when the lift shrank the content, 58px in one
+        // frame. Once it has faded, a browse's lift may nudge the hidden
+        // list (2px seen in i7); the close lands on the row where it is.
+        if (open && !root.flightStart && (l.parent?.opacity ?? 1) > 0.05) {
             const dy = l.contentY - root.flightLastY;
             if (Math.abs(dy) > 1)
                 root.addFlight(true, `list jumped under the open: ${dy.toFixed(1)}px in one frame, ${root.flightLastY.toFixed(1)} -> ${l.contentY.toFixed(1)} | ${where()}`);
