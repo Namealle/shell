@@ -219,6 +219,11 @@ Item {
         const l = appList.item;
         if (!l?.currentEntry)
             return;
+        // Never off a row the panel does not show. The list keeps the
+        // selection in view as it scrolls (AppList.keepSelectionInView), so
+        // this only settles a scroll that has not reached it yet -- it moves
+        // the selection, never the list.
+        l.keepSelectionInView(false);
         readerStartY = currentRowY();
         exitRequeried = false;
         // An open is not a browse: clear the direction left over from the last
@@ -849,6 +854,8 @@ Item {
             // Not once the query has changed under the exit: that list is a
             // new one, positioned at once like any query (requeryExit).
             exiting: root.readerExiting && !root.exitRequeried
+            // The selection is the reader's while it is open or landing.
+            readerBusy: root.readerActive || root.readerExiting || root.readerFading
             // Rows whose picture is still in the reader's air -- an
             // interrupted morph folding back into its own thumbnail slot
             // (ClipReader.latchMorph). Their thumbnail only is masked, the way

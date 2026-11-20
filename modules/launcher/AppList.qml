@@ -420,11 +420,141 @@ StyledListView {
         Anim {}
     }
 
+    // -- the selection stays where it can be seen --
+    //
+    // The wheel (and the scrollbar, and a touchpad) scroll the list without
+    // moving the selection, and keys never leave it off screen, so only a
+    // scroll could put it there -- and then `->` read a row nobody could see.
+    // His recording of 2026-11-19 20:09: the selection on row 11, the wheel
+    // took the list well past it, `->` lifted the reader off a row 150px
+    // above the panel (the picture came in clipped through the top edge),
+    // and the close aimed back up there: the re-insert above the view jumped
+    // the list in one frame and the picture landed a row off. Filmed again
+    // the same afternoon at 17:35 (a76db60c).
+    //
+    // So once a scroll takes the selected row out of view, the selection
+    // moves to the row under the pointer -- the one being looked at, and the
+    // one a wheel scroll always has, since the wheel only reaches the list
+    // under the pointer -- and stays with the pointer for the rest of that
+    // scroll, so where the wheel stops, the row under the pointer is the one
+    // `->` opens. With the pointer elsewhere it goes to the first whole row
+    // on the side the selection left by. The highlight is placed at once
+    // rather than glided: it was off screen, so nothing visible jumps, and a
+    // glide in from outside the view would have the highlight range drag the
+    // list back after it, against the scroll. Any other move of the
+    // selection (a key, a query) hands it back to the keys.
+    //
+    // Only for a scroll the user made. A keypress or a new query moves the
+    // highlight on its glide and the range scrolls after it, so while the
+    // glide runs the view is following the selection, not leaving it. The
+    // reader owns the selection while it is open or landing (readerBusy);
+    // whatever a scroll did meanwhile is settled when it hands back.
+    property bool readerBusy: false
+    property bool snapHighlight: false
+    // The selection was put under the pointer by a scroll and nothing else
+    // has moved it since.
+    property bool selectionOnPointer: false
+    readonly property real viewHeight: Math.min(root.height, root.implicitHeight)
+
+    // Whether row `index` is whole inside the view.
+    function rowInView(index: int): bool {
+        const y = root.rowY(index);
+        return y >= root.contentY - 0.5 && y + Tokens.sizes.launcher.itemHeight <= root.contentY + root.viewHeight + 0.5;
+    }
+
+    // `scrolled`: the list just moved. Without it (an open asking), a
+    // selection in view stays where it is even if the pointer has since
+    // moved to another row -- the highlight is what says what opens.
+    function keepSelectionInView(scrolled = true): void {
+        if (root.state !== "clipboard" || root.readerBusy || root.count === 0 || root.frozen)
+            return;
+        if (root.highlightItem?.gliding)
+            return;
+        const inView = root.rowInView(root.currentIndex);
+        if (inView && (!root.selectionOnPointer || !scrolled))
+            return;
+        const stride = Tokens.sizes.launcher.itemHeight + root.spacing;
+        let k = -1;
+        if (pointer.hovered) {
+            // From the scene: a handler declared in a Flickable may sit on its
+            // contentItem, whose coordinates scroll.
+            const sp = pointer.point.scenePosition;
+            const p = root.mapFromItem(null, sp.x, sp.y);
+            const at = p.y + root.contentY - root.originY;
+            const i = Math.floor(at / stride);
+            // On a row, not in the spacing between two.
+            if (i >= 0 && i < root.count && at - i * stride < Tokens.sizes.launcher.itemHeight && root.rowInView(i))
+                k = i;
+        }
+        // Between two rows, or on one cut by the edge: stay put if still in
+        // view; the next row under the pointer takes over when it comes.
+        if (k < 0 && inView)
+            return;
+        const onPointer = k >= 0;
+        if (k < 0) {
+            const first = Math.ceil((root.contentY - root.originY - 0.5) / stride);
+            const last = Math.floor((root.contentY + root.viewHeight - Tokens.sizes.launcher.itemHeight - root.originY + 0.5) / stride);
+            k = root.rowY(root.currentIndex) < root.contentY ? first : last;
+            k = Math.max(0, Math.min(root.count - 1, k));
+        }
+        // The first move off a selection the scroll took out of view: the
+        // highlight fades in on its new row. Later ones keep it under the
+        // pointer as rows pass beneath, and move it outright, like a hover.
+        const takeover = !inView;
+        root.selectionOnPointer = onPointer;
+        if (k === root.currentIndex)
+            return;
+        root.snapHighlight = true;
+        root.currentIndex = k;
+        root.snapHighlight = false;
+        if (takeover) {
+            root.highlightFade = 0;
+            highlightFadeIn.restart();
+        }
+    }
+
+    property real highlightFade: 1
+
+    Anim {
+        id: highlightFadeIn
+
+        target: root
+        property: "highlightFade"
+        to: 1
+        type: Anim.DefaultEffects
+    }
+
+    onContentYChanged: root.keepSelectionInView()
+    onCurrentIndexChanged: {
+        if (!root.snapHighlight)
+            root.selectionOnPointer = false;
+    }
+    // The reader handing the list back after a scroll during its close.
+    onReaderBusyChanged: if (!root.readerBusy) selectionCheck.restart()
+
+    Timer {
+        id: selectionCheck
+
+        interval: 0
+        onTriggered: root.keepSelectionInView()
+    }
+
+    // Passive: where the pointer is over the list, for the row it points at.
+    HoverHandler {
+        id: pointer
+    }
+
     highlightFollowsCurrentItem: false
     highlight: StyledRect {
+        // The glide below is running: the range is scrolling the view after
+        // the selection, which is not the selection leaving the view.
+        readonly property bool gliding: glide.running
+
         radius: Tokens.rounding.large
         color: Colours.palette.m3onSurface
-        opacity: 0.08
+        // Faded in where a scroll put it (keepSelectionInView): it has no
+        // place on screen to travel from, so it appears rather than jumps.
+        opacity: 0.08 * root.highlightFade
 
         // From the LAYOUT, not the animated item -- the same reason exitReader
         // computes its landing spot this way.
@@ -451,7 +581,13 @@ StyledListView {
         visible: !root.highlightMasked
 
         Behavior on y {
-            Anim {}
+            // Off for the one write that puts the selection back in view
+            // (keepSelectionInView).
+            enabled: !root.snapHighlight
+
+            Anim {
+                id: glide
+            }
         }
     }
 
