@@ -309,7 +309,13 @@ Item {
     readonly property real rowAlignY: (Tokens.sizes.launcher.itemHeight - header.implicitHeight) / 2 - root.topInset
     readonly property real rowAlignX: Tokens.padding.medium - Tokens.padding.large
 
-    function exitTo(targetY: real, cb: var, endHeight = 0): void {
+    // `target`: where the row being landed on is, as a function read on every
+    // frame (ContentList.landingRowY), so the landing follows the row through
+    // whatever moves it during the slide; a number is a fixed spot. A target
+    // fixed as the close started is what put the picture a row off his
+    // thumbnail when the re-insert moved the list's origin under it.
+    function exitTo(target: var, cb: var, endHeight = 0): void {
+        const goal = typeof target === "function" ? target : () => target;
         // Stop BEFORE storing the callback: stopping a still-running enter
         // slide fires onStopped, which must not consume (and instantly fire)
         // the exit callback.
@@ -336,26 +342,37 @@ Item {
         // picture to an orphan, which folds it into its own row -- see
         // latchMorph.
         root.latchMorph(root.index, false, true);
-        slideAnim.from = root.slideY;
-        slideAnim.to = targetY + root.rowAlignY;
+        const from = root.slideY;
+        const to = goal() + root.rowAlignY;
         slideXAnim.from = root.slideX;
         slideXAnim.to = root.rowAlignX;
         if (root.morphIsImage || root.morphIsColour) {
             // A picture (or swatch) folding home: on the spring, header
             // included -- the picture rides the header's slot, so a header
-            // overshooting by 5px carried the picture past its row too.
-            root.startExitSprings(slideAnim.to);
+            // overshooting by 5px carried the picture past its row too. The
+            // spring's bounce is solved for the distance as it is now; a
+            // target that moves on is chased from where it is, at the speed
+            // it has (Spring).
+            root.startExitSprings(to);
+            slideSpring.target = () => goal() + root.rowAlignY;
         } else {
+            // The curve, run on the live target: the same 0..1 the slide
+            // always ran, lerped onto wherever the row is this frame, so a
+            // row that does not move gets exactly the old slide.
             root.setMorphT(0);
-            slideAnim.start();
+            root.followFrom = from;
+            root.followTarget = goal;
+            root.followT = 0;
+            root.slideY = Qt.binding(() => root.followFrom + (root.followTarget() + root.rowAlignY - root.followFrom) * root.followT);
+            followAnim.start();
             slideXAnim.start();
         }
         root.pillReleased = false;
         root.runPill(1);
         // Where the rail ends up under the landed header, against where the
         // panel's bottom edge ends up.
-        const edge = endHeight > 0 ? Math.max(0, endHeight - (root.topInset + slideAnim.to + header.implicitHeight + Tokens.spacing.small)) : -1;
-        root.beginBodySlide(slideAnim.to - slideAnim.from, false, false, edge);
+        const edge = endHeight > 0 ? Math.max(0, endHeight - (root.topInset + to + header.implicitHeight + Tokens.spacing.small)) : -1;
+        root.beginBodySlide(to - from, false, false, edge);
     }
 
     // The row the exit is landing on moved: the query changed under the slide

@@ -409,18 +409,26 @@ Item {
                 }
             }
             exitRequeried = false;
+            // The contentY the header's slide is relative to, set BEFORE
+            // readerExiting: exitScroll is live from that write, and with the
+            // previous close's value still here it read that close's scroll
+            // for the rest of this statement's turn. That flung the header
+            // and the rail hanging off it by thousands of px for one turn, and
+            // the rail, suddenly far taller than its content, was clamped by
+            // Qt (returnToBounds) -- the picture of an entry near the end of
+            // the list jumped 737-1752px below the panel on the close's first
+            // frame and flew back up from there (measured in the nest on
+            // ;png rows 40 and 43). Scrolling during the slide shifts the
+            // header by the difference (see ClipReader.exitScroll).
+            exitContentY = l.contentY;
             readerExiting = true;
             const i = Math.max(0, l.fullResults.indexOf(readerEntry));
-            // The landing spot comes from the LAYOUT, not the animated item: on
-            // a quick enter->exit the below-neighbour is still mid-flight
-            // closing the gap, so its animated y sits below the settled gap and
-            // the header would land short, then snap on unmask. Rows are
-            // fixed-height, so index math gives the settled position directly
-            // (and covers the last-row case with no special branch).
-            const target = l.originY + i * (root.Tokens.sizes.launcher.itemHeight + l.spacing) - l.contentY;
-            // The contentY `target` is relative to. Scrolling during the slide
-            // shifts the header by the difference (see ClipReader.exitScroll).
-            exitContentY = l.contentY;
+            // The landing spot is landingRowY: from the LAYOUT while the entry
+            // is still lifted, not from an animated neighbour -- on a quick
+            // enter->exit the below-neighbour is still mid-flight closing the
+            // gap, so its animated y sits below the settled gap and the header
+            // would land short, then snap on unmask -- and from the row itself
+            // once the re-insert has built it.
             partTimer.index = i;
             partTimer.fromIndex = l.currentIndex;
             // Cascade the rows back in. Stamped as the exit
@@ -461,7 +469,12 @@ Item {
             // implicitHeight is a row short on a history that fits the panel.
             const stride = root.Tokens.sizes.launcher.itemHeight + l.spacing;
             const endHeight = Math.min(root.maxHeight, stride * Math.min(root.Config.launcher.maxShown, l.fullResults.length) - l.spacing);
-            r.exitTo(target, () => {
+            // The row the header lands on, read where it is every frame
+            // rather than fixed here: whatever moves it during the slide --
+            // the re-insert, a scroll, a reload of the history -- the header
+            // and the picture land where the row is drawn. In the coordinates
+            // the slide uses (exitScroll added back; slidePos takes it off).
+            r.exitTo(() => root.landingRowY() + (clipReader.item?.exitScroll ?? 0), () => {
                 // Dropped mid-slide (`;` erased): dropReader already undid
                 // the lift, and the fading rail must keep its entry
                 if (root.readerFading)
@@ -615,7 +628,7 @@ Item {
         // same turn (AppList's onValuesChanged), and from deep in the history
         // that is a jump of thousands of px -- the header was gone for the
         // length of the slide (filmed on a 135-row-deep close). It aims at
-        // the row itself instead (requeryRowY), which already carries the
+        // the row itself instead (landingRowY), which already carries the
         // scroll.
         exitRequeried = true;
         partTimer.stop();
@@ -645,15 +658,22 @@ Item {
         const stride = root.Tokens.sizes.launcher.itemHeight + l.spacing;
         const shown = Math.min(root.maxHeight, stride * Math.min(root.Config.launcher.maxShown, l.fullResults.length) - l.spacing);
         // slideY is drawn minus the (now frozen) exitScroll.
-        r.followExit(() => root.requeryRowY() + root.requeryScroll, shown);
+        r.followExit(() => root.landingRowY() + root.requeryScroll, shown);
     }
 
     // Where the closing entry's row is drawn right now, in the list's
     // viewport: its own delegate once the view has built it (masked, but
     // placed, transitions included), index math until then. A row far down
-    // the new list is not flown to: the header leaves across the panel's
-    // bottom edge (or its top) on the way.
-    function requeryRowY(): real {
+    // the list is not flown to: the header leaves across the panel's bottom
+    // edge (or its top) on the way.
+    //
+    // Every close lands here, not only one a query changed. A fixed target
+    // measured as the close starts was right only while nothing moved the
+    // row: the re-insert landing above the view moves the list's origin by a
+    // stride, and the header came down on the slot above the row's or below
+    // it ("handoff 65.00px off the row's thumbnail" in his log, twice on
+    // 2026-11-19; 130px in the nest).
+    function landingRowY(): real {
         const l = appList.item;
         const e = readerEntry;
         if (!l || !e)
