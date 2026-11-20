@@ -237,7 +237,17 @@ Item {
         // Explicit rather than left to the currentEntry hook: lifting the entry
         // out of the model moves currentEntry to a neighbour, so that hook would
         // centre the window one row off.
-        prefetchAround(1);
+        //
+        // The entry being opened only, for now; the window around it once its
+        // picture is decoded (onHeadDecodedChanged below). Qt's pixmap reader
+        // takes the NEWEST request first (measured: eight loads asked for in
+        // order finished 0,7,6,5,4,3,2,1), so the neighbours' full-size copies
+        // asked for here went in front of the one being opened: 452-479ms in
+        // the nest after a wheel scroll over 5120x2160 screenshots, against a
+        // 459ms open, and over 570ms in his recording -- the open landed on a
+        // picture that was not there. Already decoded (a cache hit, or a new
+        // open in a reader that is still closing), the window goes now.
+        prefetchAround(1, !(clipReader.item?.headDecoded ?? false));
     }
 
     // PgUp/PgDn/Home/End inside the reader scroll its text (smoothly).
@@ -330,7 +340,7 @@ Item {
     // replaced, not appended to, so reversing direction re-prioritises at once
     // rather than finishing a window you have already left. Always includes the
     // CURRENT entry, which is what makes → into the reader instant too.
-    function prefetchAround(step: int): void {
+    function prefetchAround(step: int, headOnly = false): void {
         const l = appList.item;
         if (!l || !canRead)
             return;
@@ -339,6 +349,11 @@ Item {
         const i = full.indexOf(cur);
         if (i < 0)
             return;
+        if (headOnly) {
+            Clipboard.prefetch([cur]);
+            Clipboard.retain(cur);
+            return;
+        }
         const dir = step >= 0 ? 1 : -1;
         const out = [cur];
         // Asymmetric on purpose: the row you are heading towards is far likelier
@@ -914,6 +929,18 @@ Item {
             root.prefetchLastIndex = i;
             root.prefetchAround(step);
         }
+    }
+
+    // The window around the entry being read, once that entry's own
+    // picture has been decoded (ClipReader.headDecoded) -- see openReader.
+    Connections {
+        function onHeadDecodedChanged(): void {
+            if (clipReader.item?.headDecoded && root.readerActive && !root.readerExiting)
+                root.prefetchAround(root.readerStep >= 0 ? 1 : -1);
+        }
+
+        target: clipReader.item
+        ignoreUnknownSignals: true
     }
 
     SequentialAnimation {

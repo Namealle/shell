@@ -46,6 +46,12 @@ Item {
     // so the real one stays hidden until the handoff. Always true for the
     // neighbours, which no morph is aimed at.
     property bool handedOff: true
+    // Whether this body may ask for its pictures yet. False only for a
+    // neighbour while the entry being read is still waiting for its own --
+    // see ClipReader.headDecoded. Every load a neighbour asks for, its
+    // thumbnail included (that is a full PNG decode too, scaled down), goes
+    // in FRONT of the entry being read on Qt's pixmap thread.
+    property bool mayDecode: true
 
     readonly property bool isImage: root.entry?.isImage ?? false
     readonly property bool isBinary: !!(root.entry?.binMatch)
@@ -337,6 +343,32 @@ Item {
     // height before you ever arrive at it.
     readonly property bool imgReady: image.status === Image.Ready && image.implicitHeight > 0
     readonly property bool thumbReady: ratioProbe.status === Image.Ready && ratioProbe.implicitHeight > 0
+
+    // -- never an empty picture --
+    //
+    // The full-size copy can land well after the open does: its decode waits
+    // its turn on Qt's one pixmap thread, behind whatever was asked for after
+    // it (his recording of 2026-11-19 20:09: the open came to rest on the
+    // row's thumbnail -- the overlay's stand-in while the copy decodes -- and
+    // handed over to this body, which drew nothing at all until the copy
+    // came: 91ms of an empty reader under its header, and the copy still not
+    // there 570ms after the open). So the row's thumbnail stays as the stand-
+    // in here too, exactly where the overlay was drawing it, and the full copy
+    // fades in over it when it lands -- the same cross-fade the overlay runs.
+    // Drawn at once wherever no morph is landing: a picture that is already
+    // decoded when the handoff comes shows no fade.
+    property real fullOpacity: root.imgReady ? 1 : 0
+
+    Behavior on fullOpacity {
+        enabled: root.handedOff
+
+        Anim {
+            type: Anim.FastEffects
+        }
+    }
+
+    // For ClipInvariants: this body draws its picture (or has none to draw).
+    readonly property bool pictureDrawn: !root.isImage || (root.handedOff && (root.imgReady || standIn.status === Image.Ready))
     // cliphist's own descriptor first: it is exact, it is the TRUE resolution
     // (a decoded copy only ever reports its sourceSize-capped size), and it is
     // there before anything has been decoded at all. The decoded copies remain
@@ -933,7 +965,7 @@ Item {
         id: ratioProbe
 
         visible: false
-        source: root.isImage ? root.imgSrc : ""
+        source: root.isImage && root.mayDecode ? root.imgSrc : ""
         fillMode: Image.PreserveAspectCrop
         cache: !Clipboard.noCache
         asynchronous: true
@@ -1139,6 +1171,38 @@ Item {
             }
         }
 
+        // The stand-in under the full-size copy (see fullOpacity): the row's
+        // own thumbnail -- same url, sourceSize and fillMode as ClipItem's,
+        // so the pixmap the row and the overlay already hold -- in the same
+        // box under the same zoom and pan.
+        Image {
+            id: standIn
+
+            visible: root.isImage && root.handedOff && root.fullOpacity < 1
+            x: image.x
+            y: image.y
+            width: image.width
+            height: image.height
+            transform: [
+                Scale {
+                    origin.x: standIn.width / 2
+                    origin.y: standIn.height / 2
+                    xScale: root.zoom
+                    yScale: root.zoom
+                },
+                Translate {
+                    x: root.panX
+                    y: root.panY
+                }
+            ]
+            source: root.isImage && root.mayDecode ? root.imgSrc : ""
+            fillMode: Image.PreserveAspectCrop
+            cache: !Clipboard.noCache
+            asynchronous: true
+            sourceSize.width: Clipboard.thumbSize
+            sourceSize.height: Clipboard.thumbSize
+        }
+
         // Image entries: the decoded thumbnail, aspect-fit, height capped.
         Image {
             id: image
@@ -1146,6 +1210,7 @@ Item {
             // Hidden while the reader's morph overlay is in flight -- it lands
             // exactly on this rect, then hands off.
             visible: root.isImage && root.handedOff
+            opacity: root.fullOpacity
 
             // Scale first, about the centre, then translate -- so panX/panY are
             // plain screen-space offsets and the clamp in setPan can be written
@@ -1334,7 +1399,7 @@ Item {
             // the launcher sizes itself from, and it has to be right before the
             // full-res decode lands. See imgFitH.
             height: root.imgFitH
-            source: root.imgSrc
+            source: root.mayDecode ? root.imgSrc : ""
             // Crop, not Fit, and it matters for a reason that has nothing to do
             // with cropping: fillMode is part of the pixmap cache key
             // (QQuickImage::load folds it into providerOptions), so this and the

@@ -82,6 +82,27 @@ Item {
     // A new entry is under the header: take the rail to it.
     onBodyChanged: rail.pin()
 
+    // The entry under the header has its picture decoded (or has none to
+    // decode): only from then do the neighbours on the rail ask for their
+    // pictures (ClipBody.mayDecode), and ContentList warms the window
+    // around it. Qt's pixmap reader serves the NEWEST request first, so every
+    // neighbour asked for at the open went in front of the entry being opened
+    // -- see ContentList.openReader. Latched: a browse asks for its own entry
+    // as it arrives, newest of all. Never held for good.
+    property bool headDecoded: false
+    readonly property bool headReady: !!root.body && (!root.body.isImage || root.body.imgReady)
+
+    onHeadReadyChanged: {
+        if (root.headReady)
+            root.headDecoded = true;
+    }
+
+    Timer {
+        running: !root.headDecoded
+        interval: 1000
+        onTriggered: root.headDecoded = true
+    }
+
     readonly property int maxHeight: Clipboard.readerMaxHeight
     readonly property int minWidth: Tokens.sizes.launcher.itemWidth
 
@@ -1605,6 +1626,7 @@ Item {
 
             entry: modelData
             active: bodyDelegate.index === root.index
+            mayDecode: bodyDelegate.active || root.headDecoded
             // Is the enter/exit morph aimed at THIS entry -- see root.morphIndex.
             readonly property bool morphTarget: bodyDelegate.index === root.morphIndex
 
@@ -1789,6 +1811,10 @@ Item {
     // across a mid-flight retarget, so this neither flashes at the start nor
     // breaks reenter().
     readonly property bool morphing: morphAnim.running || morphSpring.running
+
+    // The overlay has a picture to draw (the row's thumbnail or the full-size
+    // copy), for ClipInvariants' blank-picture check.
+    readonly property bool morphDrawn: shThumb.status === Image.Ready || shFull.status === Image.Ready
 
     // The source slot, shared by both morphs: the square the ROW draws, which is
     // the icon's 1em advance (see headerIcon and ClipItem). implicitWidth, not
