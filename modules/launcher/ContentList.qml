@@ -222,9 +222,14 @@ Item {
         // The list stops where it is: a wheel scroll still gliding when the
         // key was pressed went on moving the list under the reader (filmed:
         // 97px during an open 50ms after a notch), so the row the reader
-        // lifted off was somewhere else by the time it came back.
-        l.cancelFlick();
-        l.wheelScroller?.settle();
+        // lifted off was somewhere else by the time it came back. stop(),
+        // not settle(): settling puts a view that is out of its bounds back
+        // in one write, and a query typed into a close leaves the list far
+        // out of them for a moment (30-deep-query h1: 3449 -> 46px in one
+        // frame under the re-open).
+        if (l.flicking)
+            l.cancelFlick();
+        l.wheelScroller?.stop();
         // Never off a row the panel does not show. The list keeps the
         // selection in view as it scrolls (AppList.keepSelectionInView), so
         // this only settles a scroll that has not reached it yet -- it moves
@@ -656,6 +661,9 @@ Item {
         l.readerGapIndex = -1;
         if (l.wantLift || l.liftedEntry)
             l.clearLift(0);
+        // A new list, at its top: the end a lift held (AppList.liftMargin)
+        // is not this list's, and nothing can be clamped at the top.
+        l.liftMargin = 0;
         // The highlight is the list's again, on the new top row.
         r.releasePill();
         const j = l.fullResults.indexOf(readerEntry);

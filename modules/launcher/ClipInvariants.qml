@@ -761,7 +761,9 @@ Item {
         // the list pulled back when the lift shrank the content, 58px in one
         // frame. Once it has faded, a browse's lift may nudge the hidden
         // list (2px seen in i7); the close lands on the row where it is.
-        if (open && !root.flightStart && (l.parent?.opacity ?? 1) > 0.05) {
+        // Not while the highlight glides: then the view is following a key
+        // pressed just before the open (i8: Down, then -> 80ms later).
+        if (open && !root.flightStart && (l.parent?.opacity ?? 1) > 0.05 && !l.highlightItem?.gliding) {
             const dy = l.contentY - root.flightLastY;
             if (Math.abs(dy) > 1)
                 root.addFlight(true, `list jumped under the open: ${dy.toFixed(1)}px in one frame, ${root.flightLastY.toFixed(1)} -> ${l.contentY.toFixed(1)} | ${where()}`);

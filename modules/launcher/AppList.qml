@@ -268,8 +268,16 @@ StyledListView {
         // slides the held rows back onto their slots (ClipItem).
         if (!root.wantLift && root.readerGapIndex >= 0 && root.insertLandsAbove(root.readerGapIndex))
             root.readerGapIndex = -1;
+        const back = root.liftedEntry;
         root.pendingIndex = root.wantIndex;
         root.liftedEntry = root.wantLift;
+        // Nothing comes back into the list to fill the end the margin held
+        // (a query typed into the close dropped the entry, and moved the view
+        // to the top): the margin goes now. Left, the highlight range scrolled
+        // into it after the query's glide -- the top row 46px above the view
+        // when the reader re-opened on it (30-deep-query h1).
+        if (!root.wantLift && root.fullResults.indexOf(back) < 0)
+            root.liftMargin = 0;
     }
 
     // A lift or unlift still inside the coalescing window, applied now -- for
