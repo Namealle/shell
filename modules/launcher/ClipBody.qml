@@ -1195,7 +1195,10 @@ Item {
                     y: root.panY
                 }
             ]
-            source: root.isImage && root.mayDecode ? root.imgSrc : ""
+            // Once the probe has it: the same pixmap, so no second load, and
+            // no second "Cannot open" for a file the repair path is still
+            // writing (see ratioProbe).
+            source: root.isImage && root.thumbReady ? root.imgSrc : ""
             fillMode: Image.PreserveAspectCrop
             cache: !Clipboard.noCache
             asynchronous: true
